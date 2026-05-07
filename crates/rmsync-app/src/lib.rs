@@ -4,8 +4,6 @@
 mod commands;
 mod state;
 
-use std::sync::Arc;
-
 pub use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -17,15 +15,12 @@ pub fn run() {
         )
         .init();
 
-    let state = Arc::new(AppState::new());
-    let state_for_tauri = state.clone();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(state_for_tauri)
-        .setup(move |app| {
-            commands::spawn_reachability_watcher(app.handle().clone(), state.clone());
+        .manage(AppState::new())
+        .setup(|app| {
+            commands::spawn_reachability_watcher(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

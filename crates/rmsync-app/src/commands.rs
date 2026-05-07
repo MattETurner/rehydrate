@@ -7,7 +7,7 @@ use rmsync_device::{Device, DeviceInfo};
 use rmsync_sync::{execute_pull, plan_pull, progress, Cancel, ProgressEvent, PullPlan};
 use secrecy::SecretString;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::state::{default_library_dir, AppState, KEYRING_DEVICE_USER, KEYRING_SERVICE};
 
@@ -215,7 +215,7 @@ pub async fn pull_execute(
 
     let (tx, mut rx) = progress::channel(64);
     let app_for_task = app.clone();
-    let forwarder = tokio::spawn(async move {
+    let forwarder = tauri::async_runtime::spawn(async move {
         while let Some(ev) = rx.recv().await {
             let _ = app_for_task.emit("sync:progress", &ev);
             if matches!(ev, ProgressEvent::Done { .. } | ProgressEvent::Cancelled) {
@@ -266,17 +266,39 @@ fn walk(p: &std::path::Path, f: &mut impl FnMut(&std::path::Path)) {
 /// Background task started at app launch. Polls the USB-ethernet endpoint
 /// every 2s and emits `device:reachable` events on changes. Cheap and
 /// platform-agnostic — no USB driver hooks needed.
-pub fn spawn_reachability_watcher(app: AppHandle, state: Arc<AppState>) {
-    tokio::spawn(async move {
-        let mut last: Option<bool> = None;
-        loop {
-            let now = is_reachable("10.11.99.1", 22).await;
-            if last != Some(now) {
-                *state.device_reachable.write().await = now;
-                let _ = app.emit("device:reachable", now);
-                last = Some(now);
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
-    });
+pub fn spawn_reachability_watcher(app: AppHandle) {
+    // Run on a dedicated OS thread with its own tokio current-thread
+    // runtime. Doing this from the Tauri `setup` callback fails because
+    // neither tokio nor `tauri::async_runtime` has its reactor live yet
+    // — they spin up later in Builder::run(). A standalone thread sidesteps
+    // the ordering question entirely. The work is tiny (one TCP connect
+    // every 2s), so a private runtime is fine.
+    std::thread::Builder::new()
+        .name("rmsync-reachability".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!("failed to start reachability watcher runtime: {e}");
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let mut last: Option<bool> = None;
+                loop {
+                    let now = is_reachable("10.11.99.1", 22).await;
+                    if last != Some(now) {
+                        let state = app.state::<AppState>();
+                        *state.device_reachable.write().await = now;
+                        let _ = app.emit("device:reachable", now);
+                        last = Some(now);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            });
+        })
+        .expect("spawn reachability watcher thread");
 }
