@@ -19,14 +19,38 @@ Pre-alpha, under active development. Phase 1 (read-only mirror) is the current t
 Prerequisites: Rust stable, Node 20+, npm.
 
 ```sh
-# Install UI deps
-(cd ui && npm install)
+# Install UI deps and build static assets
+(cd ui && npm install && npm run build)
 
-# Run the app in dev mode
-cargo tauri dev          # if cargo-tauri is installed
-# or, equivalently:
-(cd ui && npm run dev) & cargo run -p rmsync-app
+# Run the app
+cargo run -p rmsync-app --release
 ```
+
+For day-to-day dev with UI hot reload, install the Tauri CLI:
+
+```sh
+cargo install tauri-cli --version "^2.0.0"
+cargo tauri dev
+```
+
+## Testing against a real reMarkable
+
+Two integration tests run against a tablet plugged in over USB. Both
+are read-only.
+
+```sh
+# Capture password: tablet → Settings → Help → Copyrights and licenses
+MARGINALIA_RM_PASSWORD='...' \
+    cargo test -p rmsync-device --features ssh \
+    --test ssh_smoke -- --ignored --nocapture
+
+MARGINALIA_RM_PASSWORD='...' \
+    cargo test -p rmsync-sync \
+    --test full_pull_smoke -- --ignored --nocapture
+```
+
+Packaging notes (signed installers, icons, notarization) are in
+`PACKAGING.md`.
 
 ## Layout
 

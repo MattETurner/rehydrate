@@ -24,6 +24,28 @@
   },
   "bundle": {
     "active": false,
-    "targets": "all"
+    "targets": "all",
+    "category": "Productivity",
+    "copyright": "Copyright © 2026 Marginalia contributors",
+    "shortDescription": "iTunes for reMarkable — privacy-respecting USB sync",
+    "longDescription": "A cross-platform desktop app that mirrors a reMarkable 2 over USB into a content-addressed local library with full version history. No cloud, no telemetry.",
+    "icon": [
+      "icons/icon.png"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "frameworks": [],
+      "entitlements": null,
+      "providerShortName": null,
+      "signingIdentity": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "linux": {
+      "deb": { "depends": [] }
+    }
   }
 }
