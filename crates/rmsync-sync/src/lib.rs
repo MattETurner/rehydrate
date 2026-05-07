@@ -6,6 +6,7 @@
 pub mod error;
 pub mod plan;
 pub mod progress;
+pub mod push;
 
 mod execute;
 
@@ -13,3 +14,4 @@ pub use error::{SyncError, SyncResult};
 pub use execute::{execute_pull, Cancel, SyncReport};
 pub use plan::{plan_pull, DocumentPlan, PlanItemStatus, PullPlan};
 pub use progress::{Progress, ProgressEvent};
+pub use push::{execute_push, plan_push, PushItem, PushItemStatus, PushPlan, PushReport};

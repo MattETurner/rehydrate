@@ -28,6 +28,24 @@ export function HistoryDrawer({ document, onClose }: Props) {
     };
   }, [document.document_id]);
 
+  async function restoreVersion(v: VersionEntry) {
+    if (!window.confirm(
+      `Restore "${document.visible_name}" to v${v.id}?\n\n` +
+        `The current version stays in history; the restored version becomes ` +
+        `current and will be pushed to the device on the next sync.`,
+    )) {
+      return;
+    }
+    setError(null);
+    try {
+      await ipc.restoreVersion(v.id);
+      const fresh = await ipc.getHistory(document.document_id);
+      setVersions(fresh);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function exportVersion(v: VersionEntry) {
     setError(null);
     try {
@@ -112,6 +130,15 @@ export function HistoryDrawer({ document, onClose }: Props) {
                     <span className="muted small">{formatBytes(v.total_size_bytes)}</span>
                   )}
                   <span className="spacer" />
+                  {!isCurrent && (
+                    <button
+                      onClick={() => restoreVersion(v)}
+                      disabled={busy === v.id}
+                      className="link"
+                    >
+                      Restore to current
+                    </button>
+                  )}
                   <button
                     onClick={() => exportVersion(v)}
                     disabled={busy === v.id}

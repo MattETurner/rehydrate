@@ -42,6 +42,10 @@ pub fn run() {
             commands::disconnect_device,
             commands::pull_plan,
             commands::pull_execute,
+            commands::push_plan,
+            commands::push_execute,
+            commands::sync_two_way,
+            commands::restore_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running marginalia");

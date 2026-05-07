@@ -20,9 +20,10 @@ use russh::client::{self, Handle, Handler};
 use russh::keys::PublicKey;
 use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::OpenFlags;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use crate::error::{DeviceError, DeviceResult};
@@ -151,6 +152,46 @@ impl SshDevice {
             .await
             .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))?;
         Ok(buf)
+    }
+
+    /// Atomic per-file upload: write to `<path>.marginalia-tmp` then rename
+    /// over the destination. SFTP `rename` is atomic on the same filesystem.
+    async fn write_file_atomic(
+        &self,
+        sftp: &SftpSession,
+        path: &str,
+        bytes: &[u8],
+    ) -> DeviceResult<()> {
+        // Ensure the parent directory exists. SFTP's `mkdir` errors if the
+        // directory already exists; ignore that specific case.
+        if let Some(parent) = path.rsplit_once('/').map(|(p, _)| p) {
+            if !parent.is_empty() {
+                let _ = sftp.create_dir(parent).await;
+            }
+        }
+        let tmp_path = format!("{path}.marginalia-tmp");
+        // Best-effort cleanup of any stale tmp from a prior crashed upload.
+        let _ = sftp.remove_file(&tmp_path).await;
+
+        let flags = OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE;
+        let mut file = sftp
+            .open_with_flags(&tmp_path, flags)
+            .await
+            .map_err(|e| sftp_err("open_with_flags", &tmp_path, e))?;
+        file.write_all(bytes)
+            .await
+            .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))?;
+        file.shutdown()
+            .await
+            .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))?;
+        drop(file);
+
+        // Replace the destination atomically.
+        let _ = sftp.remove_file(path).await;
+        sftp.rename(&tmp_path, path)
+            .await
+            .map_err(|e| sftp_err("rename", path, e))?;
+        Ok(())
     }
 }
 
@@ -286,6 +327,28 @@ impl Device for SshDevice {
         }
         out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
         Ok(out)
+    }
+
+    async fn put_document_tree(&self, _uuid: &str, files: &[RemoteFile]) -> DeviceResult<()> {
+        let inner = self.inner.lock().await;
+        let dir = self.cfg.xochitl_dir.clone();
+
+        for f in files {
+            let target = format!("{dir}/{}", f.path);
+            self.write_file_atomic(&inner.sftp, &target, &f.bytes)
+                .await?;
+        }
+        // Drop the SFTP lock so the exec channel can be opened on the same
+        // session.
+        drop(inner);
+
+        // The xochitl daemon caches the document index in memory; without a
+        // restart, files freshly written via SFTP don't appear in the UI.
+        // The restart is brief (~3 seconds) and only interrupts what's
+        // currently displayed. We don't error on a non-zero exit because
+        // some firmware revisions print warnings to stderr but exit 0.
+        let _ = self.exec("systemctl restart xochitl").await;
+        Ok(())
     }
 
     async fn fetch_document_tree(&self, uuid: &str) -> DeviceResult<Vec<RemoteFile>> {

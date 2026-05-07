@@ -4,7 +4,10 @@ use std::sync::Arc;
 use rmsync_core::{DocumentSummary, Library, VerifyReport, VersionEntry};
 use rmsync_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rmsync_device::{Device, DeviceInfo};
-use rmsync_sync::{execute_pull, plan_pull, progress, Cancel, ProgressEvent, PullPlan};
+use rmsync_sync::{
+    execute_pull, execute_push, plan_pull, plan_push, progress, Cancel, ProgressEvent, PullPlan,
+    PushPlan,
+};
 use secrecy::SecretString;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -50,6 +53,19 @@ pub struct SyncReportOut {
     pub recorded: usize,
     pub unchanged: usize,
     pub skipped: usize,
+}
+
+#[derive(Serialize)]
+pub struct PushReportOut {
+    pub pushed: usize,
+    pub unchanged: usize,
+    pub skipped: usize,
+}
+
+#[derive(Serialize)]
+pub struct TwoWayReport {
+    pub pull: SyncReportOut,
+    pub push: PushReportOut,
 }
 
 // ---------- Library ---------------------------------------------------------
@@ -296,6 +312,16 @@ pub async fn disconnect_device(state: State<'_, AppState>) -> Result<(), String>
 // ---------- Sync ------------------------------------------------------------
 
 #[tauri::command]
+pub async fn restore_version(version_id: i64, state: State<'_, AppState>) -> Result<i64, String> {
+    let guard = state.library.lock().await;
+    let lib = guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+    let outcome = lib.restore_version(version_id).map_err(err)?;
+    Ok(outcome.version_id)
+}
+
+#[tauri::command]
 pub async fn pull_plan(state: State<'_, AppState>) -> Result<PullPlan, String> {
     let dev = state
         .device
@@ -350,6 +376,126 @@ pub async fn pull_execute(
         recorded: report.recorded,
         unchanged: report.unchanged,
         skipped: report.skipped,
+    })
+}
+
+#[tauri::command]
+pub async fn push_plan(state: State<'_, AppState>) -> Result<PushPlan, String> {
+    let lib_guard = state.library.lock().await;
+    let lib = lib_guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+    plan_push(lib).map_err(err)
+}
+
+#[tauri::command]
+pub async fn push_execute(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PushReportOut, String> {
+    let dev = state
+        .device
+        .lock()
+        .await
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "device not connected".to_string())?;
+    let lib_guard = state.library.lock().await;
+    let lib = lib_guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+
+    let plan = plan_push(lib).map_err(err)?;
+    let (tx, mut rx) = progress::channel(64);
+    let app_for_task = app.clone();
+    let forwarder = tauri::async_runtime::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            let _ = app_for_task.emit("sync:progress", &ev);
+            if matches!(ev, ProgressEvent::Done { .. } | ProgressEvent::Cancelled) {
+                break;
+            }
+        }
+    });
+    let report = execute_push(lib, dev.as_ref(), plan, Some(tx), Cancel::default())
+        .await
+        .map_err(err)?;
+    let _ = forwarder.await;
+
+    Ok(PushReportOut {
+        pushed: report.pushed,
+        unchanged: report.unchanged,
+        skipped: report.skipped,
+    })
+}
+
+/// Pull-then-push. The pull-first ordering means device-side changes are
+/// captured before any library-side change overwrites them; the loser of any
+/// conflict is preserved in the version log via parent_version_id and
+/// remains restorable from the history view.
+#[tauri::command]
+pub async fn sync_two_way(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<TwoWayReport, String> {
+    let dev = state
+        .device
+        .lock()
+        .await
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "device not connected".to_string())?;
+    let lib_guard = state.library.lock().await;
+    let lib = lib_guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+
+    // ----- PULL phase -----
+    let _ = app.emit("sync:phase", "pull");
+    let pull_plan = plan_pull(lib, dev.as_ref()).await.map_err(err)?;
+    let (tx, mut rx) = progress::channel(64);
+    let app_for_task = app.clone();
+    let forwarder = tauri::async_runtime::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            let _ = app_for_task.emit("sync:progress", &ev);
+            if matches!(ev, ProgressEvent::Done { .. } | ProgressEvent::Cancelled) {
+                break;
+            }
+        }
+    });
+    let pull = execute_pull(lib, dev.as_ref(), pull_plan, Some(tx), Cancel::default())
+        .await
+        .map_err(err)?;
+    let _ = forwarder.await;
+
+    // ----- PUSH phase -----
+    let _ = app.emit("sync:phase", "push");
+    let push_plan = plan_push(lib).map_err(err)?;
+    let (tx, mut rx) = progress::channel(64);
+    let app_for_task = app.clone();
+    let forwarder = tauri::async_runtime::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            let _ = app_for_task.emit("sync:progress", &ev);
+            if matches!(ev, ProgressEvent::Done { .. } | ProgressEvent::Cancelled) {
+                break;
+            }
+        }
+    });
+    let push = execute_push(lib, dev.as_ref(), push_plan, Some(tx), Cancel::default())
+        .await
+        .map_err(err)?;
+    let _ = forwarder.await;
+
+    Ok(TwoWayReport {
+        pull: SyncReportOut {
+            recorded: pull.recorded,
+            unchanged: pull.unchanged,
+            skipped: pull.skipped,
+        },
+        push: PushReportOut {
+            pushed: push.pushed,
+            unchanged: push.unchanged,
+            skipped: push.skipped,
+        },
     })
 }
 

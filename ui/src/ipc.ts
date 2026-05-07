@@ -8,7 +8,10 @@ import type {
   LibrarySummary,
   ProgressEvent,
   PullPlan,
+  PushPlan,
+  PushReport,
   SyncReport,
+  TwoWayReport,
   VerifyReport,
   VersionEntry,
 } from "./types";
@@ -39,6 +42,11 @@ export const ipc = {
 
   pullPlan: () => invoke<PullPlan>("pull_plan"),
   pullExecute: () => invoke<SyncReport>("pull_execute"),
+  pushPlan: () => invoke<PushPlan>("push_plan"),
+  pushExecute: () => invoke<PushReport>("push_execute"),
+  syncTwoWay: () => invoke<TwoWayReport>("sync_two_way"),
+  restoreVersion: (versionId: number) =>
+    invoke<number>("restore_version", { versionId }),
 };
 
 export function onDeviceReachable(
@@ -51,4 +59,10 @@ export function onSyncProgress(
   cb: (event: ProgressEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<ProgressEvent>("sync:progress", (e) => cb(e.payload));
+}
+
+export function onSyncPhase(
+  cb: (phase: "pull" | "push") => void,
+): Promise<UnlistenFn> {
+  return listen<"pull" | "push">("sync:phase", (e) => cb(e.payload));
 }

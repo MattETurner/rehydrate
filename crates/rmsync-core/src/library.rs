@@ -184,11 +184,17 @@ impl Library {
 
         if let Some((cur_hash, cur_id)) = &current {
             if cur_hash == manifest_hash.as_str() {
-                tx.execute(
-                    "UPDATE sync_state SET last_seen_manifest = ?1, last_synced_at = ?2 \
-                     WHERE document_id = ?3",
-                    params![manifest_hash.as_str(), now, manifest.document_id],
-                )?;
+                // Same manifest as current — only the device-side known
+                // state advances if this is a pull. Restored/imported
+                // re-records change nothing observable, so skip updating
+                // last_seen_manifest here.
+                if matches!(source, Source::Pulled) {
+                    tx.execute(
+                        "UPDATE sync_state SET last_seen_manifest = ?1, last_synced_at = ?2 \
+                         WHERE document_id = ?3",
+                        params![manifest_hash.as_str(), now, manifest.document_id],
+                    )?;
+                }
                 tx.commit()?;
                 return Ok(RecordOutcome {
                     version_id: *cur_id,
@@ -236,14 +242,27 @@ impl Library {
             }
         }
 
-        tx.execute(
-            "INSERT INTO sync_state(document_id, last_seen_manifest, last_synced_at) \
-             VALUES (?1, ?2, ?3) \
-             ON CONFLICT(document_id) DO UPDATE SET \
-                 last_seen_manifest = excluded.last_seen_manifest, \
-                 last_synced_at = excluded.last_synced_at",
-            params![manifest.document_id, manifest_hash.as_str(), now],
-        )?;
+        // `last_seen_manifest` tracks "what's known to be on the device".
+        // Only `Source::Pulled` may advance it — restored/imported manifests
+        // are library-side changes that should trigger a future push.
+        if matches!(source, Source::Pulled) {
+            tx.execute(
+                "INSERT INTO sync_state(document_id, last_seen_manifest, last_synced_at) \
+                 VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(document_id) DO UPDATE SET \
+                     last_seen_manifest = excluded.last_seen_manifest, \
+                     last_synced_at = excluded.last_synced_at",
+                params![manifest.document_id, manifest_hash.as_str(), now],
+            )?;
+        } else {
+            // Ensure the row exists so future planners have somewhere to
+            // read from, but leave last_seen_manifest alone.
+            tx.execute(
+                "INSERT INTO sync_state(document_id) VALUES (?1) \
+                 ON CONFLICT(document_id) DO NOTHING",
+                params![manifest.document_id],
+            )?;
+        }
 
         tx.commit()?;
         Ok(RecordOutcome {
@@ -387,6 +406,17 @@ impl Library {
         Ok(entry)
     }
 
+    /// Make `version_id` the document's current version by re-recording its
+    /// manifest with `Source::Restored`. The previous current version is
+    /// preserved in the log via `parent_version_id`. If `version_id` is
+    /// already current, this is a no-op (`unchanged: true`).
+    pub fn restore_version(&self, version_id: VersionId) -> Result<RecordOutcome> {
+        let entry = self.get_version(version_id)?;
+        let bytes = self.read_blob(&entry.manifest_hash)?;
+        let manifest = Manifest::from_canonical_json(&bytes)?;
+        self.record_version(&manifest, Source::Restored)
+    }
+
     /// Update the free-form note attached to a version. Pass `None` to clear.
     pub fn set_version_note(&self, version_id: VersionId, note: Option<&str>) -> Result<()> {
         let n = self.db.lock().execute(
@@ -429,6 +459,24 @@ impl Library {
             "INSERT INTO sync_state(document_id, device_mtime_hint) VALUES (?1, ?2) \
              ON CONFLICT(document_id) DO UPDATE SET device_mtime_hint = excluded.device_mtime_hint",
             params![document_id, hint],
+        )?;
+        Ok(())
+    }
+
+    /// Mark the manifest as the latest one known to be on the device. Called
+    /// after a successful push so the next `plan_pull` correctly classifies
+    /// the document as Unchanged (assuming the device hasn't moved on).
+    pub fn update_last_seen_manifest(&self, document_id: &str, manifest_hex: &str) -> Result<()> {
+        let now = OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        self.db.lock().execute(
+            "INSERT INTO sync_state(document_id, last_seen_manifest, last_synced_at) \
+             VALUES (?1, ?2, ?3) \
+             ON CONFLICT(document_id) DO UPDATE SET \
+                 last_seen_manifest = excluded.last_seen_manifest, \
+                 last_synced_at = excluded.last_synced_at",
+            params![document_id, manifest_hex, now],
         )?;
         Ok(())
     }

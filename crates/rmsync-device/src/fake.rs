@@ -126,6 +126,23 @@ impl Device for FakeDevice {
         Ok(out)
     }
 
+    async fn put_document_tree(&self, _uuid: &str, files: &[RemoteFile]) -> DeviceResult<()> {
+        for f in files {
+            let target = self.root.join(&f.path);
+            if let Some(parent) = target.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            // Atomic write: temp + rename in the same directory.
+            let tmp = target.with_extension(format!(
+                "{}.tmp",
+                target.extension().and_then(|s| s.to_str()).unwrap_or("rm")
+            ));
+            tokio::fs::write(&tmp, &f.bytes).await?;
+            tokio::fs::rename(&tmp, &target).await?;
+        }
+        Ok(())
+    }
+
     async fn fetch_document_tree(&self, uuid: &str) -> DeviceResult<Vec<RemoteFile>> {
         let metadata_path = self.metadata_path(uuid);
         if !metadata_path.exists() {

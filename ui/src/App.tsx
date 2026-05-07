@@ -168,7 +168,7 @@ export function App() {
           </button>
         ) : (
           <button onClick={openSync} disabled={!device?.connected}>
-            Sync from reMarkable
+            Sync
           </button>
         )}
         {device?.connected ? (

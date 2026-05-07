@@ -15,7 +15,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::Result;
 
-const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_init", include_str!("../migrations/0001_init.sql")),
+    (
+        "0002_allow_repeat_manifests",
+        include_str!("../migrations/0002_allow_repeat_manifests.sql"),
+    ),
+];
 
 pub struct Db {
     conn: Mutex<Connection>,

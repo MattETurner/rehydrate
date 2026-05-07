@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { ipc, onSyncProgress } from "../ipc";
-import type { PlanItemStatus, ProgressEvent, PullPlan, SyncReport } from "../types";
+import { ipc, onSyncPhase, onSyncProgress } from "../ipc";
+import type {
+  PlanItemStatus,
+  ProgressEvent,
+  PullPlan,
+  PushItemStatus,
+  PushPlan,
+  TwoWayReport,
+} from "../types";
 
 interface Props {
   onClose: () => void;
@@ -15,34 +22,48 @@ interface DocProgress {
   reason?: string;
 }
 
-const STATUS_LABEL: Record<PlanItemStatus, string> = {
+const PULL_LABEL: Record<PlanItemStatus, string> = {
   new: "New",
   changed: "Changed",
   unchanged: "Unchanged",
   skipped: "Skipped",
 };
-
-const STATUS_CLASS: Record<PlanItemStatus, string> = {
+const PULL_CLASS: Record<PlanItemStatus, string> = {
   new: "badge badge-new",
   changed: "badge badge-changed",
   unchanged: "badge badge-unchanged",
   skipped: "badge badge-skipped",
 };
 
+const PUSH_LABEL: Record<PushItemStatus, string> = {
+  outbound: "Outbound",
+  unchanged: "Unchanged",
+  skipped: "Skipped",
+};
+const PUSH_CLASS: Record<PushItemStatus, string> = {
+  outbound: "badge badge-new",
+  unchanged: "badge badge-unchanged",
+  skipped: "badge badge-skipped",
+};
+
 export function SyncDrawer({ onClose, onComplete }: Props) {
-  const [plan, setPlan] = useState<PullPlan | null>(null);
+  const [pullPlan, setPullPlan] = useState<PullPlan | null>(null);
+  const [pushPlan, setPushPlan] = useState<PushPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const [report, setReport] = useState<SyncReport | null>(null);
+  const [phase, setPhase] = useState<"plan" | "pull" | "push" | "done">("plan");
+  const [report, setReport] = useState<TwoWayReport | null>(null);
   const [progress, setProgress] = useState<Record<string, DocProgress>>({});
-  const [activeDoc, setActiveDoc] = useState<string | null>(null);
 
+  // Build the plan preview up front so the user can see what's about to
+  // happen before they hit Start.
   useEffect(() => {
     let mounted = true;
-    ipc
-      .pullPlan()
-      .then((p) => {
-        if (mounted) setPlan(p);
+    Promise.all([ipc.pullPlan(), ipc.pushPlan()])
+      .then(([pl, ps]) => {
+        if (!mounted) return;
+        setPullPlan(pl);
+        setPushPlan(ps);
       })
       .catch((e) => {
         if (mounted) setPlanError(String(e));
@@ -53,19 +74,22 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
   }, []);
 
   const counts = useMemo(() => {
-    if (!plan) return null;
-    const c = { new: 0, changed: 0, unchanged: 0, skipped: 0 };
-    for (const item of plan.items) c[item.status]++;
-    return c;
-  }, [plan]);
+    if (!pullPlan || !pushPlan) return null;
+    const pull = { new: 0, changed: 0, unchanged: 0, skipped: 0 };
+    for (const item of pullPlan.items) pull[item.status]++;
+    const push = { outbound: 0, unchanged: 0, skipped: 0 };
+    for (const item of pushPlan.items) push[item.status]++;
+    return { pull, push };
+  }, [pullPlan, pushPlan]);
 
   async function start() {
-    if (!plan) return;
     setRunning(true);
     setProgress({});
     setReport(null);
+    setPhase("pull");
 
-    const unlisten = await onSyncProgress((ev: ProgressEvent) => {
+    const unlistenPhase = await onSyncPhase((p) => setPhase(p));
+    const unlistenProgress = await onSyncProgress((ev: ProgressEvent) => {
       setProgress((prev) => {
         const next = { ...prev };
         switch (ev.kind) {
@@ -76,7 +100,6 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
               bytes: 0,
               deduped: 0,
             };
-            setActiveDoc(ev.document_id);
             break;
           case "file_fetched": {
             const cur = next[ev.document_id] ?? {
@@ -101,7 +124,6 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
               deduped: 0,
             };
             next[ev.document_id] = { ...cur, state: "done" };
-            setActiveDoc(null);
             break;
           }
           case "document_skipped":
@@ -113,35 +135,72 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
               reason: ev.reason,
             };
             break;
-          case "done":
-            setReport({
-              recorded: ev.recorded,
-              unchanged: ev.unchanged,
-              skipped: ev.skipped,
-            });
-            break;
         }
         return next;
       });
     });
 
     try {
-      const r = await ipc.pullExecute();
+      const r = await ipc.syncTwoWay();
       setReport(r);
+      setPhase("done");
       onComplete();
     } catch (e) {
       setPlanError(String(e));
     } finally {
-      unlisten();
+      unlistenPhase();
+      unlistenProgress();
       setRunning(false);
-      setActiveDoc(null);
     }
   }
+
+  const allItems = useMemo(() => {
+    const items: Array<{
+      key: string;
+      title: string;
+      docType: string;
+      label: string;
+      cls: string;
+      uuid: string;
+      direction: "pull" | "push";
+    }> = [];
+    if (pullPlan) {
+      for (const i of pullPlan.items) {
+        if (i.status === "unchanged") continue;
+        items.push({
+          key: `pull-${i.entry.uuid}`,
+          title: i.entry.visible_name,
+          docType: i.entry.doc_type,
+          label: PULL_LABEL[i.status],
+          cls: PULL_CLASS[i.status],
+          uuid: i.entry.uuid,
+          direction: "pull",
+        });
+      }
+    }
+    if (pushPlan) {
+      for (const i of pushPlan.items) {
+        if (i.status === "unchanged") continue;
+        items.push({
+          key: `push-${i.document.document_id}`,
+          title: i.document.visible_name,
+          docType: i.document.doc_type,
+          label: PUSH_LABEL[i.status],
+          cls: PUSH_CLASS[i.status],
+          uuid: i.document.document_id,
+          direction: "push",
+        });
+      }
+    }
+    return items;
+  }, [pullPlan, pushPlan]);
+
+  const activeProgressKeys = useMemo(() => Object.keys(progress), [progress]);
 
   return (
     <div className="drawer" onClick={(e) => e.stopPropagation()}>
       <header>
-        <h2>Sync from reMarkable</h2>
+        <h2>Sync with reMarkable</h2>
         <button onClick={onClose} disabled={running} className="close">
           ×
         </button>
@@ -149,67 +208,99 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
 
       {planError && <div className="error">{planError}</div>}
 
-      {!plan && !planError && <div className="empty">Planning…</div>}
+      {(!pullPlan || !pushPlan) && !planError && (
+        <div className="empty">Planning…</div>
+      )}
 
-      {plan && (
+      {pullPlan && pushPlan && (
         <>
           <div className="plan-summary">
             {counts && (
               <>
-                <span className="badge badge-new">{counts.new} new</span>
-                <span className="badge badge-changed">{counts.changed} changed</span>
-                <span className="badge badge-unchanged">
-                  {counts.unchanged} unchanged
+                <span className="muted small">Pull:</span>
+                <span className="badge badge-new">{counts.pull.new} new</span>
+                <span className="badge badge-changed">
+                  {counts.pull.changed} changed
                 </span>
-                {counts.skipped > 0 && (
-                  <span className="badge badge-skipped">{counts.skipped} skipped</span>
-                )}
+                <span className="badge badge-unchanged">
+                  {counts.pull.unchanged} unchanged
+                </span>
+                <span className="muted small">·</span>
+                <span className="muted small">Push:</span>
+                <span className="badge badge-new">
+                  {counts.push.outbound} outbound
+                </span>
+                <span className="badge badge-unchanged">
+                  {counts.push.unchanged} unchanged
+                </span>
               </>
             )}
           </div>
 
-          <ul className="plan-list">
-            {plan.items.map((item) => {
-              const p = progress[item.entry.uuid];
-              const isActive = activeDoc === item.entry.uuid;
-              return (
-                <li key={item.entry.uuid} className={isActive ? "active" : ""}>
-                  <span className={STATUS_CLASS[item.status]}>
-                    {STATUS_LABEL[item.status]}
-                  </span>
-                  <span className="title">{item.entry.visible_name}</span>
-                  <span className="muted small">{item.entry.doc_type}</span>
-                  {p && p.state === "in-progress" && (
-                    <span className="muted small">
-                      {p.files} files · {formatBytes(p.bytes)}
-                    </span>
-                  )}
-                  {p && p.state === "done" && (
-                    <span className="badge badge-ok">✓</span>
-                  )}
-                  {p && p.state === "skipped" && (
-                    <span className="badge badge-skipped" title={p.reason}>
-                      Skipped
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          {allItems.length === 0 ? (
+            <div className="empty">
+              Nothing to sync — library and device match.
+            </div>
+          ) : (
+            <ul className="plan-list">
+              {allItems.map((it) => {
+                const p = progress[it.uuid];
+                const inThisPhase =
+                  phase === it.direction || (phase === "done" && p?.state === "done");
+                return (
+                  <li key={it.key} className={inThisPhase && p?.state === "in-progress" ? "active" : ""}>
+                    <span className={it.cls}>{it.label}</span>
+                    <span className="muted small">{it.direction === "pull" ? "↓" : "↑"}</span>
+                    <span className="title">{it.title}</span>
+                    <span className="muted small">{it.docType}</span>
+                    {p && p.state === "in-progress" && (
+                      <span className="muted small">
+                        {p.files} files · {formatBytes(p.bytes)}
+                      </span>
+                    )}
+                    {p && p.state === "done" && <span className="badge badge-ok">✓</span>}
+                    {p && p.state === "skipped" && (
+                      <span className="badge badge-skipped" title={p.reason}>
+                        Skipped
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
 
           <footer>
             {report ? (
               <div className="report">
-                Done · {report.recorded} recorded, {report.unchanged} unchanged
-                {report.skipped > 0 ? `, ${report.skipped} skipped` : ""}
+                Done · pulled {report.pull.recorded}, pushed {report.push.pushed}
+                {report.pull.skipped + report.push.skipped > 0
+                  ? `, ${report.pull.skipped + report.push.skipped} skipped`
+                  : ""}
                 <button onClick={onClose}>Close</button>
               </div>
             ) : (
-              <button onClick={start} disabled={running} className="primary">
-                {running ? "Syncing…" : "Start sync"}
-              </button>
+              <>
+                {running && (
+                  <span className="muted small">
+                    {phase === "pull"
+                      ? "Pulling from device…"
+                      : phase === "push"
+                        ? "Pushing to device…"
+                        : "Syncing…"}
+                  </span>
+                )}
+                <button
+                  onClick={start}
+                  disabled={running || allItems.length === 0}
+                  className="primary"
+                >
+                  {running ? "Syncing…" : "Start sync"}
+                </button>
+              </>
             )}
           </footer>
+          {activeProgressKeys.length === 0 || running ? null : null}
         </>
       )}
     </div>

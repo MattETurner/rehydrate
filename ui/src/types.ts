@@ -74,6 +74,29 @@ export interface SyncReport {
   skipped: number;
 }
 
+export interface PushReport {
+  pushed: number;
+  unchanged: number;
+  skipped: number;
+}
+
+export interface TwoWayReport {
+  pull: SyncReport;
+  push: PushReport;
+}
+
+export type PushItemStatus = "outbound" | "unchanged" | "skipped";
+
+export interface PushItem {
+  document: DocumentSummary;
+  status: PushItemStatus;
+  reason: string | null;
+}
+
+export interface PushPlan {
+  items: PushItem[];
+}
+
 export interface VerifyReport {
   manifests_total: number;
   manifests_ok: number;
