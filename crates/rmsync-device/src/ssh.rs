@@ -154,23 +154,18 @@ impl SshDevice {
         Ok(buf)
     }
 
-    /// Atomic per-file upload: write to `<path>.marginalia-tmp` then rename
-    /// over the destination. SFTP `rename` is atomic on the same filesystem.
-    async fn write_file_atomic(
-        &self,
-        sftp: &SftpSession,
-        path: &str,
-        bytes: &[u8],
-    ) -> DeviceResult<()> {
-        // Ensure the parent directory exists. SFTP's `mkdir` errors if the
-        // directory already exists; ignore that specific case.
+    /// Stage a file's bytes to `<path>.marginalia-tmp`. Does NOT touch the
+    /// live `<path>` — that's done in a second phase by `commit_staged`,
+    /// after every file in the document has been staged. This split means
+    /// a network interruption or write error mid-upload leaves the live
+    /// document untouched on the device, instead of half-overwritten.
+    async fn stage_file(&self, sftp: &SftpSession, path: &str, bytes: &[u8]) -> DeviceResult<()> {
         if let Some(parent) = path.rsplit_once('/').map(|(p, _)| p) {
             if !parent.is_empty() {
                 let _ = sftp.create_dir(parent).await;
             }
         }
-        let tmp_path = format!("{path}.marginalia-tmp");
-        // Best-effort cleanup of any stale tmp from a prior crashed upload.
+        let tmp_path = staged_path(path);
         let _ = sftp.remove_file(&tmp_path).await;
 
         let flags = OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE;
@@ -185,14 +180,68 @@ impl SshDevice {
             .await
             .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))?;
         drop(file);
-
-        // Replace the destination atomically.
-        let _ = sftp.remove_file(path).await;
-        sftp.rename(&tmp_path, path)
-            .await
-            .map_err(|e| sftp_err("rename", path, e))?;
         Ok(())
     }
+
+    /// Promote a previously-staged file into place. Uses a backup-rename
+    /// pattern because `russh-sftp` 2.1's plain rename refuses to overwrite
+    /// (per the SFTP spec) and the SFTP server on the reMarkable ships
+    /// without the posix-rename extension we'd otherwise prefer.
+    ///
+    /// 1. If `<path>` exists, rename it to `<path>.marginalia-bak`.
+    /// 2. Rename `<path>.marginalia-tmp` → `<path>`.
+    /// 3. Remove `<path>.marginalia-bak`.
+    ///
+    /// If step 2 fails, restore by renaming the backup back into place so
+    /// the device never sees a hole where the file used to be.
+    async fn commit_staged(&self, sftp: &SftpSession, path: &str) -> DeviceResult<()> {
+        let tmp_path = staged_path(path);
+        let bak_path = backup_path(path);
+
+        // Clean any prior abandoned backup.
+        let _ = sftp.remove_file(&bak_path).await;
+
+        let live_existed = sftp.metadata(path).await.is_ok();
+        if live_existed {
+            sftp.rename(path, &bak_path)
+                .await
+                .map_err(|e| sftp_err("rename(live→bak)", path, e))?;
+        }
+
+        match sftp.rename(&tmp_path, path).await {
+            Ok(()) => {
+                if live_existed {
+                    let _ = sftp.remove_file(&bak_path).await;
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // Promotion failed — try to restore the backup so the
+                // device's view of this file is unchanged.
+                if live_existed {
+                    let _ = sftp.rename(&bak_path, path).await;
+                }
+                Err(sftp_err("rename(tmp→live)", path, e))
+            }
+        }
+    }
+
+    /// Best-effort cleanup of staged tmps for a document — used when a
+    /// document upload fails partway through, so we don't leave the
+    /// device with `.marginalia-tmp` litter.
+    async fn discard_staged(&self, sftp: &SftpSession, paths: &[String]) {
+        for path in paths {
+            let _ = sftp.remove_file(&staged_path(path)).await;
+        }
+    }
+}
+
+fn staged_path(path: &str) -> String {
+    format!("{path}.marginalia-tmp")
+}
+
+fn backup_path(path: &str) -> String {
+    format!("{path}.marginalia-bak")
 }
 
 async fn open_sftp(handle: &Handle<ClientHandler>) -> DeviceResult<SftpSession> {
@@ -333,20 +382,37 @@ impl Device for SshDevice {
         let inner = self.inner.lock().await;
         let dir = self.cfg.xochitl_dir.clone();
 
+        // Phase 1: stage every file as `<path>.marginalia-tmp`. The live
+        // document on the device is not touched yet, so an upload failure
+        // in this phase leaves it intact.
+        let mut targets: Vec<String> = Vec::with_capacity(files.len());
         for f in files {
             let target = format!("{dir}/{}", f.path);
-            self.write_file_atomic(&inner.sftp, &target, &f.bytes)
-                .await?;
+            if let Err(e) = self.stage_file(&inner.sftp, &target, &f.bytes).await {
+                self.discard_staged(&inner.sftp, &targets).await;
+                return Err(e);
+            }
+            targets.push(target);
         }
-        // Drop the SFTP lock so the exec channel can be opened on the same
-        // session.
+
+        // Phase 2: promote each staged file into place. Per-file commit
+        // uses a backup pattern so a single failed promote can be rolled
+        // back. A failure here can leave the document partially-updated;
+        // we surface the error so the caller doesn't advance sync_state
+        // and the next push will retry the whole tree.
+        for target in &targets {
+            if let Err(e) = self.commit_staged(&inner.sftp, target).await {
+                // Best-effort: try to discard remaining staged files so
+                // the device isn't littered with stale .marginalia-tmp.
+                self.discard_staged(&inner.sftp, &targets).await;
+                return Err(e);
+            }
+        }
+
         drop(inner);
 
-        // The xochitl daemon caches the document index in memory; without a
-        // restart, files freshly written via SFTP don't appear in the UI.
-        // The restart is brief (~3 seconds) and only interrupts what's
-        // currently displayed. We don't error on a non-zero exit because
-        // some firmware revisions print warnings to stderr but exit 0.
+        // xochitl caches the document index in memory; restart so it
+        // picks up the new files. Brief (~3s) UI interruption.
         let _ = self.exec("systemctl restart xochitl").await;
         Ok(())
     }

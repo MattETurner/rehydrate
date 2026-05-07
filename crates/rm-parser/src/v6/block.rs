@@ -39,7 +39,9 @@ pub enum Block {
     /// revisions add new block types we don't recognise; rather than
     /// failing the whole file, we record the type tag and skip the
     /// payload so the rest of the file still parses.
-    Unknown { block_type: u8 },
+    Unknown {
+        block_type: u8,
+    },
 }
 
 /// Parsing methods for parsing blocks

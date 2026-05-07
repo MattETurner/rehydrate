@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -197,6 +198,15 @@ pub struct Library {
     paths: LibraryPaths,
     blobs: BlobStore,
     db: Db,
+    /// Coarse-grained mutex serialising blob-mutating operations
+    /// (record_version, import_file, restore_version) against
+    /// garbage_collect. Without this, GC can build its live-set, then
+    /// record_version commits a new manifest, then GC deletes the
+    /// freshly-written blob because it wasn't in the snapshot.
+    /// The lock is held only inside Library methods; it doesn't span
+    /// async I/O (the sync engine pulls all bytes into memory before
+    /// calling record_version, so the critical section is short).
+    write_lock: Mutex<()>,
 }
 
 impl Library {
@@ -219,7 +229,12 @@ impl Library {
         let db = Db::open(&paths.db)?;
         let blobs = BlobStore::new(paths.clone());
 
-        Ok(Self { paths, blobs, db })
+        Ok(Self {
+            paths,
+            blobs,
+            db,
+            write_lock: Mutex::new(()),
+        })
     }
 
     pub fn paths(&self) -> &LibraryPaths {
@@ -246,6 +261,8 @@ impl Library {
     /// manifest's hash equals the document's current_manifest, this is a no-op
     /// and the existing version_id is returned with `unchanged=true`.
     pub fn record_version(&self, manifest: &Manifest, source: Source) -> Result<RecordOutcome> {
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+
         let canonical = manifest.canonical_json()?;
         let manifest_hash = Sha256Hex::from_bytes(&canonical);
 
@@ -512,6 +529,11 @@ impl Library {
         visible_name: &str,
     ) -> Result<DocumentSummary> {
         use crate::manifest::ManifestFile;
+        // record_version below already takes the write_lock; we don't
+        // grab it here to avoid double-locking the same thread (std
+        // Mutex is not reentrant). Calls to put_blob in between are
+        // safe because the GC's live-set query and the import's record
+        // are serialised through record_version's lock.
 
         let bytes = fs::read(source_path)?;
         let document_id = uuid::Uuid::new_v4().to_string();
@@ -659,9 +681,8 @@ impl Library {
     /// Return all folders mirrored from the device.
     pub fn list_folders(&self) -> Result<Vec<FolderEntry>> {
         let conn = self.db.lock();
-        let mut stmt = conn.prepare(
-            "SELECT folder_id, parent, visible_name FROM folders ORDER BY visible_name",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT folder_id, parent, visible_name FROM folders ORDER BY visible_name")?;
         let rows: Vec<FolderEntry> = stmt
             .query_map([], |r| {
                 let parent: Option<String> = r.get::<_, Option<String>>(1)?;
@@ -705,6 +726,18 @@ impl Library {
     /// anything that any version currently references; if you want to drop
     /// versions, use the (future) version-pruning API first, then GC.
     pub fn garbage_collect(&self) -> Result<GarbageCollectReport> {
+        self.garbage_collect_with_grace(std::time::Duration::from_secs(60))
+    }
+
+    /// Underlying GC implementation with a configurable "grace" window —
+    /// blobs younger than `grace` are kept even if unreferenced, to avoid
+    /// racing with an in-flight import or sync. Tests pass `Duration::ZERO`
+    /// to exercise the deletion path deterministically.
+    pub fn garbage_collect_with_grace(
+        &self,
+        grace: std::time::Duration,
+    ) -> Result<GarbageCollectReport> {
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
         let mut live: std::collections::HashSet<String> = std::collections::HashSet::new();
         {
             let conn = self.db.lock();
@@ -721,12 +754,32 @@ impl Library {
         let mut report = GarbageCollectReport::default();
         let blobs_dir = self.paths.blobs.clone();
         let mut to_delete = Vec::new();
+
+        // Belt-and-braces against the import/record_version vs GC race:
+        // even though the write_lock covers record_version, an import or
+        // pull writes file blobs before calling record_version, so there's
+        // a brief window where a freshly-written blob is on disk but no
+        // version refers to it. The `grace` window covers that.
+        let now = std::time::SystemTime::now();
+
         walk_blobs(&blobs_dir, &mut |path, hash_str| {
             report.scanned += 1;
-            if !live.contains(hash_str) {
-                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                to_delete.push((path.to_path_buf(), size));
+            if live.contains(hash_str) {
+                return;
             }
+            let meta = match std::fs::metadata(path) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            // Skip recently-modified blobs (potential in-flight write).
+            if let Ok(modified) = meta.modified() {
+                if let Ok(age) = now.duration_since(modified) {
+                    if age < grace {
+                        return;
+                    }
+                }
+            }
+            to_delete.push((path.to_path_buf(), meta.len()));
         });
 
         for (path, size) in to_delete {
@@ -863,13 +916,23 @@ impl Library {
 
 /// Recursively walk the `blobs/<aa>/<bb>/<hash>` tree, invoking `visit` for
 /// each leaf file with the file's full path and its filename (the hex hash).
+/// Symlinks are skipped — the blob store should never contain them, and
+/// following a planted symlink could leak filesystem contents into GC's
+/// orphan list or even let GC delete files outside the library directory.
 fn walk_blobs(root: &Path, visit: &mut dyn FnMut(&Path, &str)) {
     let Ok(rd) = std::fs::read_dir(root) else {
         return;
     };
     for entry in rd.flatten() {
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            continue;
+        }
         let p = entry.path();
-        if p.is_dir() {
+        if ft.is_dir() {
             walk_blobs(&p, visit);
         } else if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
             visit(&p, name);
@@ -878,14 +941,22 @@ fn walk_blobs(root: &Path, visit: &mut dyn FnMut(&Path, &str)) {
 }
 
 /// Remove empty subdirectories under `root`, depth-first. `remove_dir` only
-/// succeeds on empty directories, so populated leaves stay intact.
+/// succeeds on empty directories, so populated leaves stay intact. Skips
+/// symlinks for the same reason `walk_blobs` does.
 fn prune_empty_dirs(root: &Path) {
     let Ok(rd) = std::fs::read_dir(root) else {
         return;
     };
     for entry in rd.flatten() {
-        let p = entry.path();
-        if p.is_dir() {
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            let p = entry.path();
             prune_empty_dirs(&p);
             let _ = std::fs::remove_dir(&p);
         }
@@ -1067,7 +1138,11 @@ mod tests {
         let orphan = lib.put_blob(&orphan_bytes).unwrap();
         assert!(lib.has_blob(&orphan.hash));
 
-        let report = lib.garbage_collect().unwrap();
+        // Use a zero grace window so the just-written orphan is
+        // considered for collection. The default 60s window exists to
+        // protect against the in-flight import/record_version race.
+        let zero = std::time::Duration::ZERO;
+        let report = lib.garbage_collect_with_grace(zero).unwrap();
         assert_eq!(report.deleted, 1);
         assert_eq!(report.bytes_freed, orphan_bytes.len() as u64);
         assert_eq!(report.errors, 0);
@@ -1078,7 +1153,7 @@ mod tests {
         assert!(lib.has_blob(&m.hash().unwrap()));
 
         // Idempotent — second run finds nothing to collect.
-        let report2 = lib.garbage_collect().unwrap();
+        let report2 = lib.garbage_collect_with_grace(zero).unwrap();
         assert_eq!(report2.deleted, 0);
     }
 

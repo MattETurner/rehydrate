@@ -9,8 +9,14 @@ use tokio::sync::{Mutex, RwLock};
 /// Shared application state. Held in `tauri::State<AppState>` and accessed
 /// from async command handlers; we use tokio::Mutex everywhere so locks can
 /// be held across .await points.
+///
+/// The `library` is held as `Arc<Library>` rather than `Library` directly
+/// so command handlers can clone the Arc out of the mutex briefly and
+/// then run long operations against `&*library` without keeping any other
+/// command blocked. Library itself is `Sync`, so `&Library` is `Send` and
+/// can cross `.await` points.
 pub struct AppState {
-    pub library: Mutex<Option<Library>>,
+    pub library: Mutex<Option<Arc<Library>>>,
     pub library_path: Mutex<Option<PathBuf>>,
     pub device: Mutex<Option<Arc<SshDevice>>>,
     pub device_info: RwLock<Option<DeviceInfo>>,

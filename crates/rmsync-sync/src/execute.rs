@@ -59,9 +59,25 @@ pub async fn execute_pull(
         }
 
         // Folders are tracked but not "fetched"; Phase 1 stores them via
-        // metadata only. Mirror device folders into the library db.
+        // metadata only. Mirror device folders into the library db. A
+        // single malformed folder shouldn't kill the whole pull, so
+        // surface the error via the progress channel and keep going.
         if matches!(item.entry.kind, rmsync_device::RemoteEntryKind::Folder) {
-            mirror_folder(library, &item)?;
+            if let Err(e) = mirror_folder(library, &item) {
+                tracing::warn!(
+                    folder = %item.entry.uuid,
+                    error = %e,
+                    "failed to mirror folder; continuing"
+                );
+                if let Some(p) = &progress {
+                    let _ = p
+                        .send(ProgressEvent::DocumentSkipped {
+                            document_id: item.entry.uuid.clone(),
+                            reason: format!("folder mirror failed: {e}"),
+                        })
+                        .await;
+                }
+            }
             continue;
         }
 

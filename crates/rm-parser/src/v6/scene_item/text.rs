@@ -11,8 +11,6 @@ use crate::{
     ParseError,
 };
 
-
-
 #[derive(Debug, Clone)]
 /// Text paragraph style.
 pub enum ParagraphStyle {

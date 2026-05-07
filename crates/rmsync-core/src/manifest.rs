@@ -75,7 +75,55 @@ impl Manifest {
     }
 
     pub fn from_canonical_json(bytes: &[u8]) -> Result<Self> {
-        Ok(serde_json::from_slice(bytes)?)
+        let m: Self = serde_json::from_slice(bytes)?;
+        m.validate_paths()?;
+        Ok(m)
+    }
+
+    /// Reject any `files[].path` that could escape its destination
+    /// directory when used by `Library::reconstruct` or the document
+    /// opener: absolute paths, parent-directory components, NUL bytes,
+    /// Windows drive letters, and backslashes (since paths are stored
+    /// in posix form). Manifests come from device blobs that we don't
+    /// otherwise validate; this is the choke point.
+    pub fn validate_paths(&self) -> Result<()> {
+        for f in &self.files {
+            let p = &f.path;
+            if p.is_empty() {
+                return Err(crate::Error::Corrupt {
+                    path: "<manifest>".into(),
+                    reason: "empty file path".into(),
+                });
+            }
+            if p.contains('\0') || p.contains('\\') {
+                return Err(crate::Error::Corrupt {
+                    path: "<manifest>".into(),
+                    reason: format!("file path contains forbidden char: {p:?}"),
+                });
+            }
+            if p.starts_with('/') || p.starts_with('~') {
+                return Err(crate::Error::Corrupt {
+                    path: "<manifest>".into(),
+                    reason: format!("absolute file path not allowed: {p:?}"),
+                });
+            }
+            // Windows drive letter check (e.g. "C:\\..." or "C:/...").
+            if p.len() >= 2 && p.as_bytes().get(1) == Some(&b':') {
+                return Err(crate::Error::Corrupt {
+                    path: "<manifest>".into(),
+                    reason: format!("drive-prefixed path not allowed: {p:?}"),
+                });
+            }
+            for component in p.split('/') {
+                if component == ".." {
+                    return Err(crate::Error::Corrupt {
+                        path: "<manifest>".into(),
+                        reason: format!("parent-directory traversal in path: {p:?}"),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 }
 

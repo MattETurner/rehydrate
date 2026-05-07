@@ -24,6 +24,20 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Clone the `Arc<Library>` out of the mutex briefly and drop the guard.
+/// The returned Arc keeps the Library alive; long operations against the
+/// library can then run without holding the AppState mutex, so other
+/// commands aren't blocked while a sync or open_document is in flight.
+async fn lib_arc(state: &State<'_, AppState>) -> Result<Arc<Library>, String> {
+    state
+        .library
+        .lock()
+        .await
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "no library is open".to_string())
+}
+
 #[tauri::command]
 pub fn ping() -> &'static str {
     "pong"
@@ -94,7 +108,7 @@ pub struct TwoWayReport {
 #[tauri::command]
 pub async fn open_library(path: PathBuf, state: State<'_, AppState>) -> Result<(), String> {
     let lib = Library::open(&path).map_err(err)?;
-    *state.library.lock().await = Some(lib);
+    *state.library.lock().await = Some(Arc::new(lib));
     *state.library_path.lock().await = Some(path.clone());
     // Persist for next launch. Best-effort — if the config dir isn't
     // writable we still succeed at opening the library this session.
@@ -123,7 +137,7 @@ pub async fn auto_open_library(state: State<'_, AppState>) -> Result<Option<Path
         return Ok(None);
     }
     let lib = Library::open(&path).map_err(err)?;
-    *state.library.lock().await = Some(lib);
+    *state.library.lock().await = Some(Arc::new(lib));
     *state.library_path.lock().await = Some(path.clone());
     Ok(Some(path))
 }
@@ -135,10 +149,7 @@ pub async fn import_file(
     path: PathBuf,
     state: State<'_, AppState>,
 ) -> Result<DocumentSummary, String> {
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
@@ -156,30 +167,23 @@ pub async fn import_file(
 
 #[tauri::command]
 pub async fn garbage_collect(state: State<'_, AppState>) -> Result<GarbageCollectReport, String> {
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
     lib.garbage_collect().map_err(err)
 }
 
 #[tauri::command]
 pub async fn verify_library(state: State<'_, AppState>) -> Result<VerifyReport, String> {
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
     lib.verify().map_err(err)
 }
 
 #[tauri::command]
 pub async fn library_summary(state: State<'_, AppState>) -> Result<LibrarySummary, String> {
-    let guard = state.library.lock().await;
-    let path_guard = state.library_path.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
-    let path = path_guard
+    let lib = lib_arc(&state).await?;
+    let path = state
+        .library_path
+        .lock()
+        .await
         .clone()
         .ok_or_else(|| "no library is open".to_string())?;
     let docs = lib.list_documents().map_err(err)?;
@@ -196,10 +200,7 @@ pub async fn library_summary(state: State<'_, AppState>) -> Result<LibrarySummar
 
 #[tauri::command]
 pub async fn list_folders(state: State<'_, AppState>) -> Result<Vec<FolderEntry>, String> {
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
     lib.list_folders().map_err(err)
 }
 
@@ -216,10 +217,7 @@ pub async fn open_document(
 ) -> Result<PathBuf, String> {
     use rmsync_core::Manifest;
 
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
     let docs = lib.list_documents().map_err(err)?;
     let doc = docs
         .iter()
@@ -243,10 +241,7 @@ pub async fn open_document(
     {
         let bytes = lib.read_blob(&body.sha256).map_err(err)?;
         let ext = body.path.rsplit('.').next().unwrap_or("bin");
-        let p = cache_root.join(format!(
-            "{safe_name}-{}.{ext}",
-            &body.sha256.as_str()[..12]
-        ));
+        let p = cache_root.join(format!("{safe_name}-{}.{ext}", &body.sha256.as_str()[..12]));
         if !p.exists() {
             std::fs::write(&p, &bytes).map_err(err)?;
         }
@@ -258,7 +253,7 @@ pub async fn open_document(
         //      preview, used only if a page has no parseable ink data).
         // Cache key includes a layout version suffix so bumping the
         // assembly logic invalidates stale previews automatically.
-        const PREVIEW_LAYOUT_VERSION: &str = "ink-v8";
+        const PREVIEW_LAYOUT_VERSION: &str = "ink-v14";
         let p = cache_root.join(format!(
             "{safe_name}-{}-{PREVIEW_LAYOUT_VERSION}.pdf",
             &doc.current_manifest.as_str()[..12]
@@ -280,8 +275,8 @@ pub async fn open_document(
                 for f in &rm_pages {
                     bufs.push(lib.read_blob(&f.sha256).map_err(err)?);
                 }
-                crate::notebook_pdf::build_pdf_from_rm_files(&doc.visible_name, &bufs)
-                    .or_else(|e| {
+                crate::notebook_pdf::build_pdf_from_rm_files(&doc.visible_name, &bufs).or_else(
+                    |e| {
                         // .rm parse failed (older v3/v5 format we don't
                         // render, or corrupt page) — fall through to the
                         // thumbnail fallback so the user still sees
@@ -290,10 +285,11 @@ pub async fn open_document(
                             "ink rendering failed for {}: {e}; falling back to thumbnails",
                             doc.document_id
                         );
-                        thumbnail_fallback_pdf(lib, &manifest, &doc.visible_name)
-                    })?
+                        thumbnail_fallback_pdf(&lib, &manifest, &doc.visible_name)
+                    },
+                )?
             } else {
-                thumbnail_fallback_pdf(lib, &manifest, &doc.visible_name)?
+                thumbnail_fallback_pdf(&lib, &manifest, &doc.visible_name)?
             };
             std::fs::write(&p, &pdf_bytes).map_err(err)?;
         }
@@ -308,10 +304,7 @@ pub async fn open_document(
 
 #[tauri::command]
 pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentSummary>, String> {
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
     lib.list_documents().map_err(err)
 }
 
@@ -320,10 +313,7 @@ pub async fn get_history(
     document_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<VersionEntry>, String> {
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
     lib.get_history(&document_id).map_err(err)
 }
 
@@ -333,10 +323,7 @@ pub async fn set_version_note(
     note: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
     lib.set_version_note(version_id, note.as_deref())
         .map_err(err)
 }
@@ -356,10 +343,7 @@ pub async fn export_version(
     dest_dir: PathBuf,
     state: State<'_, AppState>,
 ) -> Result<ExportResult, String> {
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
 
     let entry = lib.get_version(version_id).map_err(err)?;
     let manifest_bytes = lib.read_blob(&entry.manifest_hash).map_err(err)?;
@@ -470,27 +454,32 @@ pub async fn connect_device(
     state: State<'_, AppState>,
 ) -> Result<DeviceInfo, String> {
     let cfg = SshConfig::default();
-    let secret = match password {
-        Some(p) => {
-            // Save first so a failed connect (e.g. wrong password) doesn't
-            // forget the user's typing — we re-throw the error and the user
-            // can retry without re-entering. If they want to clear it, they
-            // call forget_device_password.
-            let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER).map_err(err)?;
-            entry.set_password(&p).map_err(err)?;
-            SecretString::from(p)
-        }
+    // Resolve the password without persisting yet. Persisting before we
+    // know the password is correct means a typo gets cached and the next
+    // connect attempt silently uses the bad value.
+    let (secret, freshly_typed) = match password {
+        Some(p) => (SecretString::from(p.clone()), Some(p)),
         None => {
             let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER).map_err(err)?;
             let p = entry
                 .get_password()
                 .map_err(|e| format!("no password stored ({e}); pass one to connect_device"))?;
-            SecretString::from(p)
+            (SecretString::from(p), None)
         }
     };
 
     let dev = SshDevice::connect(cfg, secret).await.map_err(err)?;
     let info = dev.ping().await.map_err(err)?;
+
+    // Connection succeeded — only NOW persist the freshly-typed password.
+    if let Some(plain) = freshly_typed {
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER) {
+            if let Err(e) = entry.set_password(&plain) {
+                tracing::warn!("could not persist device password to keychain: {e}");
+            }
+        }
+    }
+
     *state.device.lock().await = Some(Arc::new(dev));
     *state.device_info.write().await = Some(info.clone());
     Ok(info)
@@ -507,28 +496,26 @@ pub async fn disconnect_device(state: State<'_, AppState>) -> Result<(), String>
 
 #[tauri::command]
 pub async fn restore_version(version_id: i64, state: State<'_, AppState>) -> Result<i64, String> {
-    let guard = state.library.lock().await;
-    let lib = guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let lib = lib_arc(&state).await?;
     let outcome = lib.restore_version(version_id).map_err(err)?;
     Ok(outcome.version_id)
 }
 
-#[tauri::command]
-pub async fn pull_plan(state: State<'_, AppState>) -> Result<PullPlan, String> {
-    let dev = state
+async fn device_arc(state: &State<'_, AppState>) -> Result<Arc<SshDevice>, String> {
+    state
         .device
         .lock()
         .await
         .as_ref()
         .map(Arc::clone)
-        .ok_or_else(|| "device not connected".to_string())?;
-    let lib_guard = state.library.lock().await;
-    let lib = lib_guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
-    plan_pull(lib, dev.as_ref()).await.map_err(err)
+        .ok_or_else(|| "device not connected".to_string())
+}
+
+#[tauri::command]
+pub async fn pull_plan(state: State<'_, AppState>) -> Result<PullPlan, String> {
+    let dev = device_arc(&state).await?;
+    let lib = lib_arc(&state).await?;
+    plan_pull(&lib, dev.as_ref()).await.map_err(err)
 }
 
 #[tauri::command]
@@ -536,19 +523,10 @@ pub async fn pull_execute(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SyncReportOut, String> {
-    let dev = state
-        .device
-        .lock()
-        .await
-        .as_ref()
-        .map(Arc::clone)
-        .ok_or_else(|| "device not connected".to_string())?;
-    let lib_guard = state.library.lock().await;
-    let lib = lib_guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let dev = device_arc(&state).await?;
+    let lib = lib_arc(&state).await?;
 
-    let plan = plan_pull(lib, dev.as_ref()).await.map_err(err)?;
+    let plan = plan_pull(&lib, dev.as_ref()).await.map_err(err)?;
 
     let (tx, mut rx) = progress::channel(64);
     let app_for_task = app.clone();
@@ -561,7 +539,7 @@ pub async fn pull_execute(
         }
     });
 
-    let report = execute_pull(lib, dev.as_ref(), plan, Some(tx), Cancel::default())
+    let report = execute_pull(&lib, dev.as_ref(), plan, Some(tx), Cancel::default())
         .await
         .map_err(err)?;
     let _ = forwarder.await;
@@ -575,11 +553,8 @@ pub async fn pull_execute(
 
 #[tauri::command]
 pub async fn push_plan(state: State<'_, AppState>) -> Result<PushPlan, String> {
-    let lib_guard = state.library.lock().await;
-    let lib = lib_guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
-    plan_push(lib).map_err(err)
+    let lib = lib_arc(&state).await?;
+    plan_push(&lib).map_err(err)
 }
 
 #[tauri::command]
@@ -587,19 +562,10 @@ pub async fn push_execute(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<PushReportOut, String> {
-    let dev = state
-        .device
-        .lock()
-        .await
-        .as_ref()
-        .map(Arc::clone)
-        .ok_or_else(|| "device not connected".to_string())?;
-    let lib_guard = state.library.lock().await;
-    let lib = lib_guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let dev = device_arc(&state).await?;
+    let lib = lib_arc(&state).await?;
 
-    let plan = plan_push(lib).map_err(err)?;
+    let plan = plan_push(&lib).map_err(err)?;
     let (tx, mut rx) = progress::channel(64);
     let app_for_task = app.clone();
     let forwarder = tauri::async_runtime::spawn(async move {
@@ -610,7 +576,7 @@ pub async fn push_execute(
             }
         }
     });
-    let report = execute_push(lib, dev.as_ref(), plan, Some(tx), Cancel::default())
+    let report = execute_push(&lib, dev.as_ref(), plan, Some(tx), Cancel::default())
         .await
         .map_err(err)?;
     let _ = forwarder.await;
@@ -631,21 +597,12 @@ pub async fn sync_two_way(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<TwoWayReport, String> {
-    let dev = state
-        .device
-        .lock()
-        .await
-        .as_ref()
-        .map(Arc::clone)
-        .ok_or_else(|| "device not connected".to_string())?;
-    let lib_guard = state.library.lock().await;
-    let lib = lib_guard
-        .as_ref()
-        .ok_or_else(|| "no library is open".to_string())?;
+    let dev = device_arc(&state).await?;
+    let lib = lib_arc(&state).await?;
 
     // ----- PULL phase -----
     let _ = app.emit("sync:phase", "pull");
-    let pull_plan = plan_pull(lib, dev.as_ref()).await.map_err(err)?;
+    let pull_plan = plan_pull(&lib, dev.as_ref()).await.map_err(err)?;
     let (tx, mut rx) = progress::channel(64);
     let app_for_task = app.clone();
     let forwarder = tauri::async_runtime::spawn(async move {
@@ -656,14 +613,14 @@ pub async fn sync_two_way(
             }
         }
     });
-    let pull = execute_pull(lib, dev.as_ref(), pull_plan, Some(tx), Cancel::default())
+    let pull = execute_pull(&lib, dev.as_ref(), pull_plan, Some(tx), Cancel::default())
         .await
         .map_err(err)?;
     let _ = forwarder.await;
 
     // ----- PUSH phase -----
     let _ = app.emit("sync:phase", "push");
-    let push_plan = plan_push(lib).map_err(err)?;
+    let push_plan = plan_push(&lib).map_err(err)?;
     let (tx, mut rx) = progress::channel(64);
     let app_for_task = app.clone();
     let forwarder = tauri::async_runtime::spawn(async move {
@@ -674,7 +631,7 @@ pub async fn sync_two_way(
             }
         }
     });
-    let push = execute_push(lib, dev.as_ref(), push_plan, Some(tx), Cancel::default())
+    let push = execute_push(&lib, dev.as_ref(), push_plan, Some(tx), Cancel::default())
         .await
         .map_err(err)?;
     let _ = forwarder.await;
