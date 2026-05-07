@@ -8,6 +8,7 @@ import type {
   ProgressEvent,
   PullPlan,
   SyncReport,
+  VerifyReport,
   VersionEntry,
 } from "./types";
 
@@ -16,10 +17,12 @@ export const ipc = {
 
   defaultLibraryPath: () => invoke<string | null>("default_library_path"),
   openLibrary: (path: string) => invoke<void>("open_library", { path }),
+  autoOpenLibrary: () => invoke<string | null>("auto_open_library"),
   librarySummary: () => invoke<LibrarySummary>("library_summary"),
   listDocuments: () => invoke<DocumentSummary[]>("list_documents"),
   getHistory: (documentId: string) =>
     invoke<VersionEntry[]>("get_history", { documentId }),
+  verifyLibrary: () => invoke<VerifyReport>("verify_library"),
 
   deviceState: () => invoke<DeviceState>("device_state"),
   saveDevicePassword: (password: string) =>

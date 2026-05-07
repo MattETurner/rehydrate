@@ -301,6 +301,21 @@ input[type="text"]:focus {
   color: var(--muted);
   font-size: 12px;
 }
+.statusbar .spacer {
+  flex: 1;
+}
+button.link {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+button.link:hover {
+  text-decoration: underline;
+  background: transparent;
+}
 
 /* ----- Modal / Drawer ----- */
 

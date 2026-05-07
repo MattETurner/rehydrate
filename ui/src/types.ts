@@ -67,6 +67,19 @@ export interface SyncReport {
   skipped: number;
 }
 
+export interface VerifyReport {
+  manifests_total: number;
+  manifests_ok: number;
+  manifests_missing: number;
+  manifests_invalid: number;
+  blobs_total: number;
+  blobs_missing: number;
+  blobs_orphan: number;
+  blobs_corrupted: number;
+  missing_examples: string[];
+  orphan_examples: string[];
+}
+
 export type ProgressEvent =
   | { kind: "plan_ready"; total_documents: number }
   | { kind: "document_started"; document_id: string; visible_name: string }

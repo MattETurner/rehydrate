@@ -16,10 +16,34 @@ export function App() {
   const [showSync, setShowSync] = useState(false);
   const refreshing = useRef(false);
 
-  // Initial load.
+  // Initial load. Auto-open the previously-used library if there was one;
+  // fall back to the welcome screen otherwise.
   useEffect(() => {
-    ipc.defaultLibraryPath().then(setDefaultPath).catch(() => {});
-    ipc.deviceState().then(setDevice).catch(() => {});
+    let cancelled = false;
+    (async () => {
+      try {
+        const [defPath, opened, dev] = await Promise.all([
+          ipc.defaultLibraryPath(),
+          ipc.autoOpenLibrary(),
+          ipc.deviceState(),
+        ]);
+        if (cancelled) return;
+        setDefaultPath(defPath);
+        setDevice(dev);
+        if (opened) {
+          setLibraryOpen(true);
+          const [s, d] = await Promise.all([ipc.librarySummary(), ipc.listDocuments()]);
+          if (cancelled) return;
+          setSummary(s);
+          setDocuments(d);
+        }
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Reachability event.
@@ -101,6 +125,33 @@ export function App() {
 
   async function onSyncComplete() {
     await refreshLibrary();
+  }
+
+  async function verify() {
+    setError(null);
+    try {
+      const r = await ipc.verifyLibrary();
+      const issues =
+        r.manifests_missing + r.manifests_invalid + r.blobs_missing + r.blobs_corrupted;
+      const summary =
+        issues === 0
+          ? `Library is healthy. ${r.manifests_ok} manifests, ${r.blobs_total} blobs, ${r.blobs_orphan} orphans.`
+          : `Library has ${issues} issue${issues === 1 ? "" : "s"}: ` +
+            `${r.manifests_missing} missing manifests, ${r.blobs_missing} missing blobs, ` +
+            `${r.blobs_corrupted} corrupted blobs. Examples: ${[
+              ...r.missing_examples,
+              ...r.orphan_examples,
+            ]
+              .slice(0, 3)
+              .join("; ")}`;
+      setError(null);
+      // Reuse the error banner for the message; styled green when healthy.
+      // (Quick-and-dirty for now; a proper toast/notification system is
+      // future work.)
+      window.alert(summary);
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   return (
@@ -202,6 +253,10 @@ export function App() {
             <span>{summary.version_count} versions</span>
             <span>{summary.blob_count} blobs</span>
             <span>{formatBytes(summary.size_bytes)} on disk</span>
+            <span className="spacer" />
+            <button onClick={verify} className="link">
+              Verify
+            </button>
           </>
         ) : (
           <span className="muted">Library not open</span>

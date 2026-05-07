@@ -2,6 +2,7 @@
 //! business logic — every command delegates to the rmsync-* crates.
 
 mod commands;
+mod config;
 mod state;
 
 pub use state::AppState;
@@ -27,9 +28,11 @@ pub fn run() {
             commands::ping,
             commands::default_library_path,
             commands::open_library,
+            commands::auto_open_library,
             commands::library_summary,
             commands::list_documents,
             commands::get_history,
+            commands::verify_library,
             commands::device_state,
             commands::save_device_password,
             commands::forget_device_password,

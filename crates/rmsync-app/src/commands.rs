@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rmsync_core::{DocumentSummary, Library, VersionEntry};
+use rmsync_core::{DocumentSummary, Library, VerifyReport, VersionEntry};
 use rmsync_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rmsync_device::{Device, DeviceInfo};
 use rmsync_sync::{execute_pull, plan_pull, progress, Cancel, ProgressEvent, PullPlan};
@@ -9,6 +9,7 @@ use secrecy::SecretString;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::config;
 use crate::state::{default_library_dir, AppState, KEYRING_DEVICE_USER, KEYRING_SERVICE};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -57,8 +58,46 @@ pub struct SyncReportOut {
 pub async fn open_library(path: PathBuf, state: State<'_, AppState>) -> Result<(), String> {
     let lib = Library::open(&path).map_err(err)?;
     *state.library.lock().await = Some(lib);
-    *state.library_path.lock().await = Some(path);
+    *state.library_path.lock().await = Some(path.clone());
+    // Persist for next launch. Best-effort — if the config dir isn't
+    // writable we still succeed at opening the library this session.
+    let mut cfg = config::load();
+    cfg.library_path = Some(path);
+    if let Err(e) = config::save(&cfg) {
+        tracing::warn!("failed to persist app config: {e}");
+    }
     Ok(())
+}
+
+/// On launch the UI calls this to restore the previously-opened library
+/// without forcing the user through the welcome screen each time. Returns
+/// the path that was opened, or `None` if there was no valid prior library.
+#[tauri::command]
+pub async fn auto_open_library(state: State<'_, AppState>) -> Result<Option<PathBuf>, String> {
+    let mut cfg = config::load();
+    let Some(path) = cfg.library_path.clone() else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        // Stale config — drop the entry silently so the user sees the
+        // welcome screen again rather than a confusing error.
+        cfg.library_path = None;
+        let _ = config::save(&cfg);
+        return Ok(None);
+    }
+    let lib = Library::open(&path).map_err(err)?;
+    *state.library.lock().await = Some(lib);
+    *state.library_path.lock().await = Some(path.clone());
+    Ok(Some(path))
+}
+
+#[tauri::command]
+pub async fn verify_library(state: State<'_, AppState>) -> Result<VerifyReport, String> {
+    let guard = state.library.lock().await;
+    let lib = guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+    lib.verify().map_err(err)
 }
 
 #[tauri::command]
