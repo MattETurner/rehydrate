@@ -10,6 +10,6 @@ pub mod progress;
 mod execute;
 
 pub use error::{SyncError, SyncResult};
-pub use execute::execute_pull;
+pub use execute::{execute_pull, Cancel, SyncReport};
 pub use plan::{plan_pull, DocumentPlan, PlanItemStatus, PullPlan};
 pub use progress::{Progress, ProgressEvent};

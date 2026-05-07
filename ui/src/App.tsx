@@ -1,48 +1,130 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import type { DocumentSummary, LibrarySummary } from "./types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ipc, onDeviceReachable } from "./ipc";
+import { PasswordDialog } from "./components/PasswordDialog";
+import { StatusPill } from "./components/StatusPill";
+import { SyncDrawer } from "./components/SyncDrawer";
+import type { DeviceState, DocumentSummary, LibrarySummary } from "./types";
 
 export function App() {
   const [defaultPath, setDefaultPath] = useState<string | null>(null);
-  const [opened, setOpened] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [summary, setSummary] = useState<LibrarySummary | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [device, setDevice] = useState<DeviceState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showSync, setShowSync] = useState(false);
+  const refreshing = useRef(false);
 
+  // Initial load.
   useEffect(() => {
-    invoke<string | null>("default_library_path").then(setDefaultPath).catch(() => {});
+    ipc.defaultLibraryPath().then(setDefaultPath).catch(() => {});
+    ipc.deviceState().then(setDevice).catch(() => {});
+  }, []);
+
+  // Reachability event.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onDeviceReachable(() => {
+      ipc.deviceState().then(setDevice).catch(() => {});
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const refreshLibrary = useCallback(async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
+    try {
+      const [s, d] = await Promise.all([ipc.librarySummary(), ipc.listDocuments()]);
+      setSummary(s);
+      setDocuments(d);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      refreshing.current = false;
+    }
   }, []);
 
   async function openLibrary() {
     if (!defaultPath) return;
     setError(null);
     try {
-      await invoke("open_library", { path: defaultPath });
-      const s = await invoke<LibrarySummary>("library_summary");
-      const d = await invoke<DocumentSummary[]>("list_documents");
-      setSummary(s);
-      setDocuments(d);
-      setOpened(true);
+      await ipc.openLibrary(defaultPath);
+      setLibraryOpen(true);
+      await refreshLibrary();
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  async function tryConnect() {
+    setError(null);
+    try {
+      if (device?.has_stored_password) {
+        await ipc.connectDevice();
+        setDevice(await ipc.deviceState());
+      } else {
+        setShowPassword(true);
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function disconnect() {
+    await ipc.disconnectDevice();
+    setDevice(await ipc.deviceState());
+  }
+
+  async function submitPassword(password: string) {
+    await ipc.connectDevice(password);
+    setDevice(await ipc.deviceState());
+    setShowPassword(false);
+  }
+
+  function openSync() {
+    if (!device?.connected) {
+      setError("Connect the device first.");
+      return;
+    }
+    if (!libraryOpen) {
+      setError("Open a library first.");
+      return;
+    }
+    setError(null);
+    setShowSync(true);
+  }
+
+  async function onSyncComplete() {
+    await refreshLibrary();
   }
 
   return (
     <div className="app">
       <header className="toolbar">
         <div className="brand">Marginalia</div>
-        <div className="status">
-          {opened ? (
-            <span className="pill pill-ok">Library open</span>
-          ) : (
-            <span className="pill">No library</span>
-          )}
-        </div>
+        <StatusPill state={device} />
         <div className="spacer" />
-        <button onClick={openLibrary} disabled={!defaultPath}>
-          Open default library
-        </button>
+        {!libraryOpen ? (
+          <button onClick={openLibrary} disabled={!defaultPath}>
+            Open library
+          </button>
+        ) : (
+          <button onClick={openSync} disabled={!device?.connected}>
+            Sync from reMarkable
+          </button>
+        )}
+        {device?.connected ? (
+          <button onClick={disconnect}>Disconnect</button>
+        ) : (
+          <button onClick={tryConnect} disabled={!device?.reachable}>
+            Connect
+          </button>
+        )}
       </header>
 
       <div className="layout">
@@ -57,7 +139,18 @@ export function App() {
           <section>
             <h3>Device</h3>
             <ul>
-              <li className="muted">No device connected</li>
+              {device?.connected && device.info ? (
+                <li>
+                  {device.info.model}
+                  <div className="muted small">
+                    {device.info.serial && `S/N ${device.info.serial}`}
+                  </div>
+                </li>
+              ) : (
+                <li className="muted">
+                  {device?.reachable ? "Detected, not connected" : "No device"}
+                </li>
+              )}
             </ul>
           </section>
           <section>
@@ -70,19 +163,31 @@ export function App() {
         </aside>
 
         <main className="content">
-          {error && <div className="error">{error}</div>}
-          {!opened ? (
+          {error && (
+            <div className="error">
+              {error}
+              <button onClick={() => setError(null)} className="close-inline">
+                ×
+              </button>
+            </div>
+          )}
+          {!libraryOpen ? (
             <div className="empty">
               <h2>Welcome</h2>
               <p>
-                Marginalia mirrors your reMarkable 2 to a local content-addressed
-                library. No cloud, no telemetry. Open a library to get started.
+                Marginalia mirrors your reMarkable 2 to a local
+                content-addressed library. No cloud, no telemetry.
               </p>
               {defaultPath && (
                 <p className="path">
                   Default library: <code>{defaultPath}</code>
                 </p>
               )}
+              <p>
+                <button onClick={openLibrary} className="primary">
+                  Open default library
+                </button>
+              </p>
             </div>
           ) : (
             <DocumentList documents={documents} />
@@ -102,6 +207,21 @@ export function App() {
           <span className="muted">Library not open</span>
         )}
       </footer>
+
+      {showPassword && (
+        <PasswordDialog
+          onCancel={() => setShowPassword(false)}
+          onSubmit={submitPassword}
+        />
+      )}
+      {showSync && (
+        <div className="drawer-backdrop" onClick={() => setShowSync(false)}>
+          <SyncDrawer
+            onClose={() => setShowSync(false)}
+            onComplete={onSyncComplete}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -111,7 +231,7 @@ function DocumentList({ documents }: { documents: DocumentSummary[] }) {
     return (
       <div className="empty">
         <h2>No documents yet</h2>
-        <p>Connect a reMarkable and pull to populate the library.</p>
+        <p>Connect a reMarkable and sync to populate the library.</p>
       </div>
     );
   }

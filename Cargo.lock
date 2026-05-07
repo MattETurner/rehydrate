@@ -3746,9 +3746,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "directories",
+ "keyring",
  "rmsync-core",
  "rmsync-device",
  "rmsync-sync",
+ "secrecy",
  "serde",
  "serde_json",
  "tauri",

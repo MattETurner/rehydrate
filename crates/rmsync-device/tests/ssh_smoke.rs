@@ -52,7 +52,10 @@ async fn ssh_smoke_against_real_device() {
     let cfg = cfg_from_env();
 
     println!("=== probe {}:{} ===", cfg.host, cfg.port);
-    assert!(is_reachable(&cfg.host, cfg.port).await, "tablet TCP probe failed");
+    assert!(
+        is_reachable(&cfg.host, cfg.port).await,
+        "tablet TCP probe failed"
+    );
 
     println!("=== connect ===");
     let t0 = Instant::now();
@@ -72,11 +75,20 @@ async fn ssh_smoke_against_real_device() {
         "listed {} entries in {:?} ({} docs, {} folders)",
         entries.len(),
         t0.elapsed(),
-        entries.iter().filter(|e| matches!(e.kind, RemoteEntryKind::Document)).count(),
-        entries.iter().filter(|e| matches!(e.kind, RemoteEntryKind::Folder)).count(),
+        entries
+            .iter()
+            .filter(|e| matches!(e.kind, RemoteEntryKind::Document))
+            .count(),
+        entries
+            .iter()
+            .filter(|e| matches!(e.kind, RemoteEntryKind::Folder))
+            .count(),
     );
     for e in entries.iter().take(5) {
-        println!("  - {} [{}] {} (parent={:?})", e.uuid, e.doc_type, e.visible_name, e.parent);
+        println!(
+            "  - {} [{}] {} (parent={:?})",
+            e.uuid, e.doc_type, e.visible_name, e.parent
+        );
     }
 
     let first_doc = entries
@@ -86,7 +98,10 @@ async fn ssh_smoke_against_real_device() {
 
     println!("=== fetch_document_tree({}) ===", first_doc.uuid);
     let t0 = Instant::now();
-    let files = dev.fetch_document_tree(&first_doc.uuid).await.expect("fetch failed");
+    let files = dev
+        .fetch_document_tree(&first_doc.uuid)
+        .await
+        .expect("fetch failed");
     let total: u64 = files.iter().map(|f| f.bytes.len() as u64).sum();
     println!(
         "fetched {} files ({} bytes) in {:?}",
@@ -100,7 +115,9 @@ async fn ssh_smoke_against_real_device() {
 
     assert!(!files.is_empty(), "document fetch returned no files");
     assert!(
-        files.iter().any(|f| f.path == format!("{}.metadata", first_doc.uuid)),
+        files
+            .iter()
+            .any(|f| f.path == format!("{}.metadata", first_doc.uuid)),
         ".metadata file missing from fetch"
     );
 }

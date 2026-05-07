@@ -1,7 +1,15 @@
 //! SQLite version log. Schema is in `migrations/0001_init.sql` and is
 //! embedded at compile time. Migrations are applied by `Db::open`.
+//!
+//! The connection is held behind a `Mutex` so `Db` is `Sync`, which lets
+//! the wider app hold a `&Library` across `.await` points (Tauri async
+//! command handlers require `Send` futures, which propagates back to a
+//! requirement that `&Library: Send`, i.e. `Library: Sync`).
+//! SQLite handles single-connection serialised access fine; the WAL mode
+//! pragma keeps reads non-blocking against writers.
 
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -10,7 +18,7 @@ use crate::error::Result;
 const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
 
 pub struct Db {
-    pub(crate) conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl Db {
@@ -19,21 +27,23 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        let mut db = Self { conn };
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
         db.run_migrations()?;
         Ok(db)
     }
 
-    fn run_migrations(&mut self) -> Result<()> {
-        self.conn.execute(
+    fn run_migrations(&self) -> Result<()> {
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations (\
                 name TEXT PRIMARY KEY,\
                 applied_at TEXT NOT NULL)",
             [],
         )?;
         for (name, sql) in MIGRATIONS {
-            let already: Option<String> = self
-                .conn
+            let already: Option<String> = conn
                 .query_row(
                     "SELECT name FROM schema_migrations WHERE name = ?1",
                     params![name],
@@ -43,7 +53,7 @@ impl Db {
             if already.is_some() {
                 continue;
             }
-            let tx = self.conn.transaction()?;
+            let tx = conn.transaction()?;
             tx.execute_batch(sql)?;
             tx.execute(
                 "INSERT INTO schema_migrations(name, applied_at) VALUES (?1, datetime('now'))",
@@ -54,12 +64,10 @@ impl Db {
         Ok(())
     }
 
-    pub fn conn(&self) -> &Connection {
-        &self.conn
-    }
-
-    pub fn conn_mut(&mut self) -> &mut Connection {
-        &mut self.conn
+    /// Lock the underlying connection. Held briefly per operation; SQLite is
+    /// fine with serialised access.
+    pub fn lock(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().expect("db mutex poisoned")
     }
 }
 
@@ -71,12 +79,11 @@ mod tests {
     fn fresh_db_applies_initial_schema() {
         let tmp = tempfile::tempdir().unwrap();
         let db = Db::open(&tmp.path().join("db.sqlite")).unwrap();
-        let count: i64 = db
-            .conn
+        let conn = db.lock();
+        let count: i64 = conn
             .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
-        // Tables exist:
         for table in [
             "documents",
             "versions",
@@ -84,8 +91,7 @@ mod tests {
             "sync_state",
             "blob_refs",
         ] {
-            let n: i64 = db
-                .conn
+            let n: i64 = conn
                 .query_row(
                     "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
                     params![table],

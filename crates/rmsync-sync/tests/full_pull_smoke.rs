@@ -21,12 +21,15 @@ use secrecy::SecretString;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a real reMarkable connected over USB and MARGINALIA_RM_PASSWORD"]
 async fn full_pull_against_real_device() {
-    let password = std::env::var("MARGINALIA_RM_PASSWORD")
-        .expect("MARGINALIA_RM_PASSWORD must be set");
+    let password =
+        std::env::var("MARGINALIA_RM_PASSWORD").expect("MARGINALIA_RM_PASSWORD must be set");
     let cfg = SshConfig::default();
 
     println!("=== probe {}:{} ===", cfg.host, cfg.port);
-    assert!(is_reachable(&cfg.host, cfg.port).await, "tablet TCP probe failed");
+    assert!(
+        is_reachable(&cfg.host, cfg.port).await,
+        "tablet TCP probe failed"
+    );
 
     let lib_dir = tempfile::tempdir().expect("tempdir");
     println!("library: {}", lib_dir.path().display());
@@ -37,7 +40,7 @@ async fn full_pull_against_real_device() {
     let info = dev.ping().await.expect("ping");
     println!("device: {info:?}");
 
-    let mut lib = Library::open(lib_dir.path()).expect("library open");
+    let lib = Library::open(lib_dir.path()).expect("library open");
 
     // ===== first pull =====
     println!("=== plan_pull (first) ===");
@@ -84,10 +87,17 @@ async fn full_pull_against_real_device() {
                         files_deduped += 1;
                     }
                 }
-                ProgressEvent::DocumentSkipped { document_id, reason } => {
+                ProgressEvent::DocumentSkipped {
+                    document_id,
+                    reason,
+                } => {
                     println!("  ⚠ skipped {document_id}: {reason}");
                 }
-                ProgressEvent::Done { recorded, unchanged, skipped } => {
+                ProgressEvent::Done {
+                    recorded,
+                    unchanged,
+                    skipped,
+                } => {
                     println!(
                         "  done: recorded={recorded} unchanged={unchanged} skipped={skipped}, \
                          {files_total} files ({bytes_total} bytes), \
@@ -101,7 +111,7 @@ async fn full_pull_against_real_device() {
     });
 
     let t0 = Instant::now();
-    let report = execute_pull(&mut lib, &dev, plan, Some(tx), Default::default())
+    let report = execute_pull(&lib, &dev, plan, Some(tx), Default::default())
         .await
         .expect("execute_pull");
     let elapsed = t0.elapsed();
@@ -115,7 +125,10 @@ async fn full_pull_against_real_device() {
     // notebooks tend to share identical `.local`, empty `.pagedata`, etc.
     // The real invariant is that the second pull writes zero new blobs —
     // verified below.
-    assert!(report.recorded > 0, "expected at least one document recorded");
+    assert!(
+        report.recorded > 0,
+        "expected at least one document recorded"
+    );
 
     let docs = lib.list_documents().expect("list_documents");
     println!("library now has {} documents", docs.len());
@@ -149,7 +162,7 @@ async fn full_pull_against_real_device() {
         }
         new_files
     });
-    let report2 = execute_pull(&mut lib, &dev, plan2, Some(tx2), Default::default())
+    let report2 = execute_pull(&lib, &dev, plan2, Some(tx2), Default::default())
         .await
         .expect("execute_pull #2");
     let new_files = bg.await.unwrap();

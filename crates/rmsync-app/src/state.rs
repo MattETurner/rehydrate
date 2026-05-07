@@ -1,11 +1,20 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::Arc;
 
 use rmsync_core::Library;
+use rmsync_device::ssh::SshDevice;
+use rmsync_device::DeviceInfo;
+use tokio::sync::{Mutex, RwLock};
 
+/// Shared application state. Held in `tauri::State<AppState>` and accessed
+/// from async command handlers; we use tokio::Mutex everywhere so locks can
+/// be held across .await points.
 pub struct AppState {
     pub library: Mutex<Option<Library>>,
     pub library_path: Mutex<Option<PathBuf>>,
+    pub device: Mutex<Option<Arc<SshDevice>>>,
+    pub device_info: RwLock<Option<DeviceInfo>>,
+    pub device_reachable: RwLock<bool>,
 }
 
 impl AppState {
@@ -13,6 +22,9 @@ impl AppState {
         Self {
             library: Mutex::new(None),
             library_path: Mutex::new(None),
+            device: Mutex::new(None),
+            device_info: RwLock::new(None),
+            device_reachable: RwLock::new(false),
         }
     }
 }
@@ -33,3 +45,6 @@ pub fn default_library_dir() -> Option<PathBuf> {
     }
     directories::BaseDirs::new().map(|b| b.home_dir().join("Marginalia"))
 }
+
+pub const KEYRING_SERVICE: &str = "Marginalia";
+pub const KEYRING_DEVICE_USER: &str = "remarkable-usb-password";

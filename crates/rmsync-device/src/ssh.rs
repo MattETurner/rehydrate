@@ -230,9 +230,8 @@ impl Device for SshDevice {
 
             let metadata_path = format!("{dir}/{name}");
             let bytes = self.read_file(&inner.sftp, &metadata_path).await?;
-            let metadata: Value = serde_json::from_slice(&bytes).map_err(|e| {
-                DeviceError::Protocol(format!("bad metadata json for {uuid}: {e}"))
-            })?;
+            let metadata: Value = serde_json::from_slice(&bytes)
+                .map_err(|e| DeviceError::Protocol(format!("bad metadata json for {uuid}: {e}")))?;
             let visible_name = metadata
                 .get("visibleName")
                 .and_then(|v| v.as_str())
@@ -339,7 +338,8 @@ impl Device for SshDevice {
         // 3. Optional thumbnails directory: <xochitl>/<uuid>.thumbnails
         let thumb = format!("{dir}/{uuid}.thumbnails");
         if let Ok(_dir_entries) = inner.sftp.read_dir(&thumb).await {
-            fetch_subtree_named(&inner.sftp, &thumb, &format!("{uuid}.thumbnails"), &mut out).await?;
+            fetch_subtree_named(&inner.sftp, &thumb, &format!("{uuid}.thumbnails"), &mut out)
+                .await?;
         }
 
         out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -412,7 +412,10 @@ async fn fetch_subtree_named(
 }
 
 async fn read_path(sftp: &SftpSession, path: &str) -> DeviceResult<Vec<u8>> {
-    let mut f = sftp.open(path).await.map_err(|e| sftp_err("open", path, e))?;
+    let mut f = sftp
+        .open(path)
+        .await
+        .map_err(|e| sftp_err("open", path, e))?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)
         .await
@@ -425,7 +428,11 @@ pub async fn is_reachable(host: &str, port: u16) -> bool {
     use std::time::Duration;
     let addr = format!("{host}:{port}");
     matches!(
-        tokio::time::timeout(Duration::from_millis(800), tokio::net::TcpStream::connect(addr)).await,
+        tokio::time::timeout(
+            Duration::from_millis(800),
+            tokio::net::TcpStream::connect(addr)
+        )
+        .await,
         Ok(Ok(_))
     )
 }

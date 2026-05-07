@@ -1,15 +1,30 @@
 :root {
   --bg: #fafafa;
   --bg-elev: #ffffff;
+  --bg-overlay: rgba(15, 15, 20, 0.45);
   --border: #e6e6ea;
   --border-strong: #d0d0d6;
   --text: #1a1a1c;
   --muted: #74747a;
   --accent: #2960e6;
   --accent-bg: #e7eefc;
+  --accent-fg: #ffffff;
   --ok: #1f8050;
   --ok-bg: #e2f3eb;
+  --warn: #b86b00;
+  --warn-bg: #fcefd6;
+  --err: #a02020;
+  --err-bg: #fdecec;
+  --err-border: #d04848;
   --row-zebra: #f5f5f7;
+  --new-bg: #d8e9ff;
+  --new-fg: #2960e6;
+  --changed-bg: #fcefd6;
+  --changed-fg: #b86b00;
+  --unchanged-bg: #ececef;
+  --unchanged-fg: #6c6c74;
+  --skipped-bg: #f5d8d8;
+  --skipped-fg: #a02020;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
   color: var(--text);
@@ -19,6 +34,7 @@
   :root {
     --bg: #1a1a1c;
     --bg-elev: #232327;
+    --bg-overlay: rgba(0, 0, 0, 0.6);
     --border: #2e2e34;
     --border-strong: #3a3a42;
     --text: #f0f0f3;
@@ -27,7 +43,20 @@
     --accent-bg: #1f2c4a;
     --ok: #4dbb87;
     --ok-bg: #1f3a2c;
+    --warn: #e5a448;
+    --warn-bg: #3a2e1a;
+    --err: #ff7a7a;
+    --err-bg: #3a1f1f;
+    --err-border: #7a3a3a;
     --row-zebra: #1f1f23;
+    --new-bg: #1f2c4a;
+    --new-fg: #6792f5;
+    --changed-bg: #3a2e1a;
+    --changed-fg: #e5a448;
+    --unchanged-bg: #2a2a30;
+    --unchanged-fg: #9090a0;
+    --skipped-bg: #3a1f1f;
+    --skipped-fg: #ff7a7a;
   }
 }
 
@@ -87,9 +116,30 @@ button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+button.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+  color: var(--accent-fg);
+}
+button.close,
+button.close-inline {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 6px;
+  cursor: pointer;
+}
 
 .pill {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 2px 10px;
   border-radius: 999px;
   background: var(--bg);
@@ -101,6 +151,28 @@ button:disabled {
   color: var(--ok);
   background: var(--ok-bg);
   border-color: transparent;
+}
+.pill-warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: transparent;
+}
+
+input[type="password"],
+input[type="text"] {
+  font: inherit;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 100%;
+}
+input[type="password"]:focus,
+input[type="text"]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
 }
 
 .layout {
@@ -167,12 +239,22 @@ button:disabled {
 }
 
 .error {
-  margin: 16px;
-  padding: 12px 16px;
-  border: 1px solid #d04848;
-  background: #fdecec;
-  color: #a02020;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 16px;
+  padding: 8px 14px;
+  border: 1px solid var(--err-border);
+  background: var(--err-bg);
+  color: var(--err);
   border-radius: 6px;
+}
+.error.inline {
+  margin: 8px 0;
+}
+.error .close-inline {
+  margin-left: auto;
+  color: var(--err);
 }
 
 .docs {
@@ -201,6 +283,9 @@ button:disabled {
 .muted {
   color: var(--muted);
 }
+.small {
+  font-size: 11px;
+}
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
@@ -215,4 +300,149 @@ button:disabled {
   border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: 12px;
+}
+
+/* ----- Modal / Drawer ----- */
+
+.modal-backdrop,
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 460px;
+  max-width: 90vw;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+}
+.modal h2 {
+  margin: 0 0 8px;
+}
+.modal form {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+}
+.modal .actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.modal .actions button[type="submit"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.drawer-backdrop {
+  align-items: stretch;
+  justify-content: flex-end;
+}
+.drawer {
+  background: var(--bg-elev);
+  border-left: 1px solid var(--border);
+  width: 480px;
+  max-width: 90vw;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  height: 100vh;
+  box-shadow: -10px 0 40px rgba(0, 0, 0, 0.12);
+}
+.drawer header {
+  display: flex;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer header h2 {
+  margin: 0;
+  flex: 1;
+  font-size: 16px;
+}
+.drawer .plan-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer .plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+.drawer .plan-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer .plan-list li.active {
+  background: var(--accent-bg);
+}
+.drawer .plan-list .title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drawer footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.drawer footer .report {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.drawer footer button {
+  margin-left: auto;
+}
+.drawer footer button.primary {
+  margin-left: auto;
+}
+
+/* ----- Badges ----- */
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.badge-new {
+  background: var(--new-bg);
+  color: var(--new-fg);
+}
+.badge-changed {
+  background: var(--changed-bg);
+  color: var(--changed-fg);
+}
+.badge-unchanged {
+  background: var(--unchanged-bg);
+  color: var(--unchanged-fg);
+}
+.badge-skipped {
+  background: var(--skipped-bg);
+  color: var(--skipped-fg);
+}
+.badge-ok {
+  background: var(--ok-bg);
+  color: var(--ok);
 }

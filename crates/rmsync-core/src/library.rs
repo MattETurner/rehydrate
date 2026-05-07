@@ -137,7 +137,7 @@ impl Library {
     /// Append a new version for the document described by `manifest`. If the
     /// manifest's hash equals the document's current_manifest, this is a no-op
     /// and the existing version_id is returned with `unchanged=true`.
-    pub fn record_version(&mut self, manifest: &Manifest, source: Source) -> Result<RecordOutcome> {
+    pub fn record_version(&self, manifest: &Manifest, source: Source) -> Result<RecordOutcome> {
         let canonical = manifest.canonical_json()?;
         let manifest_hash = Sha256Hex::from_bytes(&canonical);
 
@@ -148,7 +148,8 @@ impl Library {
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default();
 
-        let tx = self.db.conn_mut().transaction()?;
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
 
         // Already the current version?
         let current: Option<(String, i64)> = tx
@@ -231,13 +232,16 @@ impl Library {
     }
 
     pub fn list_documents(&self) -> Result<Vec<DocumentSummary>> {
-        let mut stmt = self.db.conn().prepare(
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
             "SELECT d.document_id, d.current_manifest, d.current_version_id \
              FROM documents d ORDER BY d.document_id",
         )?;
         let rows: Vec<(String, String, i64)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        drop(conn);
 
         let mut out = Vec::with_capacity(rows.len());
         for (document_id, manifest_hex, version_id) in rows {
@@ -259,7 +263,8 @@ impl Library {
     }
 
     pub fn get_history(&self, document_id: &str) -> Result<Vec<VersionEntry>> {
-        let mut stmt = self.db.conn().prepare(
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
             "SELECT id, document_id, manifest_hash, parent_version_id, observed_at, source, note \
              FROM versions WHERE document_id = ?1 ORDER BY id ASC",
         )?;
@@ -288,7 +293,7 @@ impl Library {
     pub fn version_count(&self) -> Result<i64> {
         Ok(self
             .db
-            .conn()
+            .lock()
             .query_row("SELECT count(*) FROM versions", [], |r| r.get(0))?)
     }
 
@@ -298,7 +303,7 @@ impl Library {
     pub fn last_seen(&self, document_id: &str) -> Result<Option<(Option<String>, Option<String>)>> {
         Ok(self
             .db
-            .conn()
+            .lock()
             .query_row(
                 "SELECT device_mtime_hint, last_seen_manifest FROM sync_state WHERE document_id = ?1",
                 params![document_id],
@@ -310,7 +315,7 @@ impl Library {
     /// Update the device-side mtime hint after a successful download. Cheap
     /// fast-path classifier for next time `plan_pull` runs.
     pub fn update_mtime_hint(&self, document_id: &str, hint: &str) -> Result<()> {
-        self.db.conn().execute(
+        self.db.lock().execute(
             "INSERT INTO sync_state(document_id, device_mtime_hint) VALUES (?1, ?2) \
              ON CONFLICT(document_id) DO UPDATE SET device_mtime_hint = excluded.device_mtime_hint",
             params![document_id, hint],
@@ -326,7 +331,7 @@ impl Library {
         visible_name: &str,
         metadata_json: &str,
     ) -> Result<()> {
-        self.db.conn().execute(
+        self.db.lock().execute(
             "INSERT INTO folders(folder_id, parent, visible_name, metadata_json) \
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(folder_id) DO UPDATE SET \
@@ -343,7 +348,7 @@ impl Library {
     pub fn reconstruct(&self, version_id: VersionId, dest: &Path) -> Result<()> {
         let manifest_hex: String = self
             .db
-            .conn()
+            .lock()
             .query_row(
                 "SELECT manifest_hash FROM versions WHERE id = ?1",
                 params![version_id],
@@ -399,7 +404,7 @@ mod tests {
     #[test]
     fn record_then_list_and_history() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut lib = Library::open(tmp.path()).unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
         let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"AAA"), ("b.rm", b"BBB")]);
 
         let outcome1 = lib.record_version(&m, Source::Pulled).unwrap();
@@ -424,7 +429,7 @@ mod tests {
     #[test]
     fn changing_a_file_appends_a_new_version() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut lib = Library::open(tmp.path()).unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
         let m1 = seed_manifest(&lib, "doc-1", &[("a.rm", b"v1")]);
         lib.record_version(&m1, Source::Pulled).unwrap();
         let m2 = seed_manifest(&lib, "doc-1", &[("a.rm", b"v2")]);
@@ -438,7 +443,7 @@ mod tests {
     #[test]
     fn reconstruct_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut lib = Library::open(tmp.path()).unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
         let m = seed_manifest(
             &lib,
             "doc-1",
@@ -464,7 +469,7 @@ mod tests {
     #[test]
     fn dedup_across_documents() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut lib = Library::open(tmp.path()).unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
         let shared = b"shared bytes";
         let h = seed_blob(&lib, shared);
         for doc in ["doc-a", "doc-b"] {

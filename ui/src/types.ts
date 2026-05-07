@@ -23,3 +23,55 @@ export interface LibrarySummary {
   blob_count: number;
   size_bytes: number;
 }
+
+export interface DeviceInfo {
+  model: string;
+  serial: string | null;
+  software_version: string | null;
+}
+
+export interface DeviceState {
+  reachable: boolean;
+  connected: boolean;
+  info: DeviceInfo | null;
+  has_stored_password: boolean;
+}
+
+export type RemoteEntryKind = "folder" | "document";
+
+export interface RemoteEntry {
+  uuid: string;
+  visible_name: string;
+  doc_type: string;
+  parent: string | null;
+  kind: RemoteEntryKind;
+  device_mtime_hint: string | null;
+  metadata: unknown;
+}
+
+export type PlanItemStatus = "new" | "changed" | "unchanged" | "skipped";
+
+export interface DocumentPlan {
+  entry: RemoteEntry;
+  status: PlanItemStatus;
+  reason: string | null;
+}
+
+export interface PullPlan {
+  items: DocumentPlan[];
+}
+
+export interface SyncReport {
+  recorded: number;
+  unchanged: number;
+  skipped: number;
+}
+
+export type ProgressEvent =
+  | { kind: "plan_ready"; total_documents: number }
+  | { kind: "document_started"; document_id: string; visible_name: string }
+  | { kind: "file_fetched"; document_id: string; file: string; bytes: number; deduped: boolean }
+  | { kind: "document_completed"; document_id: string; unchanged: boolean }
+  | { kind: "document_skipped"; document_id: string; reason: string }
+  | { kind: "done"; recorded: number; unchanged: number; skipped: number }
+  | { kind: "cancelled" };

@@ -31,7 +31,7 @@ pub struct SyncReport {
 }
 
 pub async fn execute_pull(
-    library: &mut Library,
+    library: &Library,
     device: &dyn Device,
     plan: PullPlan,
     progress: Option<Progress>,
@@ -138,7 +138,7 @@ pub async fn execute_pull(
     })
 }
 
-fn mirror_folder(library: &mut Library, item: &DocumentPlan) -> SyncResult<()> {
+fn mirror_folder(library: &Library, item: &DocumentPlan) -> SyncResult<()> {
     let metadata_json =
         serde_json::to_string(&item.entry.metadata).unwrap_or_else(|_| "null".into());
     library.upsert_folder(
@@ -151,7 +151,7 @@ fn mirror_folder(library: &mut Library, item: &DocumentPlan) -> SyncResult<()> {
 }
 
 async fn fetch_and_record(
-    library: &mut Library,
+    library: &Library,
     device: &dyn Device,
     item: &DocumentPlan,
     progress: Option<&Progress>,
@@ -237,14 +237,14 @@ mod tests {
         seed_fake_doc(dev_root.path(), "doc-a", "A", b"shared");
         seed_fake_doc(dev_root.path(), "doc-b", "B", b"shared");
 
-        let mut lib = rmsync_core::Library::open(lib_root.path()).unwrap();
+        let lib = rmsync_core::Library::open(lib_root.path()).unwrap();
         let dev = FakeDevice::new(dev_root.path());
 
         let plan = crate::plan::plan_pull(&lib, &dev).await.unwrap();
         assert_eq!(plan.items.len(), 2);
         assert!(plan.items.iter().all(|p| p.status == PlanItemStatus::New));
 
-        let report = execute_pull(&mut lib, &dev, plan, None, Cancel::default())
+        let report = execute_pull(&lib, &dev, plan, None, Cancel::default())
             .await
             .unwrap();
         assert_eq!(report.recorded, 2);
@@ -252,7 +252,7 @@ mod tests {
 
         // Re-pull: now everything should be unchanged.
         let plan2 = crate::plan::plan_pull(&lib, &dev).await.unwrap();
-        let report2 = execute_pull(&mut lib, &dev, plan2, None, Cancel::default())
+        let report2 = execute_pull(&lib, &dev, plan2, None, Cancel::default())
             .await
             .unwrap();
         assert_eq!(report2.recorded, 0);
