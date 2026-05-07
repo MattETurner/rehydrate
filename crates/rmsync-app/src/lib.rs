@@ -4,6 +4,7 @@
 mod commands;
 mod config;
 mod logging;
+mod notebook_pdf;
 mod state;
 
 pub use state::AppState;
@@ -15,6 +16,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::new())
         .setup(|app| {
@@ -29,6 +31,8 @@ pub fn run() {
             commands::auto_open_library,
             commands::library_summary,
             commands::list_documents,
+            commands::list_folders,
+            commands::open_document,
             commands::get_history,
             commands::set_version_note,
             commands::export_version,

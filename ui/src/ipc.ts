@@ -5,6 +5,7 @@ import type {
   DeviceState,
   DocumentSummary,
   ExportResult,
+  FolderEntry,
   GarbageCollectReport,
   LibrarySummary,
   LogTail,
@@ -26,6 +27,9 @@ export const ipc = {
   autoOpenLibrary: () => invoke<string | null>("auto_open_library"),
   librarySummary: () => invoke<LibrarySummary>("library_summary"),
   listDocuments: () => invoke<DocumentSummary[]>("list_documents"),
+  listFolders: () => invoke<FolderEntry[]>("list_folders"),
+  openDocument: (documentId: string) =>
+    invoke<string>("open_document", { documentId }),
   getHistory: (documentId: string) =>
     invoke<VersionEntry[]>("get_history", { documentId }),
   setVersionNote: (versionId: number, note: string | null) =>

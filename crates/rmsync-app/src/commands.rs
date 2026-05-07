@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmsync_core::{
-    DocumentSummary, GarbageCollectReport, ImportKind, Library, VerifyReport, VersionEntry,
+    DocumentSummary, FolderEntry, GarbageCollectReport, ImportKind, Library, VerifyReport,
+    VersionEntry,
 };
 use rmsync_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rmsync_device::{Device, DeviceInfo};
@@ -13,6 +14,7 @@ use rmsync_sync::{
 use secrecy::SecretString;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::config;
 use crate::logging;
@@ -190,6 +192,105 @@ pub async fn library_summary(state: State<'_, AppState>) -> Result<LibrarySummar
         blob_count,
         size_bytes,
     })
+}
+
+#[tauri::command]
+pub async fn list_folders(state: State<'_, AppState>) -> Result<Vec<FolderEntry>, String> {
+    let guard = state.library.lock().await;
+    let lib = guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+    lib.list_folders().map_err(err)
+}
+
+/// Materialise a document's content into a cache directory and open it
+/// with the OS's default viewer. PDFs and EPUBs are written as-is.
+/// Notebooks (no PDF/EPUB body file) get assembled into a single
+/// multi-page PDF from the device's per-page thumbnail PNGs — a preview,
+/// not faithful ink rendering.
+#[tauri::command]
+pub async fn open_document(
+    document_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PathBuf, String> {
+    use rmsync_core::Manifest;
+
+    let guard = state.library.lock().await;
+    let lib = guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+    let docs = lib.list_documents().map_err(err)?;
+    let doc = docs
+        .iter()
+        .find(|d| d.document_id == document_id)
+        .ok_or_else(|| format!("document {document_id} not in library"))?;
+    let manifest_bytes = lib.read_blob(&doc.current_manifest).map_err(err)?;
+    let manifest = Manifest::from_canonical_json(&manifest_bytes).map_err(err)?;
+
+    let cache_root = directories::ProjectDirs::from("app", "marginalia", "Marginalia")
+        .map(|d| d.cache_dir().to_path_buf())
+        .ok_or_else(|| "no cache directory on this platform".to_string())?
+        .join("open");
+    std::fs::create_dir_all(&cache_root).map_err(err)?;
+    let safe_name = sanitize(&doc.visible_name);
+
+    // Resolve body: full PDF/EPUB, otherwise stitch thumbnails to a PDF.
+    let cache_path = if let Some(body) = manifest
+        .files
+        .iter()
+        .find(|f| f.path.ends_with(".pdf") || f.path.ends_with(".epub"))
+    {
+        let bytes = lib.read_blob(&body.sha256).map_err(err)?;
+        let ext = body.path.rsplit('.').next().unwrap_or("bin");
+        let p = cache_root.join(format!(
+            "{safe_name}-{}.{ext}",
+            &body.sha256.as_str()[..12]
+        ));
+        if !p.exists() {
+            std::fs::write(&p, &bytes).map_err(err)?;
+        }
+        p
+    } else {
+        // Notebook → stitched preview PDF. Cached by manifest hash so
+        // re-opening the same version is instant.
+        let mut thumbs: Vec<_> = manifest
+            .files
+            .iter()
+            .filter(|f| f.path.ends_with(".png") && f.path.contains(".thumbnails"))
+            .collect();
+        if thumbs.is_empty() {
+            return Err(
+                "notebook has no per-page thumbnails — sync the device once \
+                 (or open and edit the notebook on the tablet first) and try again"
+                    .to_string(),
+            );
+        }
+        thumbs.sort_by(|a, b| a.path.cmp(&b.path));
+        // Cache key includes a layout version suffix so that bumping the
+        // PDF assembly logic (e.g. switching page size) invalidates stale
+        // cached previews automatically.
+        const PREVIEW_LAYOUT_VERSION: &str = "a4-v2";
+        let p = cache_root.join(format!(
+            "{safe_name}-{}-{PREVIEW_LAYOUT_VERSION}.pdf",
+            &doc.current_manifest.as_str()[..12]
+        ));
+        if !p.exists() {
+            let mut pages = Vec::with_capacity(thumbs.len());
+            for f in &thumbs {
+                pages.push(lib.read_blob(&f.sha256).map_err(err)?);
+            }
+            let pdf_bytes =
+                crate::notebook_pdf::build_pdf_from_pngs(&doc.visible_name, &pages)?;
+            std::fs::write(&p, &pdf_bytes).map_err(err)?;
+        }
+        p
+    };
+
+    app.opener()
+        .open_path(cache_path.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("could not open {}: {e}", cache_path.display()))?;
+    Ok(cache_path)
 }
 
 #[tauri::command]

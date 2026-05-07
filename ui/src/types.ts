@@ -4,6 +4,14 @@ export interface DocumentSummary {
   doc_type: string;
   current_manifest: string;
   current_version_id: number;
+  last_observed_at: string;
+  parent: string | null;
+}
+
+export interface FolderEntry {
+  folder_id: string;
+  parent: string | null;
+  visible_name: string;
 }
 
 export interface VersionEntry {

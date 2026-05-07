@@ -56,6 +56,19 @@ pub struct DocumentSummary {
     pub doc_type: String,
     pub current_manifest: Sha256Hex,
     pub current_version_id: VersionId,
+    /// When the current version was recorded. Used by the UI's "Recently
+    /// Synced" sidebar filter; sortable as an RFC3339 timestamp string.
+    pub last_observed_at: String,
+    /// Folder UUID this document belongs to. `None` for the root.
+    /// `"trash"` is the device's special trash bucket.
+    pub parent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderEntry {
+    pub folder_id: String,
+    pub parent: Option<String>,
+    pub visible_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -348,17 +361,19 @@ impl Library {
     pub fn list_documents(&self) -> Result<Vec<DocumentSummary>> {
         let conn = self.db.lock();
         let mut stmt = conn.prepare(
-            "SELECT d.document_id, d.current_manifest, d.current_version_id \
-             FROM documents d ORDER BY d.document_id",
+            "SELECT d.document_id, d.current_manifest, d.current_version_id, v.observed_at \
+             FROM documents d \
+             JOIN versions v ON v.id = d.current_version_id \
+             ORDER BY d.document_id",
         )?;
-        let rows: Vec<(String, String, i64)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        let rows: Vec<(String, String, i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
         drop(conn);
 
         let mut out = Vec::with_capacity(rows.len());
-        for (document_id, manifest_hex, version_id) in rows {
+        for (document_id, manifest_hex, version_id, observed_at) in rows {
             let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
                 path: self.paths.db.display().to_string(),
                 reason: format!("bad manifest hash for {document_id}"),
@@ -371,6 +386,8 @@ impl Library {
                 doc_type: manifest.doc_type,
                 current_manifest: hash,
                 current_version_id: version_id,
+                last_observed_at: observed_at,
+                parent: manifest.parent,
             });
         }
         Ok(out)
@@ -552,7 +569,6 @@ impl Library {
         ];
 
         let outcome = self.record_version(&manifest, Source::Imported)?;
-        let _ = now; // currently unused; kept for parity with other recorders.
 
         Ok(DocumentSummary {
             document_id,
@@ -560,6 +576,8 @@ impl Library {
             doc_type: body_kind.doc_type().to_string(),
             current_manifest: outcome.manifest_hash,
             current_version_id: outcome.version_id,
+            last_observed_at: now,
+            parent: None,
         })
     }
 
@@ -636,6 +654,25 @@ impl Library {
             params![document_id, manifest_hex, now],
         )?;
         Ok(())
+    }
+
+    /// Return all folders mirrored from the device.
+    pub fn list_folders(&self) -> Result<Vec<FolderEntry>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT folder_id, parent, visible_name FROM folders ORDER BY visible_name",
+        )?;
+        let rows: Vec<FolderEntry> = stmt
+            .query_map([], |r| {
+                let parent: Option<String> = r.get::<_, Option<String>>(1)?;
+                Ok(FolderEntry {
+                    folder_id: r.get(0)?,
+                    parent: parent.filter(|s| !s.is_empty()),
+                    visible_name: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
     }
 
     /// Mirror a folder from the device into the library's folder index.

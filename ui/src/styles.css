@@ -204,8 +204,14 @@ input[type="text"]:focus {
   padding: 0;
 }
 .sidebar li {
+  display: flex;
+  align-items: center;
   padding: 4px 12px 4px 24px;
   cursor: pointer;
+  user-select: none;
+}
+.sidebar li:hover:not(.muted) {
+  background: var(--row-zebra);
 }
 .sidebar li.active {
   background: var(--accent-bg);
@@ -215,6 +221,33 @@ input[type="text"]:focus {
   color: var(--muted);
   font-style: italic;
   cursor: default;
+}
+.sidebar-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.sidebar li.active .sidebar-count {
+  color: var(--accent);
+}
+.folder-row {
+  gap: 6px;
+}
+.folder-icon {
+  color: var(--muted);
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+  user-select: none;
+}
+.folder-icon[role="button"]:hover {
+  color: var(--text);
+}
+.folder-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .content {
