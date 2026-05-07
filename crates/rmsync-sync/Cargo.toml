@@ -1,0 +1,24 @@
+[package]
+name = "rmsync-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Marginalia sync engine: orchestrates device <-> library transfers."
+
+[dependencies]
+rmsync-core = { path = "../rmsync-core" }
+rmsync-device = { path = "../rmsync-device" }
+
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+secrecy = { workspace = true }
+rmsync-device = { path = "../rmsync-device", features = ["ssh"] }
