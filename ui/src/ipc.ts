@@ -7,6 +7,7 @@ import type {
   ExportResult,
   GarbageCollectReport,
   LibrarySummary,
+  LogTail,
   ProgressEvent,
   PullPlan,
   PushPlan,
@@ -34,6 +35,8 @@ export const ipc = {
   verifyLibrary: () => invoke<VerifyReport>("verify_library"),
   importFile: (path: string) => invoke<DocumentSummary>("import_file", { path }),
   garbageCollect: () => invoke<GarbageCollectReport>("garbage_collect"),
+  getRecentLogs: (maxLines?: number) =>
+    invoke<LogTail>("get_recent_logs", { maxLines: maxLines ?? null }),
 
   deviceState: () => invoke<DeviceState>("device_state"),
   saveDevicePassword: (password: string) =>

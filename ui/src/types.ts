@@ -117,6 +117,11 @@ export interface GarbageCollectReport {
   errors: number;
 }
 
+export interface LogTail {
+  lines: string[];
+  log_dir: string | null;
+}
+
 export type ProgressEvent =
   | { kind: "plan_ready"; total_documents: number }
   | { kind: "document_started"; document_id: string; visible_name: string }

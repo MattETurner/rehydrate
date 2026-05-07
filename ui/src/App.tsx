@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ipc, onDeviceReachable } from "./ipc";
 import { HistoryDrawer } from "./components/HistoryDrawer";
+import { LogDrawer } from "./components/LogDrawer";
 import { PasswordDialog } from "./components/PasswordDialog";
 import { StatusPill } from "./components/StatusPill";
 import { SyncDrawer } from "./components/SyncDrawer";
@@ -17,6 +18,7 @@ export function App() {
   const [showPassword, setShowPassword] = useState(false);
   const [showSync, setShowSync] = useState(false);
   const [historyDoc, setHistoryDoc] = useState<DocumentSummary | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
   const refreshing = useRef(false);
 
   // Initial load. Auto-open the previously-used library if there was one;
@@ -302,6 +304,9 @@ export function App() {
             <button onClick={garbageCollect} className="link">
               Garbage-collect
             </button>
+            <button onClick={() => setShowLogs(true)} className="link">
+              Logs
+            </button>
           </>
         ) : (
           <span className="muted">Library not open</span>
@@ -325,6 +330,11 @@ export function App() {
       {historyDoc && (
         <div className="drawer-backdrop" onClick={() => setHistoryDoc(null)}>
           <HistoryDrawer document={historyDoc} onClose={() => setHistoryDoc(null)} />
+        </div>
+      )}
+      {showLogs && (
+        <div className="drawer-backdrop" onClick={() => setShowLogs(false)}>
+          <LogDrawer onClose={() => setShowLogs(false)} />
         </div>
       )}
     </div>

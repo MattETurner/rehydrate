@@ -15,6 +15,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::config;
+use crate::logging;
 use crate::state::{default_library_dir, AppState, KEYRING_DEVICE_USER, KEYRING_SERVICE};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -24,6 +25,22 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 #[tauri::command]
 pub fn ping() -> &'static str {
     "pong"
+}
+
+#[derive(Serialize)]
+pub struct LogTail {
+    pub lines: Vec<String>,
+    pub log_dir: Option<PathBuf>,
+}
+
+#[tauri::command]
+pub async fn get_recent_logs(max_lines: Option<usize>) -> Result<LogTail, String> {
+    let n = max_lines.unwrap_or(500);
+    let lines = logging::read_tail(n).map_err(err)?;
+    Ok(LogTail {
+        lines,
+        log_dir: logging::log_dir(),
+    })
 }
 
 #[tauri::command]
@@ -124,8 +141,9 @@ pub async fn import_file(
         .extension()
         .and_then(|s| s.to_str())
         .ok_or_else(|| "file has no extension".to_string())?;
-    let kind = ImportKind::from_extension(ext)
-        .ok_or_else(|| format!("unsupported file type: .{ext} — only PDF and EPUB are supported"))?;
+    let kind = ImportKind::from_extension(ext).ok_or_else(|| {
+        format!("unsupported file type: .{ext} — only PDF and EPUB are supported")
+    })?;
     let visible_name = path
         .file_stem()
         .and_then(|s| s.to_str())

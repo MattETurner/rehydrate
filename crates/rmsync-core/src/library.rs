@@ -527,11 +527,7 @@ impl Library {
         let content_put = self.put_blob(&content_bytes)?;
         let body_put = self.put_blob(&bytes)?;
 
-        let mut manifest = Manifest::new(
-            &document_id,
-            body_kind.doc_type(),
-            visible_name,
-        );
+        let mut manifest = Manifest::new(&document_id, body_kind.doc_type(), visible_name);
         manifest.metadata = metadata_json;
         manifest.content_meta = content_json;
         manifest.files = vec![
@@ -1010,10 +1006,7 @@ mod tests {
         let manifest_bytes = lib.read_blob(&summary.current_manifest).unwrap();
         let manifest = Manifest::from_canonical_json(&manifest_bytes).unwrap();
         assert_eq!(manifest.files.len(), 3);
-        assert!(manifest
-            .files
-            .iter()
-            .any(|f| f.path.ends_with(".metadata")));
+        assert!(manifest.files.iter().any(|f| f.path.ends_with(".metadata")));
         assert!(manifest.files.iter().any(|f| f.path.ends_with(".content")));
         assert!(manifest.files.iter().any(|f| f.path.ends_with(".pdf")));
 

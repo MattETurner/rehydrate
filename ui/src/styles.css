@@ -478,6 +478,28 @@ button.link:hover {
   flex: 1;
 }
 
+.log-tail {
+  overflow-y: auto;
+  padding: 8px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+  flex: 1;
+  min-height: 0;
+}
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log-line.warn {
+  color: var(--warn);
+}
+.log-line.err {
+  color: var(--err);
+}
+
 /* ----- Badges ----- */
 
 .badge {

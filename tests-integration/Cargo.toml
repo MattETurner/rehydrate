@@ -1,0 +1,11 @@
+[package]
+name = "marginalia-tests-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Cross-cutting integration tests (privacy invariants, etc.)."
+
+[lib]
+path = "src/lib.rs"

@@ -5,6 +5,7 @@ members = [
     "crates/rmsync-device",
     "crates/rmsync-sync",
     "crates/rmsync-app",
+    "tests-integration",
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "io-util", "time", "net"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 

@@ -3,18 +3,15 @@
 
 mod commands;
 mod config;
+mod logging;
 mod state;
 
 pub use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,rmsync=debug")),
-        )
-        .init();
+    logging::init();
+    tracing::info!("marginalia starting; log dir = {:?}", logging::log_dir());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -26,6 +23,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::ping,
+            commands::get_recent_logs,
             commands::default_library_path,
             commands::open_library,
             commands::auto_open_library,
