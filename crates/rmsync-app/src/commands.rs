@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rmsync_core::{DocumentSummary, Library, VerifyReport, VersionEntry};
+use rmsync_core::{
+    DocumentSummary, GarbageCollectReport, ImportKind, Library, VerifyReport, VersionEntry,
+};
 use rmsync_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rmsync_device::{Device, DeviceInfo};
 use rmsync_sync::{
@@ -105,6 +107,40 @@ pub async fn auto_open_library(state: State<'_, AppState>) -> Result<Option<Path
     *state.library.lock().await = Some(lib);
     *state.library_path.lock().await = Some(path.clone());
     Ok(Some(path))
+}
+
+/// Import a PDF or EPUB from disk into the library. The kind is inferred
+/// from the file extension; `visible_name` defaults to the filename stem.
+#[tauri::command]
+pub async fn import_file(
+    path: PathBuf,
+    state: State<'_, AppState>,
+) -> Result<DocumentSummary, String> {
+    let guard = state.library.lock().await;
+    let lib = guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "file has no extension".to_string())?;
+    let kind = ImportKind::from_extension(ext)
+        .ok_or_else(|| format!("unsupported file type: .{ext} — only PDF and EPUB are supported"))?;
+    let visible_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    lib.import_file(&path, kind, &visible_name).map_err(err)
+}
+
+#[tauri::command]
+pub async fn garbage_collect(state: State<'_, AppState>) -> Result<GarbageCollectReport, String> {
+    let guard = state.library.lock().await;
+    let lib = guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+    lib.garbage_collect().map_err(err)
 }
 
 #[tauri::command]

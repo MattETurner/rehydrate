@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ipc, onDeviceReachable } from "./ipc";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { PasswordDialog } from "./components/PasswordDialog";
@@ -129,6 +130,42 @@ export function App() {
     await refreshLibrary();
   }
 
+  async function importFile() {
+    setError(null);
+    try {
+      const picked = await openDialog({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Documents", extensions: ["pdf", "epub"] }],
+        title: "Import a PDF or EPUB",
+      });
+      if (!picked || typeof picked !== "string") return;
+      const summary = await ipc.importFile(picked);
+      await refreshLibrary();
+      window.alert(
+        `Imported "${summary.visible_name}".\n\n` +
+          `It will be uploaded to the reMarkable on the next sync.`,
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function garbageCollect() {
+    setError(null);
+    try {
+      const r = await ipc.garbageCollect();
+      await refreshLibrary();
+      window.alert(
+        r.deleted === 0
+          ? `Garbage collection scanned ${r.scanned} blobs; nothing to remove.`
+          : `Removed ${r.deleted} unreferenced blob${r.deleted === 1 ? "" : "s"} (${formatBytes(r.bytes_freed)} freed).`,
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function verify() {
     setError(null);
     try {
@@ -167,9 +204,12 @@ export function App() {
             Open library
           </button>
         ) : (
-          <button onClick={openSync} disabled={!device?.connected}>
-            Sync
-          </button>
+          <>
+            <button onClick={importFile}>Import</button>
+            <button onClick={openSync} disabled={!device?.connected}>
+              Sync
+            </button>
+          </>
         )}
         {device?.connected ? (
           <button onClick={disconnect}>Disconnect</button>
@@ -258,6 +298,9 @@ export function App() {
             <span className="spacer" />
             <button onClick={verify} className="link">
               Verify
+            </button>
+            <button onClick={garbageCollect} className="link">
+              Garbage-collect
             </button>
           </>
         ) : (

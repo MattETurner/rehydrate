@@ -110,6 +110,13 @@ export interface VerifyReport {
   orphan_examples: string[];
 }
 
+export interface GarbageCollectReport {
+  scanned: number;
+  deleted: number;
+  bytes_freed: number;
+  errors: number;
+}
+
 export type ProgressEvent =
   | { kind: "plan_ready"; total_documents: number }
   | { kind: "document_started"; document_id: string; visible_name: string }

@@ -5,6 +5,7 @@ import type {
   DeviceState,
   DocumentSummary,
   ExportResult,
+  GarbageCollectReport,
   LibrarySummary,
   ProgressEvent,
   PullPlan,
@@ -31,6 +32,8 @@ export const ipc = {
   exportVersion: (versionId: number, destDir: string) =>
     invoke<ExportResult>("export_version", { versionId, destDir }),
   verifyLibrary: () => invoke<VerifyReport>("verify_library"),
+  importFile: (path: string) => invoke<DocumentSummary>("import_file", { path }),
+  garbageCollect: () => invoke<GarbageCollectReport>("garbage_collect"),
 
   deviceState: () => invoke<DeviceState>("device_state"),
   saveDevicePassword: (password: string) =>

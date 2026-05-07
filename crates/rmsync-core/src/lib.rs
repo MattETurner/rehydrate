@@ -16,6 +16,7 @@ mod library;
 pub use error::{Error, Result};
 pub use hash::Sha256Hex;
 pub use library::{
-    DocumentSummary, Library, RecordOutcome, Source, VerifyReport, VersionEntry, VersionId,
+    DocumentSummary, GarbageCollectReport, ImportKind, Library, RecordOutcome, Source,
+    VerifyReport, VersionEntry, VersionId,
 };
 pub use manifest::{Manifest, ManifestFile};

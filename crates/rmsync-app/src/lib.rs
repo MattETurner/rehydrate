@@ -35,6 +35,8 @@ pub fn run() {
             commands::set_version_note,
             commands::export_version,
             commands::verify_library,
+            commands::import_file,
+            commands::garbage_collect,
             commands::device_state,
             commands::save_device_password,
             commands::forget_device_password,

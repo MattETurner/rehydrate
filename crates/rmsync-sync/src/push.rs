@@ -41,23 +41,22 @@ pub fn plan_push(library: &Library) -> SyncResult<PushPlan> {
     let mut items = Vec::with_capacity(docs.len());
     for doc in docs {
         let last_seen = library.last_seen(&doc.document_id)?;
-        let item = match last_seen {
-            Some((_, Some(last_manifest))) if last_manifest != doc.current_manifest.as_str() => {
-                PushItem {
-                    document: doc,
-                    status: PushItemStatus::Outbound,
-                    reason: None,
-                }
-            }
-            Some((_, Some(_))) => PushItem {
+        let item = match last_seen.and_then(|(_, m)| m) {
+            // Library and device manifest agree → nothing to push.
+            Some(last_manifest) if last_manifest == doc.current_manifest.as_str() => PushItem {
                 document: doc,
                 status: PushItemStatus::Unchanged,
                 reason: None,
             },
+            // Library has a different manifest (restored or updated) — push.
+            // OR: no last_seen_manifest at all, meaning the document was
+            // imported and has never been synced. Either way it's outbound.
+            // The device-side put_document_tree call creates new files just
+            // as readily as it overwrites existing ones.
             _ => PushItem {
                 document: doc,
-                status: PushItemStatus::Skipped,
-                reason: Some("never seen on device (Phase 4 import path)".into()),
+                status: PushItemStatus::Outbound,
+                reason: None,
             },
         };
         items.push(item);

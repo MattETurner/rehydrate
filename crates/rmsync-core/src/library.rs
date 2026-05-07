@@ -84,6 +84,79 @@ pub struct RecordOutcome {
     pub unchanged: bool,
 }
 
+/// Selects the on-device file extension and content metadata for an import.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportKind {
+    Pdf,
+    Epub,
+}
+
+impl ImportKind {
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext.to_ascii_lowercase().as_str() {
+            "pdf" => Some(ImportKind::Pdf),
+            "epub" => Some(ImportKind::Epub),
+            _ => None,
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            ImportKind::Pdf => "pdf",
+            ImportKind::Epub => "epub",
+        }
+    }
+
+    fn doc_type(self) -> &'static str {
+        match self {
+            ImportKind::Pdf => "DocumentType.Pdf",
+            ImportKind::Epub => "DocumentType.Epub",
+        }
+    }
+
+    /// `.content` JSON. We populate the small subset of fields xochitl
+    /// actually requires — it fills in the rest (page count, transform,
+    /// extraMetadata) on first open.
+    fn content_json(self) -> serde_json::Value {
+        match self {
+            ImportKind::Pdf => serde_json::json!({
+                "fileType": "pdf",
+                "pageCount": 0,
+                "lastOpenedPage": 0,
+                "lineHeight": -1,
+                "margins": 100,
+                "orientation": "portrait",
+                "textScale": 1,
+                "extraMetadata": {},
+                "transform": {
+                    "m11": 1.0, "m12": 0.0, "m13": 0.0,
+                    "m21": 0.0, "m22": 1.0, "m23": 0.0,
+                    "m31": 0.0, "m32": 0.0, "m33": 1.0,
+                },
+            }),
+            ImportKind::Epub => serde_json::json!({
+                "fileType": "epub",
+                "pageCount": 0,
+                "lastOpenedPage": 0,
+                "lineHeight": -1,
+                "margins": 100,
+                "orientation": "portrait",
+                "textScale": 1,
+                "extraMetadata": {},
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct GarbageCollectReport {
+    pub scanned: usize,
+    pub deleted: usize,
+    pub bytes_freed: u64,
+    pub errors: usize,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct VerifyReport {
     pub manifests_total: usize,
@@ -406,6 +479,94 @@ impl Library {
         Ok(entry)
     }
 
+    /// Import a PDF or EPUB from disk into the library. Generates a fresh
+    /// document UUID, builds the `.metadata` and `.content` JSON files the
+    /// reMarkable expects, stores all three blobs (metadata, content, body),
+    /// and records a first version with `Source::Imported`. The new document
+    /// becomes outbound on the next `plan_push`.
+    ///
+    /// `body_kind` selects the file extension and `fileType` field used in
+    /// `.content`. `visible_name` is what shows up on the tablet — typically
+    /// the source filename without extension.
+    pub fn import_file(
+        &self,
+        source_path: &Path,
+        body_kind: ImportKind,
+        visible_name: &str,
+    ) -> Result<DocumentSummary> {
+        use crate::manifest::ManifestFile;
+
+        let bytes = fs::read(source_path)?;
+        let document_id = uuid::Uuid::new_v4().to_string();
+        let now = OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        // The tablet stores `lastModified` as a unix-millis string.
+        let last_modified_ms = OffsetDateTime::now_utc().unix_timestamp() * 1000;
+
+        let metadata_json = serde_json::json!({
+            "visibleName": visible_name,
+            "type": "DocumentType",
+            "parent": "",
+            "lastModified": last_modified_ms.to_string(),
+            "lastOpened": "",
+            "lastOpenedPage": 0,
+            "version": 1,
+            "pinned": false,
+            "synced": false,
+            "modified": false,
+            "deleted": false,
+            "metadatamodified": false,
+        });
+        let content_json = body_kind.content_json();
+
+        let metadata_bytes = serde_json::to_vec_pretty(&metadata_json)?;
+        let content_bytes = serde_json::to_vec_pretty(&content_json)?;
+
+        let metadata_put = self.put_blob(&metadata_bytes)?;
+        let content_put = self.put_blob(&content_bytes)?;
+        let body_put = self.put_blob(&bytes)?;
+
+        let mut manifest = Manifest::new(
+            &document_id,
+            body_kind.doc_type(),
+            visible_name,
+        );
+        manifest.metadata = metadata_json;
+        manifest.content_meta = content_json;
+        manifest.files = vec![
+            ManifestFile {
+                path: format!("{document_id}.metadata"),
+                sha256: metadata_put.hash,
+                size: metadata_put.size,
+                mode: 0o644,
+            },
+            ManifestFile {
+                path: format!("{document_id}.content"),
+                sha256: content_put.hash,
+                size: content_put.size,
+                mode: 0o644,
+            },
+            ManifestFile {
+                path: format!("{document_id}.{}", body_kind.extension()),
+                sha256: body_put.hash,
+                size: body_put.size,
+                mode: 0o644,
+            },
+        ];
+
+        let outcome = self.record_version(&manifest, Source::Imported)?;
+        let _ = now; // currently unused; kept for parity with other recorders.
+
+        Ok(DocumentSummary {
+            document_id,
+            visible_name: visible_name.to_string(),
+            doc_type: body_kind.doc_type().to_string(),
+            current_manifest: outcome.manifest_hash,
+            current_version_id: outcome.version_id,
+        })
+    }
+
     /// Make `version_id` the document's current version by re-recording its
     /// manifest with `Source::Restored`. The previous current version is
     /// preserved in the log via `parent_version_id`. If `version_id` is
@@ -499,6 +660,59 @@ impl Library {
             params![folder_id, parent, visible_name, metadata_json],
         )?;
         Ok(())
+    }
+
+    /// Reclaim disk space by deleting blobs that no manifest in the version
+    /// log references. A blob is considered live if it appears in
+    /// `blob_refs` joined to `versions` — i.e. some recorded version still
+    /// points at it. Manifests themselves are referenced via `blob_refs`'s
+    /// (manifest_hash, manifest_hash) self-row, written by `record_version`.
+    ///
+    /// Safe to run while the app is otherwise idle. Refuses to delete
+    /// anything that any version currently references; if you want to drop
+    /// versions, use the (future) version-pruning API first, then GC.
+    pub fn garbage_collect(&self) -> Result<GarbageCollectReport> {
+        let mut live: std::collections::HashSet<String> = std::collections::HashSet::new();
+        {
+            let conn = self.db.lock();
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT br.blob_hash FROM blob_refs br \
+                 JOIN versions v ON v.manifest_hash = br.manifest_hash",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                live.insert(row.get::<_, String>(0)?);
+            }
+        }
+
+        let mut report = GarbageCollectReport::default();
+        let blobs_dir = self.paths.blobs.clone();
+        let mut to_delete = Vec::new();
+        walk_blobs(&blobs_dir, &mut |path, hash_str| {
+            report.scanned += 1;
+            if !live.contains(hash_str) {
+                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                to_delete.push((path.to_path_buf(), size));
+            }
+        });
+
+        for (path, size) in to_delete {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    report.deleted += 1;
+                    report.bytes_freed += size;
+                }
+                Err(e) => {
+                    tracing::warn!("gc: failed to remove {}: {e}", path.display());
+                    report.errors += 1;
+                }
+            }
+        }
+
+        // Best-effort: prune now-empty fanout directories so the library
+        // doesn't accumulate empty `blobs/aa/bb/` shells.
+        prune_empty_dirs(&blobs_dir);
+        Ok(report)
     }
 
     /// Walk the library and verify on-disk integrity:
@@ -626,6 +840,21 @@ fn walk_blobs(root: &Path, visit: &mut dyn FnMut(&Path, &str)) {
             walk_blobs(&p, visit);
         } else if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
             visit(&p, name);
+        }
+    }
+}
+
+/// Remove empty subdirectories under `root`, depth-first. `remove_dir` only
+/// succeeds on empty directories, so populated leaves stay intact.
+fn prune_empty_dirs(root: &Path) {
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            prune_empty_dirs(&p);
+            let _ = std::fs::remove_dir(&p);
         }
     }
 }
@@ -760,6 +989,67 @@ mod tests {
         // Recording the manifest again is still fine; verify should still
         // see the same problem.
         let _ = outcome;
+    }
+
+    #[test]
+    fn import_file_creates_outbound_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+
+        // Write a tiny "PDF" payload to disk and import it.
+        let src = tmp.path().join("Sample.pdf");
+        std::fs::write(&src, b"%PDF-1.7 fake bytes").unwrap();
+
+        let summary = lib
+            .import_file(&src, ImportKind::Pdf, "Sample document")
+            .unwrap();
+        assert_eq!(summary.visible_name, "Sample document");
+        assert_eq!(summary.doc_type, "DocumentType.Pdf");
+
+        // Manifest has three files: .metadata, .content, .pdf
+        let manifest_bytes = lib.read_blob(&summary.current_manifest).unwrap();
+        let manifest = Manifest::from_canonical_json(&manifest_bytes).unwrap();
+        assert_eq!(manifest.files.len(), 3);
+        assert!(manifest
+            .files
+            .iter()
+            .any(|f| f.path.ends_with(".metadata")));
+        assert!(manifest.files.iter().any(|f| f.path.ends_with(".content")));
+        assert!(manifest.files.iter().any(|f| f.path.ends_with(".pdf")));
+
+        // sync_state.last_seen_manifest must be NULL — fresh import has
+        // not been pushed yet, so plan_push should treat it as outbound.
+        let last_seen = lib.last_seen(&summary.document_id).unwrap();
+        assert!(matches!(last_seen, Some((_, None)) | None));
+    }
+
+    #[test]
+    fn garbage_collect_only_drops_unreferenced_blobs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+
+        // Recorded manifest → these blobs are live.
+        let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"AAA")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+
+        // Plant an orphan that no manifest references.
+        let orphan_bytes = b"i am an orphan blob".to_vec();
+        let orphan = lib.put_blob(&orphan_bytes).unwrap();
+        assert!(lib.has_blob(&orphan.hash));
+
+        let report = lib.garbage_collect().unwrap();
+        assert_eq!(report.deleted, 1);
+        assert_eq!(report.bytes_freed, orphan_bytes.len() as u64);
+        assert_eq!(report.errors, 0);
+        assert!(!lib.has_blob(&orphan.hash));
+
+        // Live blobs and the recorded manifest are intact.
+        assert!(lib.has_blob(&m.files[0].sha256));
+        assert!(lib.has_blob(&m.hash().unwrap()));
+
+        // Idempotent — second run finds nothing to collect.
+        let report2 = lib.garbage_collect().unwrap();
+        assert_eq!(report2.deleted, 0);
     }
 
     #[test]

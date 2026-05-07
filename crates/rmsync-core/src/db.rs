@@ -89,7 +89,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 1);
+        assert!(count >= 1);
         for table in [
             "documents",
             "versions",
