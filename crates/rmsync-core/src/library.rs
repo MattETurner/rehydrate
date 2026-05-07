@@ -67,6 +67,12 @@ pub struct VersionEntry {
     pub observed_at: String,
     pub source: Source,
     pub note: Option<String>,
+    /// Sum of `manifest.files[].size`. Read from the manifest blob on demand
+    /// — Phase 2's history UI shows this per version. `None` if the manifest
+    /// blob is missing (which `verify` would already have flagged).
+    pub total_size_bytes: Option<u64>,
+    /// Number of files in the document tree at this version.
+    pub file_count: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,25 +290,113 @@ impl Library {
             "SELECT id, document_id, manifest_hash, parent_version_id, observed_at, source, note \
              FROM versions WHERE document_id = ?1 ORDER BY id ASC",
         )?;
-        let rows: Vec<VersionEntry> = stmt
+        let mut rows: Vec<VersionEntry> = stmt
             .query_map(params![document_id], |r| {
                 let manifest_hex: String = r.get(2)?;
                 let source_str: String = r.get(5)?;
                 Ok(VersionEntry {
                     id: r.get(0)?,
                     document_id: r.get(1)?,
-                    manifest_hash: Sha256Hex::from_hex(&manifest_hex).unwrap_or_else(|| {
-                        // SQL CHECK doesn't constrain this — defensive default.
-                        Sha256Hex::from_bytes(manifest_hex.as_bytes())
-                    }),
+                    manifest_hash: Sha256Hex::from_hex(&manifest_hex)
+                        .unwrap_or_else(|| Sha256Hex::from_bytes(manifest_hex.as_bytes())),
                     parent_version_id: r.get(3)?,
                     observed_at: r.get(4)?,
                     source: Source::parse(&source_str).unwrap_or(Source::Pulled),
                     note: r.get(6)?,
+                    total_size_bytes: None,
+                    file_count: None,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        drop(conn);
+
+        // Populate size + file count by reading each manifest blob. Cheap
+        // for typical libraries (a few hundred bytes per manifest); if it
+        // ever shows up as hot we can cache these values in the schema.
+        for entry in &mut rows {
+            if let Ok(bytes) = self.blobs.read_to_vec(&entry.manifest_hash) {
+                if let Ok(m) = Manifest::from_canonical_json(&bytes) {
+                    entry.total_size_bytes = Some(m.files.iter().map(|f| f.size).sum());
+                    entry.file_count = Some(m.files.len());
+                }
+            }
+        }
         Ok(rows)
+    }
+
+    /// Look up a single version by id. Returns `Err(NotFound)` if no row
+    /// matches. Used by `export_version` and the history UI.
+    pub fn get_version(&self, version_id: VersionId) -> Result<VersionEntry> {
+        struct Row {
+            document_id: String,
+            manifest_hex: String,
+            parent_version_id: Option<i64>,
+            observed_at: String,
+            source_str: String,
+            note: Option<String>,
+        }
+        let row: Option<Row> = self
+            .db
+            .lock()
+            .query_row(
+                "SELECT document_id, manifest_hash, parent_version_id, observed_at, source, note \
+                 FROM versions WHERE id = ?1",
+                params![version_id],
+                |r| {
+                    Ok(Row {
+                        document_id: r.get(0)?,
+                        manifest_hex: r.get(1)?,
+                        parent_version_id: r.get(2)?,
+                        observed_at: r.get(3)?,
+                        source_str: r.get(4)?,
+                        note: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Row {
+            document_id,
+            manifest_hex,
+            parent_version_id,
+            observed_at,
+            source_str,
+            note,
+        } = row.ok_or_else(|| Error::NotFound(format!("version {version_id}")))?;
+        let manifest_hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+            path: self.paths.db.display().to_string(),
+            reason: format!("bad manifest hash for version {version_id}"),
+        })?;
+        let mut entry = VersionEntry {
+            id: version_id,
+            document_id,
+            manifest_hash: manifest_hash.clone(),
+            parent_version_id,
+            observed_at,
+            source: Source::parse(&source_str).unwrap_or(Source::Pulled),
+            note,
+            total_size_bytes: None,
+            file_count: None,
+        };
+        if let Ok(bytes) = self.blobs.read_to_vec(&manifest_hash) {
+            if let Ok(m) = Manifest::from_canonical_json(&bytes) {
+                entry.total_size_bytes = Some(m.files.iter().map(|f| f.size).sum());
+                entry.file_count = Some(m.files.len());
+            }
+        }
+        Ok(entry)
+    }
+
+    /// Update the free-form note attached to a version. Pass `None` to clear.
+    pub fn set_version_note(&self, version_id: VersionId, note: Option<&str>) -> Result<()> {
+        let n = self.db.lock().execute(
+            "UPDATE versions SET note = ?1 WHERE id = ?2",
+            params![note, version_id],
+        )?;
+        if n == 0 {
+            return Err(Error::NotFound(format!("version {version_id}")));
+        }
+        Ok(())
     }
 
     /// Total versions across all documents.

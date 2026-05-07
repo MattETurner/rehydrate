@@ -4,6 +4,7 @@ import type {
   DeviceInfo,
   DeviceState,
   DocumentSummary,
+  ExportResult,
   LibrarySummary,
   ProgressEvent,
   PullPlan,
@@ -22,6 +23,10 @@ export const ipc = {
   listDocuments: () => invoke<DocumentSummary[]>("list_documents"),
   getHistory: (documentId: string) =>
     invoke<VersionEntry[]>("get_history", { documentId }),
+  setVersionNote: (versionId: number, note: string | null) =>
+    invoke<void>("set_version_note", { versionId, note }),
+  exportVersion: (versionId: number, destDir: string) =>
+    invoke<ExportResult>("export_version", { versionId, destDir }),
   verifyLibrary: () => invoke<VerifyReport>("verify_library"),
 
   deviceState: () => invoke<DeviceState>("device_state"),

@@ -280,6 +280,12 @@ input[type="text"]:focus {
 .docs tbody tr:nth-child(even) {
   background: var(--row-zebra);
 }
+.docs tbody tr.clickable {
+  cursor: pointer;
+}
+.docs tbody tr.clickable:hover {
+  background: var(--accent-bg);
+}
 .muted {
   color: var(--muted);
 }
@@ -429,6 +435,47 @@ button.link:hover {
 }
 .drawer footer button.primary {
   margin-left: auto;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+.history-list li {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 6px;
+}
+.history-list .row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.history-list .row.meta {
+  margin-left: 4px;
+}
+.history-list .note {
+  font-size: 12px;
+  background: var(--bg);
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  cursor: text;
+}
+.history-list .note-add {
+  font-size: 11px;
+  color: var(--muted);
+  align-self: start;
+}
+.history-list input[type="text"] {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.drawer header > div {
+  flex: 1;
 }
 
 /* ----- Badges ----- */

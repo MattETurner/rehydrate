@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc, onDeviceReachable } from "./ipc";
+import { HistoryDrawer } from "./components/HistoryDrawer";
 import { PasswordDialog } from "./components/PasswordDialog";
 import { StatusPill } from "./components/StatusPill";
 import { SyncDrawer } from "./components/SyncDrawer";
@@ -14,6 +15,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showSync, setShowSync] = useState(false);
+  const [historyDoc, setHistoryDoc] = useState<DocumentSummary | null>(null);
   const refreshing = useRef(false);
 
   // Initial load. Auto-open the previously-used library if there was one;
@@ -241,7 +243,7 @@ export function App() {
               </p>
             </div>
           ) : (
-            <DocumentList documents={documents} />
+            <DocumentList documents={documents} onOpen={setHistoryDoc} />
           )}
         </main>
       </div>
@@ -277,11 +279,22 @@ export function App() {
           />
         </div>
       )}
+      {historyDoc && (
+        <div className="drawer-backdrop" onClick={() => setHistoryDoc(null)}>
+          <HistoryDrawer document={historyDoc} onClose={() => setHistoryDoc(null)} />
+        </div>
+      )}
     </div>
   );
 }
 
-function DocumentList({ documents }: { documents: DocumentSummary[] }) {
+function DocumentList({
+  documents,
+  onOpen,
+}: {
+  documents: DocumentSummary[];
+  onOpen: (d: DocumentSummary) => void;
+}) {
   if (documents.length === 0) {
     return (
       <div className="empty">
@@ -302,7 +315,12 @@ function DocumentList({ documents }: { documents: DocumentSummary[] }) {
       </thead>
       <tbody>
         {documents.map((d) => (
-          <tr key={d.document_id}>
+          <tr
+            key={d.document_id}
+            onClick={() => onOpen(d)}
+            className="clickable"
+            title="Open history"
+          >
             <td>{d.visible_name}</td>
             <td className="muted">{d.doc_type}</td>
             <td className="mono">{d.current_manifest.slice(0, 12)}</td>

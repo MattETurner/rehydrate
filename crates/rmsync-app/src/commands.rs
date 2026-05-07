@@ -143,6 +143,84 @@ pub async fn get_history(
     lib.get_history(&document_id).map_err(err)
 }
 
+#[tauri::command]
+pub async fn set_version_note(
+    version_id: i64,
+    note: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let guard = state.library.lock().await;
+    let lib = guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+    lib.set_version_note(version_id, note.as_deref())
+        .map_err(err)
+}
+
+#[derive(Serialize)]
+pub struct ExportResult {
+    pub path: PathBuf,
+    pub file_count: usize,
+}
+
+/// Export a version's file tree under `dest_dir`, into a freshly-created
+/// subdirectory named like `<visible_name>-v<version_id>-<observed_at>`.
+/// Returns the full path that was written and the number of files in it.
+#[tauri::command]
+pub async fn export_version(
+    version_id: i64,
+    dest_dir: PathBuf,
+    state: State<'_, AppState>,
+) -> Result<ExportResult, String> {
+    let guard = state.library.lock().await;
+    let lib = guard
+        .as_ref()
+        .ok_or_else(|| "no library is open".to_string())?;
+
+    let entry = lib.get_version(version_id).map_err(err)?;
+    let manifest_bytes = lib.read_blob(&entry.manifest_hash).map_err(err)?;
+    let manifest = rmsync_core::Manifest::from_canonical_json(&manifest_bytes).map_err(err)?;
+
+    let safe_name = sanitize(&manifest.visible_name);
+    let safe_ts = entry
+        .observed_at
+        .replace([':', 'T'], "-")
+        .trim_end_matches('Z')
+        .to_string();
+    let dir_name = format!("{safe_name}-v{version_id}-{safe_ts}");
+    let target = dest_dir.join(&dir_name);
+
+    if target.exists() {
+        return Err(format!(
+            "{} already exists; refusing to overwrite",
+            target.display()
+        ));
+    }
+
+    lib.reconstruct(version_id, &target).map_err(err)?;
+
+    Ok(ExportResult {
+        path: target,
+        file_count: manifest.files.len(),
+    })
+}
+
+fn sanitize(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            out.push(c);
+        } else if c == ' ' {
+            out.push('-');
+        }
+    }
+    if out.is_empty() {
+        "Untitled".into()
+    } else {
+        out
+    }
+}
+
 // ---------- Device ----------------------------------------------------------
 
 #[tauri::command]

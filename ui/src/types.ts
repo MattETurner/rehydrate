@@ -14,6 +14,13 @@ export interface VersionEntry {
   observed_at: string;
   source: "pulled" | "imported" | "restored";
   note: string | null;
+  total_size_bytes: number | null;
+  file_count: number | null;
+}
+
+export interface ExportResult {
+  path: string;
+  file_count: number;
 }
 
 export interface LibrarySummary {
