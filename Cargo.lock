@@ -4677,6 +4677,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rm-parser"
+version = "0.1.0"
+
+[[package]]
 name = "rmsync-app"
 version = "0.1.0"
 dependencies = [
@@ -4685,6 +4689,7 @@ dependencies = [
  "image",
  "keyring",
  "printpdf",
+ "rm-parser",
  "rmsync-core",
  "rmsync-device",
  "rmsync-sync",

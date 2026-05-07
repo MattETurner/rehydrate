@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rm-parser",
     "crates/rmsync-core",
     "crates/rmsync-device",
     "crates/rmsync-sync",

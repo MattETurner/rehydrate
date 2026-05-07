@@ -252,36 +252,49 @@ pub async fn open_document(
         }
         p
     } else {
-        // Notebook → stitched preview PDF. Cached by manifest hash so
-        // re-opening the same version is instant.
-        let mut thumbs: Vec<_> = manifest
-            .files
-            .iter()
-            .filter(|f| f.path.ends_with(".png") && f.path.contains(".thumbnails"))
-            .collect();
-        if thumbs.is_empty() {
-            return Err(
-                "notebook has no per-page thumbnails — sync the device once \
-                 (or open and edit the notebook on the tablet first) and try again"
-                    .to_string(),
-            );
-        }
-        thumbs.sort_by(|a, b| a.path.cmp(&b.path));
-        // Cache key includes a layout version suffix so that bumping the
-        // PDF assembly logic (e.g. switching page size) invalidates stale
-        // cached previews automatically.
-        const PREVIEW_LAYOUT_VERSION: &str = "a4-v2";
+        // Notebook. Two render paths:
+        //   1) `.rm` ink files → vector PDF (sharp at any zoom).
+        //   2) Fallback: stitch per-page thumbnail PNGs (low-fidelity
+        //      preview, used only if a page has no parseable ink data).
+        // Cache key includes a layout version suffix so bumping the
+        // assembly logic invalidates stale previews automatically.
+        const PREVIEW_LAYOUT_VERSION: &str = "ink-v8";
         let p = cache_root.join(format!(
             "{safe_name}-{}-{PREVIEW_LAYOUT_VERSION}.pdf",
             &doc.current_manifest.as_str()[..12]
         ));
         if !p.exists() {
-            let mut pages = Vec::with_capacity(thumbs.len());
-            for f in &thumbs {
-                pages.push(lib.read_blob(&f.sha256).map_err(err)?);
-            }
-            let pdf_bytes =
-                crate::notebook_pdf::build_pdf_from_pngs(&doc.visible_name, &pages)?;
+            let mut rm_pages: Vec<_> = manifest
+                .files
+                .iter()
+                .filter(|f| {
+                    f.path.ends_with(".rm")
+                        && !f.path.contains(".thumbnails")
+                        && !f.path.ends_with(".local")
+                })
+                .collect();
+            rm_pages.sort_by(|a, b| a.path.cmp(&b.path));
+
+            let pdf_bytes = if !rm_pages.is_empty() {
+                let mut bufs = Vec::with_capacity(rm_pages.len());
+                for f in &rm_pages {
+                    bufs.push(lib.read_blob(&f.sha256).map_err(err)?);
+                }
+                crate::notebook_pdf::build_pdf_from_rm_files(&doc.visible_name, &bufs)
+                    .or_else(|e| {
+                        // .rm parse failed (older v3/v5 format we don't
+                        // render, or corrupt page) — fall through to the
+                        // thumbnail fallback so the user still sees
+                        // something.
+                        tracing::warn!(
+                            "ink rendering failed for {}: {e}; falling back to thumbnails",
+                            doc.document_id
+                        );
+                        thumbnail_fallback_pdf(lib, &manifest, &doc.visible_name)
+                    })?
+            } else {
+                thumbnail_fallback_pdf(lib, &manifest, &doc.visible_name)?
+            };
             std::fs::write(&p, &pdf_bytes).map_err(err)?;
         }
         p
@@ -374,6 +387,32 @@ pub async fn export_version(
         path: target,
         file_count: manifest.files.len(),
     })
+}
+
+fn thumbnail_fallback_pdf(
+    lib: &Library,
+    manifest: &rmsync_core::Manifest,
+    title: &str,
+) -> Result<Vec<u8>, String> {
+    let mut thumbs: Vec<_> = manifest
+        .files
+        .iter()
+        .filter(|f| f.path.ends_with(".png") && f.path.contains(".thumbnails"))
+        .collect();
+    if thumbs.is_empty() {
+        return Err(
+            "notebook has no .rm ink files we can parse and no thumbnails to fall back on \
+             — sync the device once (or open and edit the notebook on the tablet first) \
+             and try again"
+                .to_string(),
+        );
+    }
+    thumbs.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut pages = Vec::with_capacity(thumbs.len());
+    for f in &thumbs {
+        pages.push(lib.read_blob(&f.sha256).map_err(err)?);
+    }
+    crate::notebook_pdf::build_pdf_from_pngs(title, &pages)
 }
 
 fn sanitize(name: &str) -> String {
