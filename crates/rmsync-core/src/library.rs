@@ -63,6 +63,19 @@ pub struct DocumentSummary {
     /// Folder UUID this document belongs to. `None` for the root.
     /// `"trash"` is the device's special trash bucket.
     pub parent: Option<String>,
+    /// Total bytes of every file the manifest references. Cheap to
+    /// compute since `list_documents` already reads the manifest blob.
+    #[serde(default)]
+    pub size_bytes: u64,
+    /// Page count read from `content_meta.pageCount` if present.
+    /// Notebooks always carry it; PDFs/EPUBs sometimes do.
+    #[serde(default)]
+    pub page_count: Option<u32>,
+    /// True if the current manifest hasn't been pushed yet — i.e. the
+    /// document has local edits that the next sync will upload.
+    /// Imported-but-never-synced docs are also unpushed.
+    #[serde(default)]
+    pub has_unpushed_changes: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +174,47 @@ impl ImportKind {
             }),
         }
     }
+}
+
+/// Why a document is in the archive. Recorded so the UI can show a hint
+/// ("deleted on device", "deleted locally") and so future tooling can
+/// distinguish auto-archived from user-archived entries.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchiveReason {
+    /// User clicked Delete in the local UI.
+    Local,
+    /// Detected during pull: the device no longer has this document.
+    Device,
+}
+
+impl ArchiveReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            ArchiveReason::Local => "local",
+            ArchiveReason::Device => "device",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "local" => Some(ArchiveReason::Local),
+            "device" => Some(ArchiveReason::Device),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchivedDocument {
+    pub document_id: String,
+    pub visible_name: String,
+    pub doc_type: String,
+    pub parent: Option<String>,
+    pub manifest_hash: Sha256Hex,
+    pub version_id: VersionId,
+    pub reason: ArchiveReason,
+    pub archived_at: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -378,25 +432,42 @@ impl Library {
     pub fn list_documents(&self) -> Result<Vec<DocumentSummary>> {
         let conn = self.db.lock();
         let mut stmt = conn.prepare(
-            "SELECT d.document_id, d.current_manifest, d.current_version_id, v.observed_at \
+            "SELECT d.document_id, d.current_manifest, d.current_version_id, v.observed_at, \
+                    s.last_seen_manifest \
              FROM documents d \
              JOIN versions v ON v.id = d.current_version_id \
+             LEFT JOIN sync_state s ON s.document_id = d.document_id \
              ORDER BY d.document_id",
         )?;
-        let rows: Vec<(String, String, i64, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        let rows: Vec<(String, String, i64, String, Option<String>)> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
         drop(conn);
 
         let mut out = Vec::with_capacity(rows.len());
-        for (document_id, manifest_hex, version_id, observed_at) in rows {
+        for (document_id, manifest_hex, version_id, observed_at, last_seen_manifest) in rows {
             let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
                 path: self.paths.db.display().to_string(),
                 reason: format!("bad manifest hash for {document_id}"),
             })?;
             let manifest_bytes = self.blobs.read_to_vec(&hash)?;
             let manifest = Manifest::from_canonical_json(&manifest_bytes)?;
+            let size_bytes: u64 = manifest.files.iter().map(|f| f.size).sum();
+            let page_count = manifest
+                .content_meta
+                .get("pageCount")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u32::try_from(n).ok());
+            // Document has unpushed changes if its current manifest
+            // doesn't match what the device last received. Never-synced
+            // (last_seen_manifest IS NULL) also counts.
+            let has_unpushed_changes = match &last_seen_manifest {
+                Some(ls) => ls != &manifest_hex,
+                None => true,
+            };
             out.push(DocumentSummary {
                 document_id,
                 visible_name: manifest.visible_name,
@@ -405,6 +476,9 @@ impl Library {
                 current_version_id: version_id,
                 last_observed_at: observed_at,
                 parent: manifest.parent,
+                size_bytes,
+                page_count,
+                has_unpushed_changes,
             });
         }
         Ok(out)
@@ -448,6 +522,443 @@ impl Library {
                 }
             }
         }
+        Ok(rows)
+    }
+
+    /// Record a new version of a document with its `.metadata` blob
+    /// rewritten in place by `mutate`. The new metadata is also pushed into
+    /// `manifest.metadata` and `manifest.parent` so a future planner can
+    /// see the change without re-reading the blob.
+    ///
+    /// Used by every "library-side edit" path: move-to-folder, archive
+    /// (deleted=true), unarchive (deleted=false). Bumps the device-facing
+    /// `lastModified` and `modified` flags so the tablet treats the file
+    /// as freshly changed.
+    fn record_metadata_change<F>(
+        &self,
+        document_id: &str,
+        mutate: F,
+    ) -> Result<RecordOutcome>
+    where
+        F: FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<()>,
+    {
+        // Resolve the current manifest hash from either the live or the
+        // archived table. We support editing both: archive→delete needs to
+        // mutate a live doc, while unarchive→restore mutates an archived
+        // one whose row no longer exists in `documents`.
+        let manifest_hex: String = {
+            let conn = self.db.lock();
+            let live: Option<String> = conn
+                .query_row(
+                    "SELECT current_manifest FROM documents WHERE document_id = ?1",
+                    params![document_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(h) = live {
+                h
+            } else {
+                conn.query_row(
+                    "SELECT manifest_hash FROM archived_documents WHERE document_id = ?1",
+                    params![document_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| Error::NotFound(format!("document {document_id}")))?
+            }
+        };
+
+        let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+            path: self.paths.db.display().to_string(),
+            reason: format!("bad manifest hash for {document_id}"),
+        })?;
+        let manifest_bytes = self.blobs.read_to_vec(&hash)?;
+        let mut manifest = Manifest::from_canonical_json(&manifest_bytes)?;
+
+        let meta_idx = manifest
+            .files
+            .iter()
+            .position(|f| f.path.ends_with(".metadata"))
+            .ok_or_else(|| {
+                Error::Corrupt {
+                    path: "<manifest>".into(),
+                    reason: format!("document {document_id} has no .metadata file"),
+                }
+            })?;
+        let meta_bytes = self.blobs.read_to_vec(&manifest.files[meta_idx].sha256)?;
+        let mut meta_value: serde_json::Value = serde_json::from_slice(&meta_bytes)?;
+        let map = meta_value.as_object_mut().ok_or_else(|| Error::Corrupt {
+            path: "<manifest>".into(),
+            reason: format!("metadata for {document_id} is not a JSON object"),
+        })?;
+
+        mutate(map)?;
+
+        // Mark the file as changed locally so the tablet's xochitl picks
+        // up the new metadata on next sync. Empty defaults are safe — if
+        // these keys were missing they'll simply be set.
+        let now_ms = OffsetDateTime::now_utc().unix_timestamp() * 1000;
+        map.insert(
+            "lastModified".into(),
+            serde_json::Value::String(now_ms.to_string()),
+        );
+        map.insert("modified".into(), serde_json::Value::Bool(true));
+        map.insert("metadatamodified".into(), serde_json::Value::Bool(true));
+        map.insert("synced".into(), serde_json::Value::Bool(false));
+
+        let new_meta_bytes = serde_json::to_vec_pretty(&meta_value)?;
+        let put = self.put_blob(&new_meta_bytes)?;
+        manifest.files[meta_idx].sha256 = put.hash;
+        manifest.files[meta_idx].size = put.size;
+        manifest.metadata = meta_value.clone();
+
+        // Reflect the post-mutation parent + visible name on the
+        // manifest's top-level fields so SQL queries that read them
+        // (sidebar filtering, archive entry display) match what's in
+        // the metadata blob.
+        manifest.parent = match meta_value.get("parent").and_then(|v| v.as_str()) {
+            None | Some("") => None,
+            Some(p) => Some(p.to_string()),
+        };
+        if let Some(name) = meta_value.get("visibleName").and_then(|v| v.as_str()) {
+            manifest.visible_name = name.to_string();
+        }
+
+        self.record_version(&manifest, Source::Restored)
+    }
+
+    /// Rename a document. Writes the new title into `.metadata`'s
+    /// `visibleName`, records a new version, and flags the doc as having
+    /// unpushed changes — the next sync sends the new metadata to the
+    /// tablet which then displays the new name. Empty / whitespace-only
+    /// names are rejected so the tablet never ends up with a blank title.
+    pub fn rename_document(
+        &self,
+        document_id: &str,
+        new_name: &str,
+    ) -> Result<RecordOutcome> {
+        let trimmed = new_name.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(Error::InvalidArgument(
+                "document name must not be empty".into(),
+            ));
+        }
+        self.record_metadata_change(document_id, |map| {
+            map.insert(
+                "visibleName".into(),
+                serde_json::Value::String(trimmed.clone()),
+            );
+            Ok(())
+        })
+    }
+
+    /// Move a live document into a different folder (`new_parent` =
+    /// `Some(folder_uuid)`) or to the root (`None`). Records a new version
+    /// so the device picks up the move on next push.
+    pub fn move_document(
+        &self,
+        document_id: &str,
+        new_parent: Option<&str>,
+    ) -> Result<RecordOutcome> {
+        let parent = new_parent.unwrap_or("").to_string();
+        self.record_metadata_change(document_id, |map| {
+            map.insert("parent".into(), serde_json::Value::String(parent));
+            Ok(())
+        })
+    }
+
+    /// Move a document from the live `documents` table into the archive.
+    /// Versions stay intact so a later `unarchive_document` can restore the
+    /// listing exactly. If the document is already archived this is a
+    /// no-op; if it doesn't exist we return `NotFound`.
+    pub fn archive_document(&self, document_id: &str, reason: ArchiveReason) -> Result<()> {
+        // Idempotent: re-archiving an already-archived doc is a no-op so
+        // the device-deletion detector (which calls this in a loop) and
+        // the UI button can both invoke it freely.
+        if self.is_archived(document_id)? {
+            return Ok(());
+        }
+
+        // Capture the doc's pre-archive parent so a later unarchive can
+        // restore it to where the user originally had it. Read this
+        // BEFORE mutating the metadata, because the mutation flips
+        // parent to "trash".
+        let (manifest_hex, _version_id, original_parent, visible_name, doc_type) = {
+            let conn = self.db.lock();
+            let row: Option<(String, i64)> = conn
+                .query_row(
+                    "SELECT current_manifest, current_version_id FROM documents \
+                     WHERE document_id = ?1",
+                    params![document_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let (h, v) = row.ok_or_else(|| Error::NotFound(format!("document {document_id}")))?;
+            let hash = Sha256Hex::from_hex(&h).ok_or_else(|| Error::Corrupt {
+                path: self.paths.db.display().to_string(),
+                reason: format!("bad manifest hash for {document_id}"),
+            })?;
+            let bytes = self.blobs.read_to_vec(&hash)?;
+            let m = Manifest::from_canonical_json(&bytes)?;
+            (h, v, m.parent.clone(), m.visible_name, m.doc_type)
+        };
+
+        // Record a new version with deleted=true and parent="trash". This
+        // becomes the current manifest, which means the next push will
+        // upload it to the device — that's how the deletion propagates.
+        let outcome = self.record_metadata_change(document_id, |map| {
+            map.insert("deleted".into(), serde_json::Value::Bool(true));
+            map.insert(
+                "parent".into(),
+                serde_json::Value::String("trash".into()),
+            );
+            Ok(())
+        })?;
+
+        // Now move the SQL row from `documents` into `archived_documents`,
+        // pinning the archive entry to the new (deleted) manifest version
+        // so list_pushable_documents picks it up for the next sync.
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let now = OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO archived_documents \
+                (document_id, visible_name, doc_type, parent, manifest_hash, \
+                 version_id, reason, archived_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                document_id,
+                visible_name,
+                doc_type,
+                original_parent,
+                outcome.manifest_hash.as_str(),
+                outcome.version_id,
+                reason.as_str(),
+                now,
+            ],
+        )?;
+        tx.execute(
+            "DELETE FROM documents WHERE document_id = ?1",
+            params![document_id],
+        )?;
+        tx.commit()?;
+        let _ = manifest_hex;
+        Ok(())
+    }
+
+    /// Restore an archived document to the live listing using the manifest
+    /// it had at archive time. Returns `NotFound` if the id isn't in the
+    /// archive.
+    pub fn unarchive_document(&self, document_id: &str) -> Result<DocumentSummary> {
+        // Read the archive entry first — it tells us the original parent
+        // to restore the doc to. Hold no write lock while we read so the
+        // subsequent record_metadata_change can take it cleanly.
+        let row: (String, String, Option<String>) = {
+            let conn = self.db.lock();
+            conn.query_row(
+                "SELECT visible_name, doc_type, parent \
+                 FROM archived_documents WHERE document_id = ?1",
+                params![document_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("archived document {document_id}")))?
+        };
+        let (visible_name, doc_type, original_parent) = row;
+        let parent_for_meta = original_parent.clone().unwrap_or_default();
+
+        // Record a new version with deleted=false and the original parent
+        // — this is what gets pushed to the device on next sync, undoing
+        // the trash move.
+        let outcome = self.record_metadata_change(document_id, |map| {
+            map.insert("deleted".into(), serde_json::Value::Bool(false));
+            map.insert(
+                "parent".into(),
+                serde_json::Value::String(parent_for_meta.clone()),
+            );
+            Ok(())
+        })?;
+
+        // Move the row back: archived_documents → documents.
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO documents(document_id, current_manifest, current_version_id) \
+             VALUES (?1, ?2, ?3) \
+             ON CONFLICT(document_id) DO UPDATE SET \
+                 current_manifest = excluded.current_manifest, \
+                 current_version_id = excluded.current_version_id",
+            params![
+                document_id,
+                outcome.manifest_hash.as_str(),
+                outcome.version_id,
+            ],
+        )?;
+        tx.execute(
+            "DELETE FROM archived_documents WHERE document_id = ?1",
+            params![document_id],
+        )?;
+        let observed_at: String = tx
+            .query_row(
+                "SELECT observed_at FROM versions WHERE id = ?1",
+                params![outcome.version_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        tx.commit()?;
+
+        Ok(DocumentSummary {
+            document_id: document_id.to_string(),
+            visible_name,
+            doc_type,
+            current_manifest: outcome.manifest_hash,
+            current_version_id: outcome.version_id,
+            last_observed_at: observed_at,
+            parent: original_parent,
+            size_bytes: 0,
+            page_count: None,
+            has_unpushed_changes: true,
+        })
+    }
+
+    /// Permanently delete an archived document: drop the archive row, the
+    /// version log entries, and any sync_state. Blobs that are no longer
+    /// referenced by any version become orphans and will be reclaimed by
+    /// the next `garbage_collect`.
+    pub fn purge_archived_document(&self, document_id: &str) -> Result<()> {
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+
+        let exists: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM archived_documents WHERE document_id = ?1",
+                params![document_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(Error::NotFound(format!("archived document {document_id}")));
+        }
+
+        tx.execute(
+            "DELETE FROM archived_documents WHERE document_id = ?1",
+            params![document_id],
+        )?;
+        tx.execute(
+            "DELETE FROM versions WHERE document_id = ?1",
+            params![document_id],
+        )?;
+        tx.execute(
+            "DELETE FROM sync_state WHERE document_id = ?1",
+            params![document_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Return the current archive contents, newest first.
+    pub fn list_archived(&self) -> Result<Vec<ArchivedDocument>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT document_id, visible_name, doc_type, parent, \
+                    manifest_hash, version_id, reason, archived_at \
+             FROM archived_documents \
+             ORDER BY archived_at DESC, document_id ASC",
+        )?;
+        let rows: Vec<ArchivedDocument> = stmt
+            .query_map([], |r| {
+                let manifest_hex: String = r.get(4)?;
+                let reason_str: String = r.get(6)?;
+                Ok(ArchivedDocument {
+                    document_id: r.get(0)?,
+                    visible_name: r.get(1)?,
+                    doc_type: r.get(2)?,
+                    parent: r.get(3)?,
+                    manifest_hash: Sha256Hex::from_hex(&manifest_hex)
+                        .unwrap_or_else(|| Sha256Hex::from_bytes(manifest_hex.as_bytes())),
+                    version_id: r.get(5)?,
+                    reason: ArchiveReason::parse(&reason_str).unwrap_or(ArchiveReason::Local),
+                    archived_at: r.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// Both live and archived documents that the push engine needs to
+    /// consider. Archived docs are returned as DocumentSummary entries
+    /// pointing at their *post-archive* manifest (deleted=true) so the
+    /// next push uploads the deletion to the device. The caller must not
+    /// rely on these being present in `list_documents` — that one is for
+    /// the user-facing live view.
+    pub fn list_pushable_documents(&self) -> Result<Vec<DocumentSummary>> {
+        let mut out = self.list_documents()?;
+        let archived = self.list_archived()?;
+        for a in archived {
+            // observed_at is fetched from the version row so plan_push and
+            // history views agree on timestamps.
+            let observed_at: String = self
+                .db
+                .lock()
+                .query_row(
+                    "SELECT observed_at FROM versions WHERE id = ?1",
+                    params![a.version_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or_default();
+            out.push(DocumentSummary {
+                document_id: a.document_id,
+                visible_name: a.visible_name,
+                doc_type: a.doc_type,
+                current_manifest: a.manifest_hash,
+                current_version_id: a.version_id,
+                last_observed_at: observed_at,
+                // The archive table stores the *original* parent; the
+                // manifest itself has parent="trash". For push purposes
+                // the manifest blob is what gets uploaded, so the parent
+                // value here is informational only.
+                parent: Some("trash".to_string()),
+                size_bytes: 0,
+                page_count: None,
+                has_unpushed_changes: true,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Test whether a document is currently archived. Used by the sync
+    /// engine to skip re-creating a live entry for a document the user has
+    /// already chosen to archive.
+    pub fn is_archived(&self, document_id: &str) -> Result<bool> {
+        let conn = self.db.lock();
+        let n: i64 = conn.query_row(
+            "SELECT count(*) FROM archived_documents WHERE document_id = ?1",
+            params![document_id],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Document IDs the library believes were on the device at last sync —
+    /// i.e. they have a non-null `last_seen_manifest` and aren't already in
+    /// the archive. Used by the pull engine to detect device-side deletions.
+    pub fn previously_synced_ids(&self) -> Result<Vec<String>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT s.document_id FROM sync_state s \
+             WHERE s.last_seen_manifest IS NOT NULL \
+             AND s.document_id NOT IN (SELECT document_id FROM archived_documents)",
+        )?;
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
         Ok(rows)
     }
 
@@ -600,6 +1111,9 @@ impl Library {
             current_version_id: outcome.version_id,
             last_observed_at: now,
             parent: None,
+            size_bytes: metadata_put.size + content_put.size + body_put.size,
+            page_count: None,
+            has_unpushed_changes: true,
         })
     }
 
@@ -697,6 +1211,8 @@ impl Library {
     }
 
     /// Mirror a folder from the device into the library's folder index.
+    /// Resets `pending_push` to 0 because we just got authoritative
+    /// state from the tablet.
     pub fn upsert_folder(
         &self,
         folder_id: &str,
@@ -705,13 +1221,98 @@ impl Library {
         metadata_json: &str,
     ) -> Result<()> {
         self.db.lock().execute(
-            "INSERT INTO folders(folder_id, parent, visible_name, metadata_json) \
-             VALUES (?1, ?2, ?3, ?4) \
+            "INSERT INTO folders(folder_id, parent, visible_name, metadata_json, pending_push) \
+             VALUES (?1, ?2, ?3, ?4, 0) \
              ON CONFLICT(folder_id) DO UPDATE SET \
                  parent = excluded.parent, \
                  visible_name = excluded.visible_name, \
-                 metadata_json = excluded.metadata_json",
+                 metadata_json = excluded.metadata_json, \
+                 pending_push = 0",
             params![folder_id, parent, visible_name, metadata_json],
+        )?;
+        Ok(())
+    }
+
+    /// Rename a folder. Updates the local row + the device-facing
+    /// `metadata_json` (visibleName, lastModified, modified flags) and
+    /// flags the folder for push so the next sync uploads the new
+    /// metadata file to the tablet.
+    pub fn rename_folder(&self, folder_id: &str, new_name: &str) -> Result<()> {
+        let trimmed = new_name.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(Error::InvalidArgument(
+                "folder name must not be empty".into(),
+            ));
+        }
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+
+        let row: Option<String> = tx
+            .query_row(
+                "SELECT metadata_json FROM folders WHERE folder_id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let metadata_json = row
+            .ok_or_else(|| Error::NotFound(format!("folder {folder_id}")))?;
+
+        // Mutate the metadata JSON in place so we keep every device
+        // field (parent, lastOpened, etc.) intact. If it isn't an
+        // object we still produce a minimal one — folders should
+        // always have object metadata, but defensive code is cheap.
+        let mut value: serde_json::Value = serde_json::from_str(&metadata_json)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        if !value.is_object() {
+            value = serde_json::json!({});
+        }
+        let map = value.as_object_mut().expect("ensured above");
+        map.insert("visibleName".into(), serde_json::Value::String(trimmed.clone()));
+        // xochitl uses these to decide a re-index is needed.
+        let now_ms = OffsetDateTime::now_utc().unix_timestamp() * 1000;
+        map.insert("lastModified".into(), serde_json::Value::String(now_ms.to_string()));
+        map.insert("modified".into(), serde_json::Value::Bool(true));
+        map.insert("metadatamodified".into(), serde_json::Value::Bool(true));
+        map.insert("synced".into(), serde_json::Value::Bool(false));
+        // Folders identify with this type on the device; preserve if
+        // already set, otherwise default.
+        map.entry("type".to_string())
+            .or_insert(serde_json::Value::String("CollectionType".into()));
+
+        let updated_json = serde_json::to_string(&value)?;
+
+        tx.execute(
+            "UPDATE folders SET visible_name = ?1, metadata_json = ?2, pending_push = 1 \
+             WHERE folder_id = ?3",
+            params![trimmed, updated_json, folder_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Folders that have been renamed locally and not yet pushed to
+    /// the device. Each tuple is `(folder_id, metadata_json)` — the
+    /// caller assembles a single `<folder_id>.metadata` file and ships
+    /// it via `Device::put_document_tree`.
+    pub fn list_pending_folder_pushes(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT folder_id, metadata_json FROM folders \
+             WHERE pending_push = 1 ORDER BY folder_id",
+        )?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// Mark a folder's local metadata as flushed to the device. Called
+    /// by the push engine after a successful upload.
+    pub fn mark_folder_pushed(&self, folder_id: &str) -> Result<()> {
+        self.db.lock().execute(
+            "UPDATE folders SET pending_push = 0 WHERE folder_id = ?1",
+            params![folder_id],
         )?;
         Ok(())
     }
@@ -974,6 +1575,23 @@ mod tests {
 
     fn seed_manifest(lib: &Library, doc_id: &str, contents: &[(&str, &[u8])]) -> Manifest {
         let mut files = Vec::new();
+        // Always include a `.metadata` file — the archive/move flows
+        // mutate it, and real synced documents always have one.
+        let meta_blob = serde_json::json!({
+            "visibleName": "Test",
+            "type": "DocumentType",
+            "parent": "",
+            "deleted": false,
+            "lastModified": "0",
+        });
+        let meta_bytes = serde_json::to_vec_pretty(&meta_blob).unwrap();
+        let meta_put = lib.put_blob(&meta_bytes).unwrap();
+        files.push(ManifestFile {
+            path: format!("{doc_id}.metadata"),
+            sha256: meta_put.hash,
+            size: meta_put.size,
+            mode: 0o644,
+        });
         for (path, bytes) in contents {
             let res = lib.put_blob(bytes).unwrap();
             files.push(ManifestFile {
@@ -984,6 +1602,7 @@ mod tests {
             });
         }
         let mut m = Manifest::new(doc_id, "Notebook", "Test");
+        m.metadata = meta_blob;
         m.files = files;
         m
     }
@@ -1065,8 +1684,9 @@ mod tests {
         assert_eq!(report.manifests_ok, 1);
         assert_eq!(report.blobs_missing, 0);
         assert_eq!(report.blobs_orphan, 0);
-        // Three blobs: a.rm, b.rm, and the manifest itself.
-        assert_eq!(report.blobs_total, 3);
+        // Four blobs: .metadata (always seeded), a.rm, b.rm, and the
+        // manifest itself.
+        assert_eq!(report.blobs_total, 4);
     }
 
     #[test]
@@ -1080,8 +1700,16 @@ mod tests {
         let orphan = lib.put_blob(b"i am an orphan").unwrap();
         assert!(lib.has_blob(&orphan.hash));
 
-        // Delete a referenced file blob to simulate corruption.
-        let target = m.files[0].sha256.clone();
+        // Delete a referenced file blob to simulate corruption. Pick the
+        // a.rm blob explicitly — seed_manifest also seeds a .metadata
+        // file at index 0.
+        let target = m
+            .files
+            .iter()
+            .find(|f| f.path == "a.rm")
+            .unwrap()
+            .sha256
+            .clone();
         std::fs::remove_file(lib.blobs().path_for(&target)).unwrap();
 
         let report = lib.verify().unwrap();
@@ -1155,6 +1783,127 @@ mod tests {
         // Idempotent — second run finds nothing to collect.
         let report2 = lib.garbage_collect_with_grace(zero).unwrap();
         assert_eq!(report2.deleted, 0);
+    }
+
+    #[test]
+    fn archive_roundtrip_preserves_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let mut m = seed_manifest(&lib, "doc-1", &[("a.rm", b"AAA")]);
+        m.parent = Some("folder-A".into());
+        if let Some(map) = m.metadata.as_object_mut() {
+            map.insert("parent".into(), serde_json::Value::String("folder-A".into()));
+        }
+        lib.record_version(&m, Source::Pulled).unwrap();
+
+        // Live → archive: the doc is gone from list_documents, the new
+        // current manifest has deleted=true, and the archive entry
+        // remembers the original parent so restore knows where to put it.
+        lib.archive_document("doc-1", ArchiveReason::Local).unwrap();
+        assert!(lib.list_documents().unwrap().is_empty());
+        let archived = lib.list_archived().unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].document_id, "doc-1");
+        assert_eq!(archived[0].reason, ArchiveReason::Local);
+        assert_eq!(archived[0].parent.as_deref(), Some("folder-A"));
+        assert!(lib.is_archived("doc-1").unwrap());
+
+        // The post-archive manifest carries deleted=true and parent=trash
+        // — that's what gets shipped to the device on next push.
+        let arch_bytes = lib.read_blob(&archived[0].manifest_hash).unwrap();
+        let arch_manifest = Manifest::from_canonical_json(&arch_bytes).unwrap();
+        assert_eq!(arch_manifest.parent.as_deref(), Some("trash"));
+        let arch_meta_file = arch_manifest
+            .files
+            .iter()
+            .find(|f| f.path.ends_with(".metadata"))
+            .unwrap();
+        let meta_bytes = lib.read_blob(&arch_meta_file.sha256).unwrap();
+        let meta: serde_json::Value = serde_json::from_slice(&meta_bytes).unwrap();
+        assert_eq!(meta.get("deleted").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(meta.get("parent").and_then(|v| v.as_str()), Some("trash"));
+
+        // Restore: doc is live again, with deleted=false and original
+        // parent reinstated.
+        let summary = lib.unarchive_document("doc-1").unwrap();
+        assert_eq!(summary.document_id, "doc-1");
+        assert_eq!(summary.parent.as_deref(), Some("folder-A"));
+        assert!(!lib.is_archived("doc-1").unwrap());
+        assert_eq!(lib.list_documents().unwrap().len(), 1);
+        assert!(lib.list_archived().unwrap().is_empty());
+
+        // History records the original pull plus the two metadata flips.
+        let history = lib.get_history("doc-1").unwrap();
+        assert_eq!(history.len(), 3);
+    }
+
+    #[test]
+    fn move_document_updates_parent_and_records_new_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"page")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+
+        let outcome = lib.move_document("doc-1", Some("folder-X")).unwrap();
+        assert!(!outcome.unchanged);
+
+        // The new current manifest reflects the move on both the
+        // top-level field and inside the .metadata blob.
+        let docs = lib.list_documents().unwrap();
+        assert_eq!(docs[0].parent.as_deref(), Some("folder-X"));
+        let bytes = lib.read_blob(&docs[0].current_manifest).unwrap();
+        let manifest = Manifest::from_canonical_json(&bytes).unwrap();
+        assert_eq!(manifest.parent.as_deref(), Some("folder-X"));
+        let meta_file = manifest
+            .files
+            .iter()
+            .find(|f| f.path.ends_with(".metadata"))
+            .unwrap();
+        let meta: serde_json::Value =
+            serde_json::from_slice(&lib.read_blob(&meta_file.sha256).unwrap()).unwrap();
+        assert_eq!(meta.get("parent").and_then(|v| v.as_str()), Some("folder-X"));
+
+        // Moving back to root sets metadata.parent="" and manifest.parent=None.
+        lib.move_document("doc-1", None).unwrap();
+        let docs = lib.list_documents().unwrap();
+        assert_eq!(docs[0].parent, None);
+    }
+
+    #[test]
+    fn purge_archived_drops_versions_and_lets_gc_reclaim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"unique-bytes-for-purge-test")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+        let body_hash = m
+            .files
+            .iter()
+            .find(|f| f.path == "a.rm")
+            .unwrap()
+            .sha256
+            .clone();
+        assert!(lib.has_blob(&body_hash));
+
+        lib.archive_document("doc-1", ArchiveReason::Device).unwrap();
+        lib.purge_archived_document("doc-1").unwrap();
+
+        // Both archive and version log are empty for this doc.
+        assert!(lib.list_archived().unwrap().is_empty());
+        assert!(lib.get_history("doc-1").unwrap().is_empty());
+
+        // GC then reclaims the now-orphan blobs.
+        let zero = std::time::Duration::ZERO;
+        let report = lib.garbage_collect_with_grace(zero).unwrap();
+        assert!(report.deleted >= 1, "purge should free at least one blob");
+        assert!(!lib.has_blob(&body_hash));
+    }
+
+    #[test]
+    fn purge_missing_archive_entry_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let err = lib.purge_archived_document("never-existed").unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)));
     }
 
     #[test]

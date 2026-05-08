@@ -13,9 +13,14 @@
 //! of points (P_i, P_{i+1}) we compute the segment normal and offset
 //! left/right by half the per-point width. The quads are emitted as
 //! filled rings inside one Op::DrawPolygon per stroke. Joint gaps and
-//! stroke tips are filled with a small disc (octagon approximation) at
-//! each point — gives natural rounded caps and hides the seam where
-//! adjacent segments meet at varying widths.
+//! stroke tips are filled with a small disc at each point — gives natural
+//! rounded caps and hides the seam where adjacent segments meet at
+//! varying widths.
+//!
+//! Winding: every ring is wound clockwise in PDF (Y-up) space so
+//! NonZero winding never cancels overlapping rings into holes. Mixing
+//! orientations would punch disc-shaped voids through the stroke at
+//! every point.
 
 use image::ImageReader;
 use printpdf::{
@@ -251,7 +256,7 @@ fn render_rm_to_ops(rm: &RemarkableFile) -> Result<Vec<Op>, String> {
             let pos = map_xy(p.x(), p.y());
             let r = (widths_pt[i] / 2.0).max(0.05);
             rings.push(PolygonRing {
-                points: octagon(pos, r),
+                points: disc(pos, r),
             });
         }
 
@@ -269,14 +274,16 @@ fn render_rm_to_ops(rm: &RemarkableFile) -> Result<Vec<Op>, String> {
     Ok(ops)
 }
 
-/// Eight-vertex approximation of a circle. Good enough for the small radii
-/// used by stroke caps; cheaper than a higher-poly circle and renders
-/// indistinguishable at typical viewing zooms.
-fn octagon(center: Point, radius_pt: f32) -> Vec<LinePoint> {
+/// 16-vertex approximation of a circle, wound clockwise in PDF (Y-up)
+/// space to match the segment-quad winding. Sixteen sides keep caps
+/// looking round at the largest brush/highlighter widths.
+fn disc(center: Point, radius_pt: f32) -> Vec<LinePoint> {
     use std::f32::consts::PI;
-    (0..8)
+    const SIDES: usize = 16;
+    (0..SIDES)
         .map(|i| {
-            let a = (i as f32) * PI * 2.0 / 8.0;
+            // Negative angle ⇒ clockwise traversal in Y-up coordinates.
+            let a = -(i as f32) * PI * 2.0 / (SIDES as f32);
             LinePoint {
                 p: Point {
                     x: Pt(center.x.0 + radius_pt * a.cos()),

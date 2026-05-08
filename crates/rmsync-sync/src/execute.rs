@@ -1,8 +1,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use std::collections::HashSet;
+
 use rmsync_core::manifest::ManifestFile;
-use rmsync_core::{Library, Manifest, Source};
+use rmsync_core::{ArchiveReason, Library, Manifest, Source};
 use rmsync_device::Device;
 
 use crate::error::{SyncError, SyncResult};
@@ -45,6 +47,16 @@ pub async fn execute_pull(
             })
             .await;
     }
+
+    // Snapshot which document UUIDs the device just reported. Used after
+    // the loop to detect device-side deletions (anything previously synced
+    // and not present this time).
+    let device_ids: HashSet<String> = plan
+        .items
+        .iter()
+        .filter(|p| matches!(p.entry.kind, rmsync_device::RemoteEntryKind::Document))
+        .map(|p| p.entry.uuid.clone())
+        .collect();
 
     let mut recorded = 0usize;
     let mut unchanged = 0usize;
@@ -134,6 +146,33 @@ pub async fn execute_pull(
                         })
                         .await;
                 }
+            }
+        }
+    }
+
+    // Device-side deletions: any document the library believed lived on
+    // the device, that the device did not return in this listing, gets
+    // moved to the archive. The user can restore from there. Keeps the
+    // app from silently throwing away history when something disappears
+    // from the tablet (intentionally or otherwise).
+    if !cancel.is_cancelled() {
+        match library.previously_synced_ids() {
+            Ok(known) => {
+                for doc_id in known {
+                    if device_ids.contains(&doc_id) {
+                        continue;
+                    }
+                    if let Err(e) = library.archive_document(&doc_id, ArchiveReason::Device) {
+                        tracing::warn!(
+                            uuid = %doc_id,
+                            error = %e,
+                            "could not archive device-deleted document"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not enumerate previously-synced ids");
             }
         }
     }

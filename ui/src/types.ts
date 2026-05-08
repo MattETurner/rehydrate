@@ -6,12 +6,28 @@ export interface DocumentSummary {
   current_version_id: number;
   last_observed_at: string;
   parent: string | null;
+  size_bytes: number;
+  page_count: number | null;
+  has_unpushed_changes: boolean;
 }
 
 export interface FolderEntry {
   folder_id: string;
   parent: string | null;
   visible_name: string;
+}
+
+export type ArchiveReason = "local" | "device";
+
+export interface ArchivedDocument {
+  document_id: string;
+  visible_name: string;
+  doc_type: string;
+  parent: string | null;
+  manifest_hash: string;
+  version_id: number;
+  reason: ArchiveReason;
+  archived_at: string;
 }
 
 export interface VersionEntry {

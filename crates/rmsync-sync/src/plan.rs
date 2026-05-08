@@ -46,14 +46,26 @@ pub async fn plan_pull(library: &Library, device: &dyn Device) -> SyncResult<Pul
     let entries = device.list_documents().await?;
     let mut items = Vec::with_capacity(entries.len());
     for entry in entries {
-        let status = match entry.kind {
-            rmsync_device::RemoteEntryKind::Folder => PlanItemStatus::Unchanged,
-            rmsync_device::RemoteEntryKind::Document => classify(library, &entry)?,
+        let (status, reason) = match entry.kind {
+            rmsync_device::RemoteEntryKind::Folder => (PlanItemStatus::Unchanged, None),
+            rmsync_device::RemoteEntryKind::Document => {
+                // Archived documents stay archived even if the device still
+                // has them. Restoring is an explicit user action; without
+                // this guard a pull would silently reanimate the doc.
+                if library.is_archived(&entry.uuid)? {
+                    (
+                        PlanItemStatus::Skipped,
+                        Some("archived locally".to_string()),
+                    )
+                } else {
+                    (classify(library, &entry)?, None)
+                }
+            }
         };
         items.push(DocumentPlan {
             entry,
             status,
-            reason: None,
+            reason,
         });
     }
     Ok(PullPlan { items })

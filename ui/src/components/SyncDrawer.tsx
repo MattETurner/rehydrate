@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ipc, onSyncPhase, onSyncProgress } from "../ipc";
+import { Icon } from "./Icon";
+import { Skeleton } from "./Skeleton";
 import type {
   PlanItemStatus,
   ProgressEvent,
@@ -18,32 +20,20 @@ interface DocProgress {
   state: "queued" | "in-progress" | "done" | "skipped";
   files: number;
   bytes: number;
-  deduped: number;
+  totalFiles?: number;
   reason?: string;
 }
 
 const PULL_LABEL: Record<PlanItemStatus, string> = {
   new: "New",
-  changed: "Changed",
+  changed: "Updated",
   unchanged: "Unchanged",
   skipped: "Skipped",
 };
-const PULL_CLASS: Record<PlanItemStatus, string> = {
-  new: "badge badge-new",
-  changed: "badge badge-changed",
-  unchanged: "badge badge-unchanged",
-  skipped: "badge badge-skipped",
-};
-
 const PUSH_LABEL: Record<PushItemStatus, string> = {
-  outbound: "Outbound",
+  outbound: "Upload",
   unchanged: "Unchanged",
   skipped: "Skipped",
-};
-const PUSH_CLASS: Record<PushItemStatus, string> = {
-  outbound: "badge badge-new",
-  unchanged: "badge badge-unchanged",
-  skipped: "badge badge-skipped",
 };
 
 export function SyncDrawer({ onClose, onComplete }: Props) {
@@ -54,9 +44,10 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
   const [phase, setPhase] = useState<"plan" | "pull" | "push" | "done">("plan");
   const [report, setReport] = useState<TwoWayReport | null>(null);
   const [progress, setProgress] = useState<Record<string, DocProgress>>({});
+  const startedAtRef = useRef<number | null>(null);
 
-  // Build the plan preview up front so the user can see what's about to
-  // happen before they hit Start.
+  // Build the plan preview up front so the user can see what's about
+  // to happen before they hit Start.
   useEffect(() => {
     let mounted = true;
     Promise.all([ipc.pullPlan(), ipc.pushPlan()])
@@ -79,14 +70,59 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
     for (const item of pullPlan.items) pull[item.status]++;
     const push = { outbound: 0, unchanged: 0, skipped: 0 };
     for (const item of pushPlan.items) push[item.status]++;
-    return { pull, push };
+    return {
+      incoming: pull.new + pull.changed,
+      outgoing: push.outbound,
+      ...pull,
+      ...push,
+    };
   }, [pullPlan, pushPlan]);
+
+  // Items grouped by direction. Skip "unchanged" — they're noise.
+  const groups = useMemo(() => {
+    const incoming: Array<RowItem> = [];
+    const outgoing: Array<RowItem> = [];
+    if (pullPlan) {
+      for (const i of pullPlan.items) {
+        if (i.status === "unchanged") continue;
+        incoming.push({
+          uuid: i.entry.uuid,
+          title: i.entry.visible_name || i.entry.uuid,
+          docType: i.entry.doc_type,
+          label: PULL_LABEL[i.status],
+          variant: i.status === "skipped" ? "skipped" : "primary",
+          direction: "pull",
+        });
+      }
+    }
+    if (pushPlan) {
+      for (const i of pushPlan.items) {
+        if (i.status === "unchanged") continue;
+        outgoing.push({
+          uuid: i.document.document_id,
+          title: i.document.visible_name,
+          docType: i.document.doc_type,
+          label: PUSH_LABEL[i.status],
+          variant: i.status === "skipped" ? "skipped" : "primary",
+          direction: "push",
+        });
+      }
+    }
+    return { incoming, outgoing };
+  }, [pullPlan, pushPlan]);
+
+  const totalActive = groups.incoming.length + groups.outgoing.length;
+  const completedCount = useMemo(
+    () => Object.values(progress).filter((p) => p.state === "done" || p.state === "skipped").length,
+    [progress],
+  );
 
   async function start() {
     setRunning(true);
     setProgress({});
     setReport(null);
     setPhase("pull");
+    startedAtRef.current = Date.now();
 
     const unlistenPhase = await onSyncPhase((p) => setPhase(p));
     const unlistenProgress = await onSyncProgress((ev: ProgressEvent) => {
@@ -98,7 +134,6 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
               state: "in-progress",
               files: 0,
               bytes: 0,
-              deduped: 0,
             };
             break;
           case "file_fetched": {
@@ -106,13 +141,12 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
               state: "in-progress" as const,
               files: 0,
               bytes: 0,
-              deduped: 0,
             };
             next[ev.document_id] = {
               ...cur,
+              state: "in-progress",
               files: cur.files + 1,
               bytes: cur.bytes + ev.bytes,
-              deduped: cur.deduped + (ev.deduped ? 1 : 0),
             };
             break;
           }
@@ -121,7 +155,6 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
               state: "done" as const,
               files: 0,
               bytes: 0,
-              deduped: 0,
             };
             next[ev.document_id] = { ...cur, state: "done" };
             break;
@@ -131,7 +164,6 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
               state: "skipped",
               files: 0,
               bytes: 0,
-              deduped: 0,
               reason: ev.reason,
             };
             break;
@@ -145,6 +177,13 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
       setReport(r);
       setPhase("done");
       onComplete();
+      // Auto-dismiss when there were no skips/errors. Gives the user
+      // confirmation flash without requiring a click.
+      const cleanFinish =
+        r.pull.skipped === 0 && r.push.skipped === 0;
+      if (cleanFinish) {
+        setTimeout(() => onClose(), 1500);
+      }
     } catch (e) {
       setPlanError(String(e));
     } finally {
@@ -154,157 +193,246 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
     }
   }
 
-  const allItems = useMemo(() => {
-    const items: Array<{
-      key: string;
-      title: string;
-      docType: string;
-      label: string;
-      cls: string;
-      uuid: string;
-      direction: "pull" | "push";
-    }> = [];
-    if (pullPlan) {
-      for (const i of pullPlan.items) {
-        if (i.status === "unchanged") continue;
-        items.push({
-          key: `pull-${i.entry.uuid}`,
-          title: i.entry.visible_name,
-          docType: i.entry.doc_type,
-          label: PULL_LABEL[i.status],
-          cls: PULL_CLASS[i.status],
-          uuid: i.entry.uuid,
-          direction: "pull",
-        });
-      }
-    }
-    if (pushPlan) {
-      for (const i of pushPlan.items) {
-        if (i.status === "unchanged") continue;
-        items.push({
-          key: `push-${i.document.document_id}`,
-          title: i.document.visible_name,
-          docType: i.document.doc_type,
-          label: PUSH_LABEL[i.status],
-          cls: PUSH_CLASS[i.status],
-          uuid: i.document.document_id,
-          direction: "push",
-        });
-      }
-    }
-    return items;
-  }, [pullPlan, pushPlan]);
-
-  const activeProgressKeys = useMemo(() => Object.keys(progress), [progress]);
-
   return (
     <div className="drawer" onClick={(e) => e.stopPropagation()}>
       <header>
         <h2>Sync with reMarkable</h2>
-        <button onClick={onClose} disabled={running} className="close">
+        <button onClick={onClose} disabled={running} className="close" aria-label="Close">
           ×
         </button>
       </header>
 
-      {planError && <div className="error">{planError}</div>}
-
-      {(!pullPlan || !pushPlan) && !planError && (
-        <div className="empty">Planning…</div>
+      {planError && (
+        <div className="error">
+          <Icon name="warn" />
+          {planError}
+        </div>
       )}
 
-      {pullPlan && pushPlan && (
+      {!pullPlan || !pushPlan ? (
+        <div className="empty">
+          <Skeleton width={200} height={26} mb={12} />
+          <Skeleton width={280} mb={8} />
+          <Skeleton width={240} />
+        </div>
+      ) : (
         <>
-          <div className="plan-summary">
-            {counts && (
-              <>
-                <span className="muted small">Pull:</span>
-                <span className="badge badge-new">{counts.pull.new} new</span>
-                <span className="badge badge-changed">
-                  {counts.pull.changed} changed
+          {!report && (
+            <div className="sync-hero">
+              <div className="nums">
+                <span
+                  className={`num ${counts && counts.incoming === 0 ? "idle" : ""}`}
+                  title="Incoming from the tablet"
+                >
+                  <Icon name="arrowDown" />
+                  {counts?.incoming ?? 0}
+                  <small>incoming</small>
                 </span>
-                <span className="badge badge-unchanged">
-                  {counts.pull.unchanged} unchanged
+                <span
+                  className={`num ${counts && counts.outgoing === 0 ? "idle" : ""}`}
+                  title="Outgoing to the tablet"
+                >
+                  <Icon name="arrowUp" />
+                  {counts?.outgoing ?? 0}
+                  <small>to upload</small>
                 </span>
-                <span className="muted small">·</span>
-                <span className="muted small">Push:</span>
-                <span className="badge badge-new">
-                  {counts.push.outbound} outbound
-                </span>
-                <span className="badge badge-unchanged">
-                  {counts.push.unchanged} unchanged
-                </span>
-              </>
-            )}
-          </div>
-
-          {allItems.length === 0 ? (
-            <div className="empty">
-              Nothing to sync — library and device match.
+              </div>
+              <button
+                className="primary start"
+                onClick={start}
+                disabled={running || totalActive === 0}
+              >
+                {running ? (
+                  <>
+                    <Icon name="sync" /> Syncing…
+                  </>
+                ) : totalActive === 0 ? (
+                  "Nothing to sync"
+                ) : (
+                  <>
+                    <Icon name="sync" /> Start sync
+                  </>
+                )}
+              </button>
             </div>
-          ) : (
-            <ul className="plan-list">
-              {allItems.map((it) => {
-                const p = progress[it.uuid];
-                const inThisPhase =
-                  phase === it.direction || (phase === "done" && p?.state === "done");
-                return (
-                  <li key={it.key} className={inThisPhase && p?.state === "in-progress" ? "active" : ""}>
-                    <span className={it.cls}>{it.label}</span>
-                    <span className="muted small">{it.direction === "pull" ? "↓" : "↑"}</span>
-                    <span className="title">{it.title}</span>
-                    <span className="muted small">{it.docType}</span>
-                    {p && p.state === "in-progress" && (
-                      <span className="muted small">
-                        {p.files} files · {formatBytes(p.bytes)}
-                      </span>
-                    )}
-                    {p && p.state === "done" && <span className="badge badge-ok">✓</span>}
-                    {p && p.state === "skipped" && (
-                      <span className="badge badge-skipped" title={p.reason}>
-                        Skipped
-                      </span>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
           )}
 
-          <footer>
-            {report ? (
-              <div className="report">
-                Done · pulled {report.pull.recorded}, pushed {report.push.pushed}
-                {report.pull.skipped + report.push.skipped > 0
-                  ? `, ${report.pull.skipped + report.push.skipped} skipped`
-                  : ""}
-                <button onClick={onClose}>Close</button>
+          {report && (
+            <div className="success-card">
+              <Icon name="check" />
+              <div className="body">
+                <strong>{successHeadline(report)}</strong>
+                <span>{successDetail(report, startedAtRef.current)}</span>
               </div>
-            ) : (
-              <>
-                {running && (
-                  <span className="muted small">
-                    {phase === "pull"
-                      ? "Pulling from device…"
-                      : phase === "push"
-                        ? "Pushing to device…"
-                        : "Syncing…"}
-                  </span>
-                )}
-                <button
-                  onClick={start}
-                  disabled={running || allItems.length === 0}
-                  className="primary"
-                >
-                  {running ? "Syncing…" : "Start sync"}
-                </button>
-              </>
-            )}
-          </footer>
-          {activeProgressKeys.length === 0 || running ? null : null}
+              <button onClick={onClose}>Close</button>
+            </div>
+          )}
+
+          {!report && totalActive > 0 && (
+            <div className="plan-list" style={{ overflowY: "auto" }}>
+              {groups.incoming.length > 0 && (
+                <>
+                  <div className="sync-section">
+                    <Icon name="arrowDown" /> From the tablet · {groups.incoming.length}
+                  </div>
+                  {groups.incoming.map((it) => (
+                    <SyncRow
+                      key={`pull-${it.uuid}`}
+                      item={it}
+                      progress={progress[it.uuid]}
+                      activePhase={phase}
+                    />
+                  ))}
+                </>
+              )}
+              {groups.outgoing.length > 0 && (
+                <>
+                  <div className="sync-section">
+                    <Icon name="arrowUp" /> To the tablet · {groups.outgoing.length}
+                  </div>
+                  {groups.outgoing.map((it) => (
+                    <SyncRow
+                      key={`push-${it.uuid}`}
+                      item={it}
+                      progress={progress[it.uuid]}
+                      activePhase={phase}
+                    />
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+
+          {!report && totalActive === 0 && (
+            <div className="empty">
+              <h2>Already in sync</h2>
+              <p>Nothing has changed on the tablet or in the library since the last sync.</p>
+            </div>
+          )}
+
+          {/* Global progress bar — shows determinate fill while running. */}
+          {running && (
+            <div className="global-progress">
+              <span
+                className={completedCount === 0 ? "indeterminate" : ""}
+                style={{
+                  width: totalActive > 0
+                    ? `${Math.round((completedCount / totalActive) * 100)}%`
+                    : "0%",
+                }}
+              />
+            </div>
+          )}
+
+          {!report && (
+            <footer>
+              {running && (
+                <span className="muted small">
+                  {phase === "pull"
+                    ? "Pulling from the tablet…"
+                    : phase === "push"
+                      ? "Uploading to the tablet…"
+                      : "Working…"}{" "}
+                  · {completedCount}/{totalActive}
+                </span>
+              )}
+              {!running && totalActive > 0 && (
+                <span className="muted small">
+                  {totalActive} document{totalActive === 1 ? "" : "s"} ready to move
+                </span>
+              )}
+            </footer>
+          )}
         </>
       )}
     </div>
   );
+}
+
+interface RowItem {
+  uuid: string;
+  title: string;
+  docType: string;
+  label: string;
+  variant: "primary" | "skipped";
+  direction: "pull" | "push";
+}
+
+function SyncRow({
+  item,
+  progress,
+  activePhase,
+}: {
+  item: RowItem;
+  progress: DocProgress | undefined;
+  activePhase: "plan" | "pull" | "push" | "done";
+}) {
+  const inThisPhase = activePhase === item.direction;
+  const isInProgress = inThisPhase && progress?.state === "in-progress";
+  const isDone = progress?.state === "done";
+  const isSkipped = progress?.state === "skipped";
+  // Pseudo-progress: each file_fetched bumps the bar a bit. Without a
+  // pre-known totalFiles we use a smooth ease toward 90% and snap to
+  // 100% on completion.
+  const pct = isDone
+    ? 100
+    : isSkipped
+      ? 100
+      : isInProgress
+        ? Math.min(90, (progress?.files ?? 0) * 8 + 12)
+        : 0;
+  const cls = `sync-row${isInProgress ? " in-progress" : ""}${isDone || isSkipped ? " done" : ""}`;
+  return (
+    <div className={cls}>
+      <span
+        className={`badge ${item.variant === "skipped" ? "badge-skipped" : "badge-new"}`}
+      >
+        {item.label}
+      </span>
+      <span className="title">{item.title}</span>
+      <span className="muted small">{prettyDocType(item.docType)}</span>
+      {isInProgress && progress && (
+        <span className="muted small">
+          {progress.files} file{progress.files === 1 ? "" : "s"} · {formatBytes(progress.bytes)}
+        </span>
+      )}
+      {isDone && <Icon name="check" className="icon-done" />}
+      {isSkipped && (
+        <span className="badge badge-skipped" title={progress?.reason}>
+          <Icon name="warn" /> Skipped
+        </span>
+      )}
+      {(isInProgress || isDone) && (
+        <span className="progress-bar" style={{ width: `${pct}%` }} />
+      )}
+    </div>
+  );
+}
+
+function prettyDocType(s: string): string {
+  if (s === "Notebook") return "Notebook";
+  if (s === "DocumentType.Pdf") return "PDF";
+  if (s === "DocumentType.Epub") return "EPUB";
+  return s;
+}
+
+function successHeadline(r: TwoWayReport): string {
+  const moved = r.pull.recorded + r.push.pushed;
+  if (moved === 0) return "Already in sync";
+  if (r.pull.recorded > 0 && r.push.pushed === 0)
+    return `Pulled ${r.pull.recorded} document${r.pull.recorded === 1 ? "" : "s"} from your tablet`;
+  if (r.push.pushed > 0 && r.pull.recorded === 0)
+    return `Sent ${r.push.pushed} document${r.push.pushed === 1 ? "" : "s"} to your tablet`;
+  return `Synced ${moved} document${moved === 1 ? "" : "s"}`;
+}
+
+function successDetail(r: TwoWayReport, startedAt: number | null): string {
+  const took = startedAt ? Math.max(1, Math.round((Date.now() - startedAt) / 1000)) : null;
+  const skipped = r.pull.skipped + r.push.skipped;
+  const parts: string[] = [];
+  if (took !== null) parts.push(`in ${took}s`);
+  if (skipped > 0) parts.push(`${skipped} skipped`);
+  return parts.length > 0 ? parts.join(" · ") : "Library and tablet are aligned.";
 }
 
 function formatBytes(n: number): string {

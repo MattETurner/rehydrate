@@ -1,6 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ipc } from "../ipc";
+import { useConfirm } from "./Confirm";
+import { useToast } from "./Toast";
+import { Icon } from "./Icon";
+import { Skeleton } from "./Skeleton";
 import type { DocumentSummary, VersionEntry } from "../types";
 
 interface Props {
@@ -12,6 +16,8 @@ export function HistoryDrawer({ document, onClose }: Props) {
   const [versions, setVersions] = useState<VersionEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const confirm = useConfirm();
+  const toast = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -28,19 +34,33 @@ export function HistoryDrawer({ document, onClose }: Props) {
     };
   }, [document.document_id]);
 
-  async function restoreVersion(v: VersionEntry) {
-    if (!window.confirm(
-      `Restore "${document.visible_name}" to v${v.id}?\n\n` +
-        `The current version stays in history; the restored version becomes ` +
-        `current and will be pushed to the device on the next sync.`,
-    )) {
-      return;
-    }
+  // Newest first for display, but compute diffs against the *previous*
+  // version (chronologically) so older→newer makes sense.
+  const ordered = useMemo(() => {
+    if (!versions) return [];
+    const reversed = [...versions].reverse();
+    return reversed.map((v, i) => {
+      const prev = reversed[i + 1] ?? null;
+      return { v, prev, isCurrent: i === 0, version: reversed.length - i };
+    });
+  }, [versions]);
+
+  async function restoreVersion(v: VersionEntry, label: string) {
+    const ok = await confirm({
+      title: `Restore "${document.visible_name}" to ${label}?`,
+      body: "The current version stays in history; the restored version becomes current and will sync to the tablet on the next sync.",
+      confirmLabel: "Restore",
+    });
+    if (!ok) return;
     setError(null);
     try {
       await ipc.restoreVersion(v.id);
       const fresh = await ipc.getHistory(document.document_id);
       setVersions(fresh);
+      toast.show({
+        tone: "ok",
+        body: `Restored to ${label}. The change will sync on the next sync.`,
+      });
     } catch (e) {
       setError(String(e));
     }
@@ -57,9 +77,10 @@ export function HistoryDrawer({ document, onClose }: Props) {
       if (!dest || typeof dest !== "string") return;
       setBusy(v.id);
       const result = await ipc.exportVersion(v.id, dest);
-      window.alert(
-        `Exported ${result.file_count} file${result.file_count === 1 ? "" : "s"} to:\n${result.path}`,
-      );
+      toast.show({
+        tone: "ok",
+        body: `Exported ${result.file_count} file${result.file_count === 1 ? "" : "s"} to ${result.path}`,
+      });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -86,41 +107,51 @@ export function HistoryDrawer({ document, onClose }: Props) {
       <header>
         <div>
           <h2>{document.visible_name}</h2>
-          <div className="muted small">{document.doc_type}</div>
+          <div className="muted small">
+            {prettyType(document.doc_type)}
+            {document.page_count !== null && ` · ${document.page_count} page${document.page_count === 1 ? "" : "s"}`}
+          </div>
         </div>
         <button onClick={onClose} className="close" aria-label="Close">
           ×
         </button>
       </header>
 
-      {error && <div className="error">{error}</div>}
-
-      {!versions && !error && <div className="empty">Loading history…</div>}
-
-      {versions && versions.length === 0 && (
-        <div className="empty">No versions recorded.</div>
+      {error && (
+        <div className="error">
+          <Icon name="warn" />
+          {error}
+        </div>
       )}
 
-      {versions && versions.length > 0 && (
-        <ul className="history-list">
-          {[...versions].reverse().map((v, idx, arr) => {
-            const isCurrent = idx === 0; // newest first after reverse
-            const versionNum = arr.length - idx;
+      {!versions && !error && (
+        <div className="empty">
+          <Skeleton width={180} height={20} mb={10} />
+          <Skeleton width={240} mb={6} />
+          <Skeleton width={210} />
+        </div>
+      )}
+
+      {versions && versions.length === 0 && (
+        <div className="empty">No versions recorded yet.</div>
+      )}
+
+      {ordered.length > 0 && (
+        <ul className="timeline">
+          {ordered.map(({ v, prev, isCurrent, version }) => {
+            const diff = prev ? diffSummary(prev, v) : null;
             return (
-              <li key={v.id}>
+              <li key={v.id} className={isCurrent ? "current" : ""}>
+                <span className="timeline-dot" />
                 <div className="row">
                   <span className={`badge ${isCurrent ? "badge-ok" : "badge-unchanged"}`}>
-                    v{versionNum}
+                    v{version}
                     {isCurrent ? " · current" : ""}
                   </span>
-                  <span className="muted small">{formatTimestamp(v.observed_at)}</span>
+                  <span className="muted small">{prettyDate(v.observed_at)}</span>
                   <span className="muted small">{sourceLabel(v.source)}</span>
-                  <span className="spacer" />
-                  <span className="muted small mono" title={v.manifest_hash}>
-                    {v.manifest_hash.slice(0, 12)}
-                  </span>
                 </div>
-                <div className="row meta">
+                <div className="row">
                   {v.file_count !== null && (
                     <span className="muted small">
                       {v.file_count} file{v.file_count === 1 ? "" : "s"}
@@ -129,25 +160,34 @@ export function HistoryDrawer({ document, onClose }: Props) {
                   {v.total_size_bytes !== null && (
                     <span className="muted small">{formatBytes(v.total_size_bytes)}</span>
                   )}
-                  <span className="spacer" />
+                  {diff && (
+                    <span className="timeline-diff">
+                      {diff.added > 0 && <span className="add">+{diff.added}</span>}
+                      {diff.removed > 0 && <span className="rm">−{diff.removed}</span>}
+                      {diff.changed > 0 && <span className="ch">~{diff.changed}</span>}
+                      <span className="muted">file{diff.added + diff.removed + diff.changed === 1 ? "" : "s"}</span>
+                    </span>
+                  )}
+                </div>
+                <NoteField version={v} onSave={(note) => saveNote(v, note)} />
+                <div className="timeline-actions">
                   {!isCurrent && (
                     <button
-                      onClick={() => restoreVersion(v)}
-                      disabled={busy === v.id}
                       className="link"
+                      onClick={() => restoreVersion(v, `v${version}`)}
+                      disabled={busy === v.id}
                     >
-                      Restore to current
+                      <Icon name="restore" /> Restore
                     </button>
                   )}
                   <button
+                    className="link"
                     onClick={() => exportVersion(v)}
                     disabled={busy === v.id}
-                    className="link"
                   >
-                    {busy === v.id ? "Exporting…" : "Export to disk"}
+                    <Icon name="import" /> {busy === v.id ? "Exporting…" : "Export"}
                   </button>
                 </div>
-                <NoteField version={v} onSave={(note) => saveNote(v, note)} />
               </li>
             );
           })}
@@ -156,7 +196,9 @@ export function HistoryDrawer({ document, onClose }: Props) {
 
       <footer>
         <span className="muted small">
-          {versions ? `${versions.length} version${versions.length === 1 ? "" : "s"}` : ""}
+          {versions
+            ? `${versions.length} version${versions.length === 1 ? "" : "s"} on file`
+            : ""}
         </span>
       </footer>
     </div>
@@ -169,7 +211,7 @@ function NoteField({ version, onSave }: { version: VersionEntry; onSave: (note: 
 
   if (!editing && !value) {
     return (
-      <button className="link note-add" onClick={() => setEditing(true)}>
+      <button className="link" onClick={() => setEditing(true)} style={{ alignSelf: "start" }}>
         + Add note
       </button>
     );
@@ -203,6 +245,26 @@ function NoteField({ version, onSave }: { version: VersionEntry; onSave: (note: 
   );
 }
 
+function diffSummary(prev: VersionEntry, curr: VersionEntry): {
+  added: number;
+  removed: number;
+  changed: number;
+} {
+  // We can compare file counts and sizes from VersionEntry without a
+  // round-trip to the manifest. This is a coarse diff — "X files
+  // appear, Y disappear, Z change" — but it's enough to tell the user
+  // *something* about each version at a glance.
+  const a = prev.file_count ?? 0;
+  const b = curr.file_count ?? 0;
+  if (a === 0 && b === 0) return { added: 0, removed: 0, changed: 0 };
+  if (b > a) return { added: b - a, removed: 0, changed: 0 };
+  if (a > b) return { added: 0, removed: a - b, changed: 0 };
+  // Same count: bytes differ implies content edited.
+  const sa = prev.total_size_bytes ?? 0;
+  const sb = curr.total_size_bytes ?? 0;
+  return { added: 0, removed: 0, changed: sa === sb ? 0 : 1 };
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   const units = ["KB", "MB", "GB"];
@@ -215,22 +277,27 @@ function formatBytes(n: number): string {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
-function formatTimestamp(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString();
-  } catch {
-    return iso;
-  }
+function prettyDate(iso: string): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+function prettyType(s: string): string {
+  if (s === "Notebook") return "Notebook";
+  if (s === "DocumentType.Pdf") return "PDF";
+  if (s === "DocumentType.Epub") return "EPUB";
+  return s;
 }
 
 function sourceLabel(s: VersionEntry["source"]): string {
   switch (s) {
     case "pulled":
-      return "Pulled from device";
+      return "Synced from tablet";
     case "imported":
-      return "Imported";
+      return "Added from disk";
     case "restored":
-      return "Restored";
+      return "Restored / edited";
   }
 }

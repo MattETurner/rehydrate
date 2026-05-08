@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ArchivedDocument,
   DeviceInfo,
   DeviceState,
   DocumentSummary,
@@ -28,8 +29,23 @@ export const ipc = {
   librarySummary: () => invoke<LibrarySummary>("library_summary"),
   listDocuments: () => invoke<DocumentSummary[]>("list_documents"),
   listFolders: () => invoke<FolderEntry[]>("list_folders"),
+  listArchived: () => invoke<ArchivedDocument[]>("list_archived"),
+  moveDocument: (documentId: string, parentId: string | null) =>
+    invoke<void>("move_document", { documentId, parentId }),
+  renameDocument: (documentId: string, newName: string) =>
+    invoke<void>("rename_document", { documentId, newName }),
+  renameFolder: (folderId: string, newName: string) =>
+    invoke<void>("rename_folder", { folderId, newName }),
+  archiveDocument: (documentId: string) =>
+    invoke<void>("archive_document", { documentId }),
+  unarchiveDocument: (documentId: string) =>
+    invoke<DocumentSummary>("unarchive_document", { documentId }),
+  purgeArchivedDocument: (documentId: string) =>
+    invoke<void>("purge_archived_document", { documentId }),
   openDocument: (documentId: string) =>
     invoke<string>("open_document", { documentId }),
+  documentThumbnail: (documentId: string) =>
+    invoke<string | null>("document_thumbnail", { documentId }),
   getHistory: (documentId: string) =>
     invoke<VersionEntry[]>("get_history", { documentId }),
   setVersionNote: (versionId: number, note: string | null) =>

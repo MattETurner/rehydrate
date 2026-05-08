@@ -39,3 +39,4 @@ tracing-subscriber = { workspace = true }
 printpdf = { workspace = true }
 image = { workspace = true }
 rm-parser = { path = "../rm-parser" }
+base64 = "0.22"

@@ -37,7 +37,10 @@ pub struct PushPlan {
 }
 
 pub fn plan_push(library: &Library) -> SyncResult<PushPlan> {
-    let docs = library.list_documents()?;
+    // Includes archived documents whose new (deleted=true) manifest still
+    // needs to reach the device. After the push, last_seen_manifest gets
+    // updated and they classify as Unchanged on the next plan_push.
+    let docs = library.list_pushable_documents()?;
     let mut items = Vec::with_capacity(docs.len());
     for doc in docs {
         let last_seen = library.last_seen(&doc.document_id)?;
@@ -150,6 +153,36 @@ pub async fn execute_push(
                         })
                         .await;
                 }
+            }
+        }
+    }
+
+    // After document push, flush any folder renames. A folder push is
+    // a single `<folder_id>.metadata` file uploaded via the same
+    // put_document_tree primitive — the tablet's xochitl picks up the
+    // rename when it next refreshes its file index. Failures here are
+    // logged and counted as skips so a single broken folder doesn't
+    // block the rest of the queue.
+    let pending_folders = library.list_pending_folder_pushes().unwrap_or_default();
+    for (folder_id, metadata_json) in pending_folders {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let file = rmsync_device::RemoteFile {
+            path: format!("{folder_id}.metadata"),
+            bytes: metadata_json.into_bytes(),
+            mode: 0o644,
+        };
+        match device.put_document_tree(&folder_id, &[file]).await {
+            Ok(()) => {
+                if let Err(e) = library.mark_folder_pushed(&folder_id) {
+                    tracing::warn!(folder = %folder_id, error = %e, "could not clear folder pending_push");
+                }
+                pushed += 1;
+            }
+            Err(e) => {
+                tracing::warn!(folder = %folder_id, error = %e, "folder push failed");
+                skipped += 1;
             }
         }
     }

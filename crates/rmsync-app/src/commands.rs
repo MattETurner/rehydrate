@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmsync_core::{
-    DocumentSummary, FolderEntry, GarbageCollectReport, ImportKind, Library, VerifyReport,
-    VersionEntry,
+    ArchiveReason, ArchivedDocument, DocumentSummary, FolderEntry, GarbageCollectReport,
+    ImportKind, Library, VerifyReport, VersionEntry,
 };
 use rmsync_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rmsync_device::{Device, DeviceInfo};
@@ -204,6 +204,42 @@ pub async fn list_folders(state: State<'_, AppState>) -> Result<Vec<FolderEntry>
     lib.list_folders().map_err(err)
 }
 
+/// Return a base64 data-URL for the document's first-page thumbnail, or
+/// `None` if the manifest has no `.thumbnails/*.png` page (rare for
+/// pulled docs; possible for fresh imports that haven't been synced
+/// yet). The data-URL form lets the webview show the PNG without a
+/// custom asset-protocol capability — and thumbnails are typically
+/// 5–50 KB so the IPC payload stays small.
+#[tauri::command]
+pub async fn document_thumbnail(
+    document_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use rmsync_core::Manifest;
+
+    let lib = lib_arc(&state).await?;
+    let docs = lib.list_documents().map_err(err)?;
+    let doc = docs
+        .iter()
+        .find(|d| d.document_id == document_id)
+        .ok_or_else(|| format!("document {document_id} not in library"))?;
+    let manifest_bytes = lib.read_blob(&doc.current_manifest).map_err(err)?;
+    let manifest = Manifest::from_canonical_json(&manifest_bytes).map_err(err)?;
+
+    let mut thumbs: Vec<_> = manifest
+        .files
+        .iter()
+        .filter(|f| f.path.ends_with(".png") && f.path.contains(".thumbnails"))
+        .collect();
+    if thumbs.is_empty() {
+        return Ok(None);
+    }
+    thumbs.sort_by(|a, b| a.path.cmp(&b.path));
+    let bytes = lib.read_blob(&thumbs[0].sha256).map_err(err)?;
+    Ok(Some(format!("data:image/png;base64,{}", STANDARD.encode(&bytes))))
+}
+
 /// Materialise a document's content into a cache directory and open it
 /// with the OS's default viewer. PDFs and EPUBs are written as-is.
 /// Notebooks (no PDF/EPUB body file) get assembled into a single
@@ -306,6 +342,89 @@ pub async fn open_document(
 pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentSummary>, String> {
     let lib = lib_arc(&state).await?;
     lib.list_documents().map_err(err)
+}
+
+#[tauri::command]
+pub async fn list_archived(
+    state: State<'_, AppState>,
+) -> Result<Vec<ArchivedDocument>, String> {
+    let lib = lib_arc(&state).await?;
+    lib.list_archived().map_err(err)
+}
+
+/// Rename a live document. Writes the new title into `.metadata`'s
+/// `visibleName` and records a new version, so the tablet picks up
+/// the rename on the next push.
+#[tauri::command]
+pub async fn rename_document(
+    document_id: String,
+    new_name: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let lib = lib_arc(&state).await?;
+    lib.rename_document(&document_id, &new_name).map_err(err)?;
+    Ok(())
+}
+
+/// Rename a folder. Updates the local row and flags it for push so
+/// the next sync uploads the new metadata to the tablet.
+#[tauri::command]
+pub async fn rename_folder(
+    folder_id: String,
+    new_name: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let lib = lib_arc(&state).await?;
+    lib.rename_folder(&folder_id, &new_name).map_err(err)?;
+    Ok(())
+}
+
+/// Move a live document into a different folder (or to root if
+/// `parentId` is None). Records a new version so the change propagates to
+/// the device on the next push.
+#[tauri::command]
+pub async fn move_document(
+    document_id: String,
+    parent_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let lib = lib_arc(&state).await?;
+    lib.move_document(&document_id, parent_id.as_deref())
+        .map_err(err)?;
+    Ok(())
+}
+
+/// Soft-delete a live document — moves it to the archive with reason
+/// "local". Versions are kept so it can be restored.
+#[tauri::command]
+pub async fn archive_document(
+    document_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let lib = lib_arc(&state).await?;
+    lib.archive_document(&document_id, ArchiveReason::Local)
+        .map_err(err)
+}
+
+/// Restore an archived document to the live listing.
+#[tauri::command]
+pub async fn unarchive_document(
+    document_id: String,
+    state: State<'_, AppState>,
+) -> Result<DocumentSummary, String> {
+    let lib = lib_arc(&state).await?;
+    lib.unarchive_document(&document_id).map_err(err)
+}
+
+/// Permanently delete an archived document. Drops the version log so blobs
+/// become orphans; run garbage_collect to reclaim disk.
+#[tauri::command]
+pub async fn purge_archived_document(
+    document_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let lib = lib_arc(&state).await?;
+    lib.purge_archived_document(&document_id).map_err(err)
 }
 
 #[tauri::command]
