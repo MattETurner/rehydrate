@@ -52,11 +52,17 @@ export function App() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [anchorId, setAnchorId] = useState<string | null>(null);
+  // Keyboard cursor — moves with arrow keys and tracks the last
+  // clicked row, but does NOT paint a selection highlight in default
+  // mode. The visible "selected" background is reserved for select
+  // mode entries in `selectedIds`.
+  const [focusId, setFocusId] = useState<string | null>(null);
   const [syncPhase, setSyncPhase] = useState<"idle" | "syncing" | "failed">("idle");
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [leavingIds, setLeavingIds] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [selectMode, setSelectMode] = useState(false);
   const [quickLookId, setQuickLookId] = useState<string | null>(null);
   const [showCheatsheet, setShowCheatsheet] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
@@ -70,9 +76,12 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const toast = useToast();
   const confirm = useConfirm();
+  // Convenience: the current "single focused" id used by keyboard
+  // shortcuts (rename, quick-look, archive). Falls back to the only
+  // selected entry when in select mode for ergonomics.
   const selectedId = useMemo(
-    () => (selectedIds.size === 1 ? [...selectedIds][0] : null),
-    [selectedIds],
+    () => focusId ?? (selectedIds.size === 1 ? [...selectedIds][0] : null),
+    [focusId, selectedIds],
   );
 
   // ---- Initial load -----------------------------------------------------
@@ -165,10 +174,11 @@ export function App() {
     }
   }
 
-  // ---- Multi-select helpers --------------------------------------------
-  // Cmd/Ctrl-click toggles, Shift-click extends a range from anchor,
-  // plain click replaces selection. Only acts on docs in the current
-  // visible list so range-select behaves intuitively.
+  // ---- Row click + selection ------------------------------------------
+  // Two modes: in regular mode a single click opens the doc and just
+  // marks it as keyboard-focused; in select-mode a click toggles a
+  // checkbox at the row's leading edge. Cmd/Ctrl-click and Shift-click
+  // still work as power shortcuts in select mode.
   const handleRowClick = useCallback(
     (
       d: DocumentSummary,
@@ -176,16 +186,24 @@ export function App() {
       e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
     ) => {
       const id = d.document_id;
-      if (e.metaKey || e.ctrlKey) {
-        setSelectedIds((prev) => {
-          const next = new Set(prev);
-          if (next.has(id)) next.delete(id);
-          else next.add(id);
-          return next;
-        });
-        setAnchorId(id);
+      if (!selectMode) {
+        // Cmd-click while NOT in select mode is the discoverable
+        // shortcut for "I want to start selecting" — flips select mode
+        // on and checks this row.
+        if (e.metaKey || e.ctrlKey) {
+          setSelectMode(true);
+          setSelectedIds(new Set([id]));
+          setAnchorId(id);
+          setFocusId(id);
+          return;
+        }
+        // Plain click in default mode: open the doc and paint no
+        // selection or focus highlight. Subsequent keyboard nav (if
+        // any) will start its cursor fresh.
+        openInViewer(d);
         return;
       }
+      // Select mode: click toggles, shift extends a range.
       if (e.shiftKey && anchorId) {
         const ai = list.findIndex((x) => x.document_id === anchorId);
         const bi = list.findIndex((x) => x.document_id === id);
@@ -194,18 +212,50 @@ export function App() {
           setSelectedIds(
             new Set(list.slice(lo, hi + 1).map((x) => x.document_id)),
           );
+          // Anchor stays on the original click; focus follows the
+          // user's finger to the new endpoint so subsequent ↑/↓ feels
+          // continuous from there.
+          setFocusId(id);
           return;
         }
       }
-      setSelectedIds(new Set([id]));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
       setAnchorId(id);
+      setFocusId(id);
     },
-    [anchorId],
+    // openInViewer is a stable reference (declared further below in
+    // the module). selectMode + anchorId are the only state we read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectMode, anchorId],
   );
+
+  const toggleSelectMode = useCallback(() => {
+    setSelectMode((m) => {
+      // Leaving select mode clears any selection AND the keyboard
+      // cursor so nothing visual lingers from the mode.
+      if (m) {
+        setSelectedIds(new Set());
+        setAnchorId(null);
+        setFocusId(null);
+      }
+      return !m;
+    });
+  }, []);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
     setAnchorId(null);
+  }, []);
+
+  // Drop the keyboard cursor (the inset accent bar). Hooked up to
+  // the Esc cascade — last resort once dialogs/drawers are closed.
+  const clearFocus = useCallback(() => {
+    setFocusId(null);
   }, []);
 
   async function tryConnect() {
@@ -740,7 +790,19 @@ export function App() {
           else setShowSearch(false);
           return;
         }
+        // In select mode, a single Esc fully exits — clears the
+        // checked rows AND flips the mode off in one step. Outside
+        // select mode the cascade is per-state (selection, then
+        // focus cursor).
+        if (selectMode) {
+          setSelectMode(false);
+          setSelectedIds(new Set());
+          setAnchorId(null);
+          setFocusId(null);
+          return;
+        }
         if (selectedIds.size > 0) return clearSelection();
+        if (focusId) return clearFocus();
         return;
       }
       if (typing) return;
@@ -807,8 +869,14 @@ export function App() {
               ? 0
               : idx - 1;
         const next = filteredDocs[nextIdx];
-        setSelectedIds(new Set([next.document_id]));
+        setFocusId(next.document_id);
         setAnchorId(next.document_id);
+        // In select mode the arrow keys also move the *active*
+        // selection so range-extension feels right; in default mode
+        // they only move the keyboard cursor (no painted selection).
+        if (selectMode) {
+          setSelectedIds(new Set([next.document_id]));
+        }
         return;
       }
       if (e.key === "Enter") {
@@ -837,6 +905,8 @@ export function App() {
     showPalette,
     quickLookId,
     renaming,
+    selectMode,
+    focusId,
     libraryOpen,
     device?.connected,
     documents,
@@ -1095,6 +1165,16 @@ export function App() {
                   </button>
                 )}
                 {view !== "archive" && (
+                  <button
+                    className={`icon ghost${selectMode ? " active" : ""}`}
+                    aria-label={selectMode ? "Done selecting" : "Select"}
+                    title={selectMode ? "Exit select mode" : "Select multiple"}
+                    onClick={toggleSelectMode}
+                  >
+                    <Icon name="selectMode" />
+                  </button>
+                )}
+                {view !== "archive" && (
                   <span className="view-switch" role="tablist" aria-label="View mode">
                     <button
                       className={viewMode === "list" ? "active" : ""}
@@ -1158,8 +1238,9 @@ export function App() {
                 <DocumentGrid
                   documents={filteredDocs}
                   selectedIds={selectedIds}
+                  selectMode={selectMode}
+                  focusId={focusId}
                   onClickRow={(d, e) => handleRowClick(d, filteredDocs, e)}
-                  onOpenInViewer={openInViewer}
                   onArchive={archiveOne}
                   onShowHistory={setHistoryDoc}
                   leavingIds={leavingIds}
@@ -1169,6 +1250,8 @@ export function App() {
                 <DocumentList
                   documents={filteredDocs}
                   selectedIds={selectedIds}
+                  selectMode={selectMode}
+                  focusId={focusId}
                   onClickRow={(d, e) => handleRowClick(d, filteredDocs, e)}
                   onOpen={setHistoryDoc}
                   onOpenInViewer={openInViewer}
@@ -1780,6 +1863,8 @@ function DocumentListSkeleton() {
 function DocumentList({
   documents,
   selectedIds,
+  selectMode,
+  focusId,
   onClickRow,
   onOpen,
   onOpenInViewer,
@@ -1790,6 +1875,8 @@ function DocumentList({
 }: {
   documents: DocumentSummary[];
   selectedIds: Set<string>;
+  selectMode: boolean;
+  focusId: string | null;
   onClickRow: (
     d: DocumentSummary,
     e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
@@ -1813,9 +1900,10 @@ function DocumentList({
     );
   }
   return (
-    <table className="docs">
+    <table className={`docs${selectMode ? " select-mode" : ""}`}>
       <thead>
         <tr>
+          {selectMode && <th className="check-cell"></th>}
           <th>Title</th>
           <th>Type</th>
           <th>Size</th>
@@ -1827,17 +1915,21 @@ function DocumentList({
       <tbody>
         {documents.map((d) => {
           const isSelected = selectedIds.has(d.document_id);
+          const isFocused = focusId === d.document_id;
           const leaving = leavingIds.has(d.document_id);
           return (
             <tr
               key={d.document_id}
-              className={`clickable${isSelected ? " selected" : ""}${leaving ? " leaving" : ""}`}
-              title="Click to select · ⌘-click to add · ⇧-click for range · double-click to open · drag to move"
+              className={`clickable${isSelected ? " selected" : ""}${
+                isFocused && !isSelected ? " focused" : ""
+              }${leaving ? " leaving" : ""}`}
+              title={
+                selectMode
+                  ? "Click to toggle · ⇧-click for range · drag to move"
+                  : "Click to open · ⌘-click to start selecting · drag to move"
+              }
               draggable
               onDragStart={(e) => {
-                // Multi-drag: if the drag started on a row that's part
-                // of a >1 selection, encode every selected id and show
-                // a count badge in the drag preview.
                 const ids = isSelected && selectedIds.size > 1
                   ? [...selectedIds]
                   : [d.document_id];
@@ -1851,8 +1943,21 @@ function DocumentList({
                   shiftKey: e.shiftKey,
                 })
               }
-              onDoubleClick={() => onOpenInViewer(d)}
             >
+              {selectMode && (
+                <td className="check-cell">
+                  <span
+                    className={`check-box${isSelected ? " checked" : ""}`}
+                    aria-hidden
+                  >
+                    {isSelected ? (
+                      <Icon name="checkboxChecked" size={16} />
+                    ) : (
+                      <Icon name="checkbox" size={16} />
+                    )}
+                  </span>
+                </td>
+              )}
               <td className="row-title">
                 <span className="type-glyph"><TypeIcon kind={d.doc_type} /></span>
                 {d.visible_name}
@@ -1917,8 +2022,9 @@ function TypeIcon({ kind }: { kind: string }) {
 function DocumentGrid({
   documents,
   selectedIds,
+  selectMode,
+  focusId,
   onClickRow,
-  onOpenInViewer,
   onArchive,
   onShowHistory,
   leavingIds,
@@ -1926,11 +2032,12 @@ function DocumentGrid({
 }: {
   documents: DocumentSummary[];
   selectedIds: Set<string>;
+  selectMode: boolean;
+  focusId: string | null;
   onClickRow: (
     d: DocumentSummary,
     e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
   ) => void;
-  onOpenInViewer: (d: DocumentSummary) => void;
   onArchive: (d: DocumentSummary) => void;
   onShowHistory: (d: DocumentSummary) => void;
   leavingIds: Set<string>;
@@ -1955,7 +2062,9 @@ function DocumentGrid({
         return (
           <div
             key={d.document_id}
-            className={`tile${isSelected ? " selected" : ""}${leaving ? " leaving" : ""}`}
+            className={`tile${isSelected ? " selected" : ""}${
+              focusId === d.document_id && !isSelected ? " focused" : ""
+            }${leaving ? " leaving" : ""}`}
             draggable
             onDragStart={(e) => {
               const ids =
@@ -1972,8 +2081,19 @@ function DocumentGrid({
                 shiftKey: e.shiftKey,
               })
             }
-            onDoubleClick={() => onOpenInViewer(d)}
           >
+            {selectMode && (
+              <span
+                className={`tile-check${isSelected ? " checked" : ""}`}
+                aria-hidden
+              >
+                {isSelected ? (
+                  <Icon name="checkboxChecked" size={18} />
+                ) : (
+                  <Icon name="checkbox" size={18} />
+                )}
+              </span>
+            )}
             <Thumbnail documentId={d.document_id} docType={d.doc_type} />
             <div className="title-line" title={d.visible_name}>
               <TypeIcon kind={d.doc_type} />

@@ -5,9 +5,9 @@ import { ConfirmHost } from "./components/Confirm";
 import { Toaster } from "./components/Toast";
 import "./styles.css";
 
-// Toolbar leading-pad. The macOS traffic lights live in a separate
-// system-drawn title bar above our content, so we don't need to clear
-// them inside the toolbar — every platform just wants a normal gutter.
+// Toolbar leading-pad. The macOS title bar lives in its own system
+// strip above our content (traffic lights up there, no overlay), so
+// the toolbar just needs a normal gutter on every platform.
 document.documentElement.style.setProperty("--toolbar-pad-left", "12px");
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

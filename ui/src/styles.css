@@ -656,15 +656,31 @@ input[type="search"]:focus {
   text-overflow: ellipsis;
   flex: 1;
 }
+/* Kebab sits in an absolute slot so it doesn't push the count
+ * leftward — that way the rest-state count column aligns with the
+ * Library / Bin counts above. On hover, the count cross-fades out
+ * and the kebab cross-fades in, occupying the same visual slot. */
 .folder-kebab {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
-  margin-left: 4px;
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--motion-fast) var(--ease);
 }
 .folder-row:hover .folder-kebab,
 .folder-row:focus-within .folder-kebab {
   opacity: 1;
+  pointer-events: auto;
+}
+.folder-row:hover > .sidebar-count,
+.folder-row:focus-within > .sidebar-count {
+  opacity: 0;
+}
+.folder-row > .sidebar-count {
+  transition: opacity var(--motion-fast) var(--ease);
 }
 .folder-kebab button.icon {
   width: 22px;
@@ -828,6 +844,17 @@ input[type="search"]:focus {
 }
 .docs tbody tr.selected {
   background: var(--row-selected);
+}
+/* Subtle keyboard cursor — only painted when the user has actually
+ * navigated with arrow keys. A click in default mode does NOT paint
+ * this, because click resets focus visually only on subsequent
+ * keyboard nav. */
+.docs tbody tr.focused {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.docs-grid .tile.focused {
+  outline: 1px solid var(--accent-border);
+  outline-offset: -1px;
 }
 .docs tbody tr[draggable="true"] {
   cursor: grab;
@@ -1625,6 +1652,61 @@ input[type="search"]:focus {
 }
 .thumb-tile {
   box-shadow: var(--shadow-1);
+}
+
+/* =====================================================================
+ * Select mode (Files-app pattern).
+ * ===================================================================== */
+
+.docs.select-mode tbody tr {
+  cursor: default;
+}
+.docs .check-cell {
+  width: 32px;
+  padding-left: 12px;
+  padding-right: 0;
+  vertical-align: middle;
+}
+.check-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+  transition: color var(--motion-fast) var(--ease);
+}
+.check-box.checked {
+  color: var(--accent);
+}
+
+.tile-check {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  z-index: 2;
+  box-shadow: var(--shadow-1);
+}
+.tile-check.checked {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Toolbar Select toggle gets the same active treatment as the view
+ * switch so it reads as "stuck on" while the mode is engaged. */
+.content-header > button.icon.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: transparent;
 }
 
 /* =====================================================================

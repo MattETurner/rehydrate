@@ -28,6 +28,9 @@ type IconName =
   | "arrowDown"
   | "arrowUp"
   | "tablet"
+  | "selectMode"
+  | "checkbox"
+  | "checkboxChecked"
   | "x";
 
 interface Props extends SVGProps<SVGSVGElement> {
@@ -211,6 +214,26 @@ export function Icon({ name, size = 14, className, ...rest }: Props) {
         <svg {...common}>
           <rect x="3.5" y="2" width="9" height="12" rx="1" />
           <path d="M7 12 H9" />
+        </svg>
+      );
+    case "selectMode":
+      return (
+        <svg {...common}>
+          <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
+          <path d="M5 8.5 L7.5 11 L11.5 6" />
+        </svg>
+      );
+    case "checkbox":
+      return (
+        <svg {...common}>
+          <rect x="2.5" y="2.5" width="11" height="11" rx="2" />
+        </svg>
+      );
+    case "checkboxChecked":
+      return (
+        <svg {...common}>
+          <rect x="2.5" y="2.5" width="11" height="11" rx="2" fill="currentColor" stroke="none" />
+          <path d="M5 8.5 L7.5 11 L11.5 6" stroke="white" strokeWidth="2" />
         </svg>
       );
     case "x":
