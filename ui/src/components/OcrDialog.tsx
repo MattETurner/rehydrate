@@ -28,6 +28,20 @@ type Phase =
 export function OcrDialog({ document, onCancel, onDone }: Props) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [language, setLanguage] = useState<string>("");
+  // Elapsed seconds since the user clicked Download — surfaced in
+  // the dialog so a multi-minute load doesn't look like a hang
+  // when mistral.rs / hf-hub aren't reporting byte-level progress.
+  const [downloadStartedAt, setDownloadStartedAt] = useState<number | null>(
+    null,
+  );
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (downloadStartedAt === null) return;
+    const tick = () => setElapsed((Date.now() - downloadStartedAt) / 1000);
+    tick();
+    const id = window.setInterval(tick, 250);
+    return () => window.clearInterval(id);
+  }, [downloadStartedAt]);
 
   // Load model status on mount.
   useEffect(() => {
@@ -38,10 +52,6 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
         if (cancelled) return;
         if (status.kind === "ready") {
           setPhase({ kind: "ready", descriptor: status.descriptor });
-        } else if (status.kind === "partial") {
-          // Treat resumable as missing so the user re-triggers
-          // download with the same range-resume support in Rust.
-          setPhase({ kind: "missing", descriptor: status.descriptor });
         } else {
           setPhase({ kind: "missing", descriptor: status.descriptor });
         }
@@ -101,13 +111,17 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
 
   async function startDownload() {
     try {
+      setDownloadStartedAt(Date.now());
+      setElapsed(0);
       setPhase({ kind: "downloading", bytes_done: 0, bytes_total: null });
       await ipc.ocrDownloadDefaultModel();
       const status = await ipc.ocrStatus();
+      setDownloadStartedAt(null);
       if (status.kind === "ready") {
         setPhase({ kind: "ready", descriptor: status.descriptor });
       }
     } catch (e) {
+      setDownloadStartedAt(null);
       setPhase({ kind: "error", message: String(e) });
     }
   }
@@ -158,9 +172,9 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
         {phase.kind === "downloading" && (
           <>
             <p>Downloading and loading the model…</p>
-            <progress
-              value={phase.bytes_done > 0 ? phase.bytes_done : undefined}
-              max={phase.bytes_total ?? undefined}
+            <DownloadBar
+              done={phase.bytes_done}
+              total={phase.bytes_total}
             />
             <p className="muted">
               {phase.bytes_done > 0
@@ -168,8 +182,8 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
                     phase.bytes_total
                       ? ` / ${(phase.bytes_total / 1e9).toFixed(2)} GB`
                       : ""
-                  }`
-                : "First run downloads several GB from HuggingFace; runs entirely on your machine afterwards."}
+                  } · ${formatElapsed(elapsed)}`
+                : `First run downloads several GB from HuggingFace; runs entirely on your machine afterwards. Working — ${formatElapsed(elapsed)} elapsed.`}
             </p>
           </>
         )}
@@ -237,4 +251,36 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
       </div>
     </div>
   );
+}
+
+/* Custom progress strip. WebKit's bare `<progress>` element renders
+ * as a thin near-invisible sliver, especially in indeterminate
+ * mode — replace it with a clearly-sized div whose fill is either
+ * a determinate width (when bytes_total is known) or an animated
+ * shimmer (mistral.rs / hf-hub don't surface byte-level events). */
+function DownloadBar({
+  done,
+  total,
+}: {
+  done: number;
+  total: number | null;
+}) {
+  const determinate = total != null && total > 0 && done > 0;
+  const pct = determinate ? Math.min(100, (done / (total as number)) * 100) : 30;
+  return (
+    <div className="ocr-download-bar" role="progressbar">
+      <span
+        className={determinate ? "" : "indeterminate"}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
+function formatElapsed(seconds: number): string {
+  const total = Math.floor(seconds);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  if (m === 0) return `${s} s`;
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }

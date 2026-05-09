@@ -74,20 +74,12 @@ export interface PickedLibraryDirectory {
 export interface OcrModelDescriptor {
   id: string;
   display_name: string;
-  download_url: string;
-  sha256: string;
   size_bytes: number;
 }
 
 export type OcrStatusReport =
   | { kind: "missing"; descriptor: OcrModelDescriptor }
-  | { kind: "partial"; descriptor: OcrModelDescriptor; bytes_done: number }
-  | {
-      kind: "ready";
-      descriptor: OcrModelDescriptor;
-      path: string;
-      size: number;
-    };
+  | { kind: "ready"; descriptor: OcrModelDescriptor };
 
 export type OcrProgressEvent =
   | { kind: "page_started"; page_index: number }
