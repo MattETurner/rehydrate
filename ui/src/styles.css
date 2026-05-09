@@ -257,14 +257,16 @@ textarea {
   user-select: none;
 }
 .brand-mark {
-  width: 22px;
-  height: 22px;
-  /* Matches the squircle radius baked into logo.png so the
-   * box-shadow halo traces the squircle rather than a rectangle. */
-  border-radius: 22.5%;
-  object-fit: cover;
+  /* logo.png is on a 1024 grid with the squircle taking ~80%
+   * (Apple's icon-grid spec); 28 px element ⇒ ~22 px visible squircle
+   * — matches the previous brand-mark size optically. */
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
   display: inline-block;
-  box-shadow: var(--shadow-1);
+  /* drop-shadow follows the PNG's alpha so the halo traces the
+   * squircle instead of the surrounding transparent box. */
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.18));
 }
 
 .spacer { flex: 1; }
@@ -764,14 +766,12 @@ input[type="search"]:focus {
   margin-bottom: var(--space-3);
 }
 .empty .empty-logo {
-  width: 120px;
-  height: 120px;
+  /* 150 element ⇒ ~120 visible squircle on the Apple icon grid. */
+  width: 150px;
+  height: 150px;
   object-fit: contain;
-  /* Same 22.5% squircle as logo.png — keeps the box-shadow
-   * conforming to the icon shape at this larger size. */
-  border-radius: 22.5%;
   margin-bottom: var(--space-4);
-  box-shadow: var(--shadow-1);
+  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.12));
 }
 
 /* =====================================================================
