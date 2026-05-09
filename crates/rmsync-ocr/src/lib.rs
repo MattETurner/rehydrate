@@ -27,20 +27,24 @@ pub use progress::OcrProgressEvent;
 ///
 /// The descriptor is the canonical "what does the user need to
 /// download for the recommended OCR experience" answer.
+///
+/// We point at `bartowski/`'s GGUF mirror rather than the upstream
+/// `Qwen/` org repo. The Qwen org's GGUF repo is gated (HuggingFace
+/// returns 401 for unauthenticated `resolve/main/<file>` requests)
+/// — bartowski's repackage is a public, byte-identical Q4_K_M of the
+/// same upstream weights. The SHA-256 below is the LFS hash from
+/// HuggingFace's `X-Linked-Etag` header at the time this file was
+/// authored; if upstream re-uploads, verification will fail loudly
+/// rather than silently fetch new bytes.
 pub fn default_model() -> ModelDescriptor {
     ModelDescriptor {
         id: "qwen2-vl-7b-instruct-q4-k-m".into(),
         display_name: "Qwen2-VL 7B Instruct (Q4_K_M)".into(),
-        // Hugging Face GGUF mirror of the official Alibaba weights.
-        // The hash is verified post-download; if upstream republishes
-        // we'll fail loudly rather than silently fetch new bytes.
         download_url:
-            "https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct-GGUF/resolve/main/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
+            "https://huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF/resolve/main/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
                 .into(),
-        // SHA-256 checked against the upstream HF "Files" pane at
-        // implementation time. Bump when we move to a new model.
-        sha256:
-            "0000000000000000000000000000000000000000000000000000000000000000".into(),
-        size_bytes: 4_700_000_000,
+        sha256: "30f199c2192fce1db0fbbbd484c7b2aa69ccce883890853f9807e1c837405a80"
+            .into(),
+        size_bytes: 4_683_072_672,
     }
 }

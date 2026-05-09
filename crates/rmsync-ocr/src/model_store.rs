@@ -207,8 +207,11 @@ impl ModelStore {
         // Verify against the descriptor's expected hash.
         let got = hex::encode(hasher.finalize());
         if got != descriptor.sha256 {
-            // Leave the partial in place so the user can inspect it,
-            // but don't promote to the final filename.
+            // Drop the bad partial: leaving it around means the next
+            // retry resumes from those bytes and the rolling hash can
+            // never converge on the expected value, so the user is
+            // permanently stuck. A fresh download is what they need.
+            let _ = fs::remove_file(&partial);
             return Err(ModelStoreError::HashMismatch {
                 expected: descriptor.sha256.clone(),
                 got,
