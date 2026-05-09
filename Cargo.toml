@@ -15,7 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/dmayk/rehydrate"
+repository = "https://github.com/dm807cam/rehydrate"
 rust-version = "1.82"
 
 [workspace.dependencies]
