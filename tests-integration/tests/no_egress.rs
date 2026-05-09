@@ -103,35 +103,70 @@ fn rehydrate_business_crates_have_no_http_clients() {
 }
 
 #[test]
-fn publish_and_ocr_crates_use_ureq_only() {
-    // Positive controls: the publish + ocr crates DO depend on
-    // ureq (the sanctioned HTTP client). If a refactor accidentally
-    // drops them, the feature is silently gone.
+fn publish_crate_uses_ureq_only() {
+    // Positive control: rehydrate-publish DOES depend on ureq, the
+    // single sanctioned HTTP client for the user-CMS-only publish
+    // layer. A refactor that drops it would silently break the
+    // feature; a refactor that adds reqwest/isahc/surf/awc next to
+    // ureq would widen the egress surface beyond what
+    // `RestrictedAgent` enforces.
     use std::process::Command;
     let workspace_root = workspace_root_path();
 
-    for crate_name in ["rehydrate-publish", "rehydrate-ocr"] {
-        let output = Command::new(env!("CARGO"))
-            .args([
-                "tree", "--target", "all", "-p", crate_name, "-e", "normal", "--prefix", "none",
-            ])
-            .current_dir(&workspace_root)
-            .output()
-            .expect("cargo tree failed to execute");
-        let stdout = String::from_utf8_lossy(&output.stdout);
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree", "--target", "all", "-p", "rehydrate-publish", "-e", "normal", "--prefix",
+            "none",
+        ])
+        .current_dir(&workspace_root)
+        .output()
+        .expect("cargo tree failed to execute");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("ureq v"),
+        "rehydrate-publish must depend on `ureq` (sanctioned HTTP client)."
+    );
+    for banned_crate in ["reqwest", "isahc", "surf", "awc"] {
         assert!(
-            stdout.contains("ureq v"),
-            "{crate_name} must depend on `ureq` (sanctioned HTTP client). \
-             If this dependency disappeared the feature is broken."
+            !stdout.contains(&format!("{banned_crate} v")),
+            "rehydrate-publish must not depend on `{banned_crate}`; \
+             ureq + RestrictedAgent is the sanctioned HTTP path."
         );
-        // And conversely — the *banned* clients must not slip in.
-        for banned_crate in ["reqwest", "isahc", "surf", "awc"] {
-            assert!(
-                !stdout.contains(&format!("{banned_crate} v")),
-                "{crate_name} must not depend on `{banned_crate}`; ureq is the \
-                 sanctioned HTTP client for the publish/ocr layer."
-            );
-        }
+    }
+}
+
+#[test]
+fn ocr_crate_keeps_ureq_for_legacy_path() {
+    // rehydrate-ocr keeps `ureq` for the legacy `model_store`
+    // download path. The mistral.rs feature additionally pulls
+    // `hf-hub`, which uses `reqwest` — that's allowed here but
+    // banned in the business-logic crates above. Privacy invariant
+    // for OCR: HuggingFace is the only outbound destination, gated
+    // by hf-hub's repo scope and triggered exclusively by the user
+    // clicking "Download model".
+    use std::process::Command;
+    let workspace_root = workspace_root_path();
+
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "tree", "--target", "all", "-p", "rehydrate-ocr", "-e", "normal", "--prefix", "none",
+        ])
+        .current_dir(&workspace_root)
+        .output()
+        .expect("cargo tree failed to execute");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("ureq v"),
+        "rehydrate-ocr must keep `ureq` for the legacy model_store download path."
+    );
+    // `reqwest` is allowed here (hf-hub via mistral.rs) but isahc /
+    // surf / awc still aren't — they'd indicate a third HTTP stack
+    // sneaking in.
+    for banned_crate in ["isahc", "surf", "awc"] {
+        assert!(
+            !stdout.contains(&format!("{banned_crate} v")),
+            "rehydrate-ocr must not depend on `{banned_crate}`."
+        );
     }
 }
 

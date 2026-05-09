@@ -1,50 +1,53 @@
 //! On-device OCR for reMarkable notebooks.
 //!
-//! The crate is split so the heavy VLM runtime (mistral.rs) is the
-//! only thing that needs to compile slowly: the IPC layer, the UI,
-//! and the model-download / page-render plumbing all sit behind the
-//! `OcrBackend` trait and ship in `rehydrate-ocr` proper. Swapping
-//! mistral.rs for llama-cpp-2 (or, in tests, a `MockBackend`)
-//! doesn't ripple outward.
+//! The heavy VLM runtime is feature-gated: `mistral` opts in to
+//! `mistralrs` + Metal kernels via `mistral.rs`, which adds 5–10
+//! minutes to a cold workspace build. Without the feature the
+//! crate ships only the backend trait and the `Mock` impl —
+//! enough for unit tests and dev iteration on the rest of the
+//! workspace.
 //!
-//! Privacy invariant: only outbound network call is the explicit
-//! HuggingFace model download in `model_store::download_model`,
-//! gated by an allow-list. The rest of the crate is offline.
+//! Privacy invariant: outbound HTTP only fires on user-explicit
+//! action. The mistral.rs path triggers HuggingFace downloads via
+//! `hf-hub`; the legacy `model_store` path uses ureq against the
+//! same allow-list. No network on launch.
 
 pub mod backend;
+#[cfg(feature = "mistral")]
+pub mod mistral;
 pub mod model_store;
 pub mod page_render;
 pub mod progress;
 
 pub use backend::{Mock, OcrBackend, OcrCancel, OcrError, PageTranscript, TranscribeOptions};
+#[cfg(feature = "mistral")]
+pub use mistral::{MistralRsBackend, DEFAULT_MODEL_ID};
 pub use model_store::{ModelDescriptor, ModelStatus, ModelStore};
 pub use page_render::render_rm_to_png;
 pub use progress::OcrProgressEvent;
 
-/// The current default model — multilingual, 7B parameters, Q4_K_M
-/// quant. Sized so it fits in 8 GB of memory on Apple Silicon and
-/// produces high-quality multilingual handwriting transcription.
-///
-/// The descriptor is the canonical "what does the user need to
-/// download for the recommended OCR experience" answer.
-///
-/// We point at `bartowski/`'s GGUF mirror rather than the upstream
-/// `Qwen/` org repo. The Qwen org's GGUF repo is gated (HuggingFace
-/// returns 401 for unauthenticated `resolve/main/<file>` requests)
-/// — bartowski's repackage is a public, byte-identical Q4_K_M of the
-/// same upstream weights. The SHA-256 below is the LFS hash from
-/// HuggingFace's `X-Linked-Etag` header at the time this file was
-/// authored; if upstream re-uploads, verification will fail loudly
-/// rather than silently fetch new bytes.
-pub fn default_model() -> ModelDescriptor {
-    ModelDescriptor {
-        id: "qwen2-vl-7b-instruct-q4-k-m".into(),
-        display_name: "Qwen2-VL 7B Instruct (Q4_K_M)".into(),
-        download_url:
-            "https://huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF/resolve/main/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
-                .into(),
-        sha256: "30f199c2192fce1db0fbbbd484c7b2aa69ccce883890853f9807e1c837405a80"
-            .into(),
-        size_bytes: 4_683_072_672,
+/// Public default model identifier surfaced to the IPC layer. With
+/// the `mistral` feature this is the HuggingFace repo ID for
+/// Qwen2.5-VL-7B-Instruct, which mistral.rs downloads via hf-hub.
+/// Without the feature this is a stable string the UI can show
+/// while the runtime itself is unavailable.
+pub fn default_model_id() -> &'static str {
+    #[cfg(feature = "mistral")]
+    {
+        DEFAULT_MODEL_ID
     }
+    #[cfg(not(feature = "mistral"))]
+    {
+        "Qwen/Qwen2.5-VL-7B-Instruct"
+    }
+}
+
+/// Approximate weights size in bytes for the default model — used
+/// only to size progress bars in the UI before any download
+/// reports an actual Content-Length.
+pub fn default_model_size_hint() -> u64 {
+    // Qwen2.5-VL-7B-Instruct safetensors total ≈ 16 GB. ISQ-Q4
+    // quant happens at load time, so the user pays the full
+    // download cost once.
+    16_000_000_000
 }

@@ -157,16 +157,19 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
 
         {phase.kind === "downloading" && (
           <>
-            <p>Downloading model…</p>
+            <p>Downloading and loading the model…</p>
             <progress
-              value={phase.bytes_done}
+              value={phase.bytes_done > 0 ? phase.bytes_done : undefined}
               max={phase.bytes_total ?? undefined}
             />
             <p className="muted">
-              {(phase.bytes_done / 1e9).toFixed(2)} GB
-              {phase.bytes_total
-                ? ` / ${(phase.bytes_total / 1e9).toFixed(2)} GB`
-                : ""}
+              {phase.bytes_done > 0
+                ? `${(phase.bytes_done / 1e9).toFixed(2)} GB${
+                    phase.bytes_total
+                      ? ` / ${(phase.bytes_total / 1e9).toFixed(2)} GB`
+                      : ""
+                  }`
+                : "First run downloads several GB from HuggingFace; runs entirely on your machine afterwards."}
             </p>
           </>
         )}

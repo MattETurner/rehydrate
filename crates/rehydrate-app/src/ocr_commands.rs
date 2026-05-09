@@ -14,8 +14,10 @@ use std::sync::Arc;
 
 use rehydrate_core::{Library, Manifest, VersionId};
 use rehydrate_ocr::{
-    default_model, ModelDescriptor, ModelStatus, OcrCancel, OcrProgressEvent, TranscribeOptions,
+    default_model_id, default_model_size_hint, OcrCancel, OcrProgressEvent, TranscribeOptions,
 };
+#[cfg(feature = "ocr-runtime")]
+use rehydrate_ocr::OcrBackend;
 use rehydrate_publish::{
     DraftPost, GhostClient, GhostCredentials, PublishResult, PublishTarget, Publisher,
     WordpressClient, WordpressCredentials,
@@ -49,51 +51,90 @@ async fn lib_arc(state: &State<'_, AppState>) -> Result<Arc<Library>, String> {
 //   Model lifecycle
 // =====================================================================
 
+/// Compact descriptor surfaced to the UI for the active default
+/// model. The download URL / SHA / hf-hub layout is opaque to the
+/// renderer — it only needs the human label and a size hint to
+/// drive the onboarding text.
+#[derive(Serialize, Clone)]
+pub struct OcrModelDescriptor {
+    pub id: String,
+    pub display_name: String,
+    pub size_bytes: u64,
+}
+
+fn current_descriptor() -> OcrModelDescriptor {
+    OcrModelDescriptor {
+        id: default_model_id().to_string(),
+        display_name: format!("{} (4-bit ISQ)", default_model_id()),
+        size_bytes: default_model_size_hint(),
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OcrStatusReport {
-    Missing { descriptor: ModelDescriptor },
-    Partial { descriptor: ModelDescriptor, bytes_done: u64 },
-    Ready { descriptor: ModelDescriptor, path: PathBuf, size: u64 },
+    Missing { descriptor: OcrModelDescriptor },
+    Ready { descriptor: OcrModelDescriptor },
 }
 
 #[tauri::command]
 pub async fn ocr_status(state: State<'_, AppState>) -> Result<OcrStatusReport, String> {
-    let descriptor = default_model();
-    let status = state.model_store.status(&descriptor);
-    Ok(match status {
-        ModelStatus::Missing => OcrStatusReport::Missing { descriptor },
-        ModelStatus::Partial { bytes_done } => OcrStatusReport::Partial { descriptor, bytes_done },
-        ModelStatus::Ready { path, size } => OcrStatusReport::Ready { descriptor, path, size },
-    })
+    let descriptor = current_descriptor();
+    // Active backend is "Mock" until a real model loads. After
+    // `ocr_download_default_model` succeeds the slot holds a
+    // MistralRsBackend whose name starts with "mistralrs/".
+    let name = state.ocr_backend.read().await.name().to_string();
+    if name.starts_with("mistralrs/") {
+        Ok(OcrStatusReport::Ready { descriptor })
+    } else {
+        Ok(OcrStatusReport::Missing { descriptor })
+    }
 }
 
+/// Load (and download, if first run) the default vision-LLM and
+/// install it as the active OCR backend. After this returns the
+/// `transcribe_document` IPC will route through the real model
+/// instead of the Mock placeholder.
+///
+/// First-run downloads weights from HuggingFace via mistral.rs's
+/// hf-hub client (multi-GB, several minutes). We fire a
+/// `download_progress` event when load starts and `download_done`
+/// when it returns; mistral.rs doesn't currently expose byte-level
+/// progress so the UI shows an indeterminate spinner in between.
 #[tauri::command]
 pub async fn ocr_download_default_model(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let descriptor = default_model();
-    let store_root = state.model_store.root().to_path_buf();
+    #[cfg(not(feature = "ocr-runtime"))]
+    {
+        let _ = (app, state);
+        return Err(
+            "this build was compiled without the OCR runtime — rebuild with --features ocr-runtime"
+                .into(),
+        );
+    }
 
-    // Forward progress events to the renderer.
-    let (tx, mut rx) = mpsc::channel::<OcrProgressEvent>(64);
-    let app_for_emit = app.clone();
-    let forwarder = tauri::async_runtime::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            let _ = app_for_emit.emit("ocr:progress", &ev);
-        }
-    });
+    #[cfg(feature = "ocr-runtime")]
+    {
+        // Up-front "download started" event so the dialog flips to
+        // the indeterminate-progress phase immediately.
+        let _ = app.emit(
+            "ocr:progress",
+            &OcrProgressEvent::DownloadProgress { done: 0, total: None },
+        );
 
-    let join = tauri::async_runtime::spawn_blocking(move || {
-        let store = rehydrate_ocr::ModelStore::new(store_root);
-        store.download(&descriptor, Some(tx))
-    });
-    let result = join.await.map_err(err)?;
-    let _ = forwarder.await;
-    result
-        .map(|_| ())
-        .map_err(|e| format!("model download failed: {e}"))
+        let model_id = default_model_id().to_string();
+        let backend = rehydrate_ocr::MistralRsBackend::load(&model_id)
+            .await
+            .map_err(|e| format!("model load failed: {e}"))?;
+
+        let arc: Arc<dyn OcrBackend> = Arc::new(backend);
+        *state.ocr_backend.write().await = arc;
+
+        let _ = app.emit("ocr:progress", &OcrProgressEvent::DownloadDone);
+        Ok(())
+    }
 }
 
 // =====================================================================
