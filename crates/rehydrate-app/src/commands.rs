@@ -177,14 +177,23 @@ pub async fn switch_library(
     Ok(path)
 }
 
-/// Open a folder picker for the user to choose a library directory,
-/// then switch to it. Returns the chosen path, or `None` if the user
-/// cancelled. Adds the path to recents on success.
+/// Open the OS folder picker so the user can pick a library
+/// directory, then probe the chosen path. Returns:
+/// - `None` if the user cancelled the dialog;
+/// - `Some({ path, kind: "existing" })` if the path is already a
+///   stamped library — the renderer should call `open_library` to
+///   open it without further confirmation;
+/// - `Some({ path, kind: "empty" })` if the path is an empty (or
+///   dotfile-only) directory — the renderer should ask the user
+///   "Create a new library here?" before calling `open_library`.
+///
+/// Foreign-but-non-empty directories surface as `Err`. We never
+/// open the library here so a confirm prompt can sit between the
+/// pick and the side-effecting open.
 #[tauri::command]
-pub async fn switch_library_via_dialog(
+pub async fn pick_library_directory(
     app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<PickedLibraryDirectory>, String> {
     let app_for_pick = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app_for_pick
@@ -203,8 +212,28 @@ pub async fn switch_library_via_dialog(
         .into_path()
         .map_err(|e| format!("could not resolve picked folder: {e}"))?;
 
-    open_library_at(&path, &state).await?;
-    Ok(Some(path))
+    // Probe synchronously — no lock acquired, no library.json
+    // written — so the renderer's confirm prompt sits between this
+    // and the actual `open_library`.
+    let kind = match Library::probe_path(&path) {
+        Ok(rehydrate_core::LibraryPathKind::Empty) => PickedLibraryKind::Empty,
+        Ok(rehydrate_core::LibraryPathKind::Existing) => PickedLibraryKind::Existing,
+        Err(e) => return Err(err(e)),
+    };
+    Ok(Some(PickedLibraryDirectory { path, kind }))
+}
+
+#[derive(Serialize)]
+pub struct PickedLibraryDirectory {
+    pub path: PathBuf,
+    pub kind: PickedLibraryKind,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PickedLibraryKind {
+    Empty,
+    Existing,
 }
 
 #[derive(Serialize)]

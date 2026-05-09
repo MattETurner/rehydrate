@@ -257,6 +257,18 @@ pub struct VerifyReport {
     pub orphan_examples: Vec<String>,
 }
 
+/// Result of [`Library::probe_path`]: what the IPC layer should
+/// tell the user before attempting to open the path. `Empty` means
+/// safe-to-create-here; `Existing` means a stamped library is
+/// already there. The error case (a foreign non-empty directory)
+/// surfaces as [`Error::InvalidPath`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LibraryPathKind {
+    Empty,
+    Existing,
+}
+
 #[derive(Serialize, Deserialize)]
 struct LibraryMeta {
     schema: u32,
@@ -406,6 +418,41 @@ impl Library {
 
     pub fn blobs(&self) -> &BlobStore {
         &self.blobs
+    }
+
+    /// Look at `path` and report whether it's already a library, an
+    /// empty directory ready to become one, or a non-empty foreign
+    /// directory we shouldn't claim. Public so the IPC layer can
+    /// surface a "Create new library here?" prompt before
+    /// `Library::open` silently materialises one.
+    ///
+    /// Does not acquire the inter-process lock — purely a read.
+    pub fn probe_path(path: impl AsRef<Path>) -> Result<LibraryPathKind> {
+        let paths = LibraryPaths::new(path.as_ref());
+        if !paths.root.exists() {
+            return Ok(LibraryPathKind::Empty);
+        }
+        if paths.library_json.exists() {
+            // Reuse the same stamp validation `Library::open` does so
+            // the probe and the open agree on what counts as valid.
+            Self::validate_library_path(&paths)?;
+            return Ok(LibraryPathKind::Existing);
+        }
+        let foreign: Vec<_> = fs::read_dir(&paths.root)?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                !name.to_string_lossy().starts_with('.')
+            })
+            .collect();
+        if foreign.is_empty() {
+            Ok(LibraryPathKind::Empty)
+        } else {
+            Err(Error::InvalidPath(format!(
+                "{} is not empty and is not a reHydrate library (no library.json)",
+                paths.root.display()
+            )))
+        }
     }
 
     pub fn put_blob(&self, bytes: &[u8]) -> Result<crate::blob::PutResult> {
@@ -2303,6 +2350,40 @@ mod tests {
         lib.record_version(&m, Source::Pulled).unwrap();
         let r = lib.record_derived_artefact("doc-1", "evil/exec.sh", b"#!/bin/sh");
         assert!(matches!(r, Err(Error::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn probe_path_classifies_directories() {
+        // Empty directory → Empty.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            Library::probe_path(empty.path()).unwrap(),
+            LibraryPathKind::Empty
+        );
+
+        // Non-existent path → Empty (caller's `Library::open` will create it).
+        let missing = empty.path().join("does-not-exist");
+        assert_eq!(
+            Library::probe_path(&missing).unwrap(),
+            LibraryPathKind::Empty
+        );
+
+        // Existing stamped library → Existing.
+        let stamped = tempfile::tempdir().unwrap();
+        let _lib = Library::open(stamped.path()).unwrap();
+        drop(_lib);
+        assert_eq!(
+            Library::probe_path(stamped.path()).unwrap(),
+            LibraryPathKind::Existing
+        );
+
+        // Foreign non-empty directory → InvalidPath error.
+        let foreign = tempfile::tempdir().unwrap();
+        std::fs::write(foreign.path().join("notes.txt"), b"hi").unwrap();
+        assert!(matches!(
+            Library::probe_path(foreign.path()),
+            Err(Error::InvalidPath(_))
+        ));
     }
 
     #[test]

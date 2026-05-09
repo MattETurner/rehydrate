@@ -222,17 +222,34 @@ export function App() {
     }
   }
 
-  // Pick a brand-new library directory (never opened before) via the
-  // server-side folder picker.
+  // Pick a brand-new library directory via the server-side folder
+  // picker. If the directory is empty, confirm with the user before
+  // materialising a fresh library there — silent creation surprised
+  // users who picked the wrong folder.
   async function openAnotherLibrary() {
     setError(null);
     try {
-      const opened = await ipc.switchLibraryViaDialog();
-      if (!opened) return;
-      setLibraryOpen(true);
-      setLibraryPath(opened);
-      setShowOnboarding(false);
-      // Wipe stale UI just like switchToLibrary does.
+      const picked = await ipc.pickLibraryDirectory();
+      if (!picked) return;
+
+      if (picked.kind === "empty") {
+        const ok = await confirm({
+          title: "Create a new library here?",
+          body: (
+            <>
+              <p>
+                <code>{picked.path}</code> is empty. reHydrate will create
+                a fresh library there — blob store, sync database, and a{" "}
+                <code>library.json</code> stamp.
+              </p>
+            </>
+          ),
+          confirmLabel: "Create library",
+        });
+        if (!ok) return;
+      }
+
+      // Wipe stale UI before fetching the new library.
       setDocuments(null);
       setFolders([]);
       setArchived([]);
@@ -240,6 +257,11 @@ export function App() {
       setSelectedIds(new Set());
       setFocusId(null);
       setExpanded(new Set());
+
+      await ipc.openLibrary(picked.path);
+      setLibraryOpen(true);
+      setLibraryPath(picked.path);
+      setShowOnboarding(false);
       await Promise.all([refreshLibrary(), refreshRecentLibraries()]);
     } catch (e) {
       setError(String(e));
@@ -993,14 +1015,6 @@ export function App() {
           <img className="brand-mark" src="/logo.png" alt="" />
           reHydrate
         </span>
-        {libraryOpen && (
-          <LibrarySwitcher
-            currentPath={libraryPath}
-            recents={recentLibraries}
-            onSwitch={switchToLibrary}
-            onOpenAnother={openAnotherLibrary}
-          />
-        )}
         <StatusPill
           state={device}
           phase={syncPhase}
@@ -1014,6 +1028,12 @@ export function App() {
           </button>
         ) : (
           <>
+            <LibrarySwitcher
+              currentPath={libraryPath}
+              recents={recentLibraries}
+              onSwitch={switchToLibrary}
+              onOpenAnother={openAnotherLibrary}
+            />
             <button onClick={importFile} title="Import a PDF or EPUB (⌘I)">
               <Icon name="import" /> Import
             </button>

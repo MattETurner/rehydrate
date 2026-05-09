@@ -45,17 +45,19 @@ export function LibrarySwitcher({
     onClick: () => onOpenAnother(),
   });
 
+  // Trigger styled like the neighbouring Import / Sync toolbar
+  // buttons: leading icon, label, no chip chrome. Library label is
+  // truncated by the CSS rule rather than the parent button growing.
   return (
     <Menu
-      align="left"
+      align="right"
       trigger={
         <button
-          className="library-switcher"
           title={currentPath ?? undefined}
           aria-label={`Switch library (current: ${label})`}
         >
+          <Icon name="library" />
           <span className="library-switcher__label">{label}</span>
-          <Icon name="more" />
         </button>
       }
       items={items}

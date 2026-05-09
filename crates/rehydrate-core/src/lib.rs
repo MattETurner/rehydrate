@@ -17,6 +17,7 @@ pub use error::{Error, Result};
 pub use hash::Sha256Hex;
 pub use library::{
     ArchiveReason, ArchivedDocument, DocumentSummary, FolderEntry, GarbageCollectReport,
-    ImportKind, Library, RecordOutcome, Source, VerifyReport, VersionEntry, VersionId,
+    ImportKind, Library, LibraryPathKind, RecordOutcome, Source, VerifyReport, VersionEntry,
+    VersionId,
 };
 pub use manifest::{Manifest, ManifestFile};

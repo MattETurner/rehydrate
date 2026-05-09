@@ -271,31 +271,16 @@ textarea {
 
 .spacer { flex: 1; }
 
-/* Library switcher chip in the toolbar — current library name + a
- * dropdown of recent libraries. Sized so a typical "reHydrate" /
- * "reHydrate Work" label sits comfortably; longer names ellipsis. */
-.library-switcher {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 6px 4px 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text);
-  font-size: var(--text-sm);
-  font-weight: 500;
-  max-width: 220px;
-  cursor: pointer;
-}
-.library-switcher:hover {
-  background: var(--bg-elev);
-  border-color: color-mix(in srgb, var(--border), var(--text) 12%);
-}
+/* Library switcher trigger inherits the regular toolbar button
+ * style; only the label needs ellipsis treatment so a long library
+ * name doesn't blow out the toolbar width. */
 .library-switcher__label {
+  display: inline-block;
+  max-width: 160px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  vertical-align: middle;
 }
 
 /* =====================================================================

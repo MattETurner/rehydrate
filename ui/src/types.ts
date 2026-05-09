@@ -63,6 +63,14 @@ export interface RecentLibraryEntry {
   current: boolean;
 }
 
+export interface PickedLibraryDirectory {
+  path: string;
+  /** "empty" → directory exists but has no library.json yet (caller
+   *  should prompt the user "create here?" before opening). "existing"
+   *  → already a stamped reHydrate library; open without further prompt. */
+  kind: "empty" | "existing";
+}
+
 export interface OcrModelDescriptor {
   id: string;
   display_name: string;

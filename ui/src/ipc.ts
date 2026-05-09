@@ -14,6 +14,7 @@ import type {
   LogTail,
   OcrProgressEvent,
   OcrStatusReport,
+  PickedLibraryDirectory,
   ProgressEvent,
   PublishCredentialStatus,
   PublishKind,
@@ -38,8 +39,8 @@ export const ipc = {
   openLibrary: (path: string) => invoke<void>("open_library", { path }),
   autoOpenLibrary: () => invoke<string | null>("auto_open_library"),
   switchLibrary: (path: string) => invoke<string>("switch_library", { path }),
-  switchLibraryViaDialog: () =>
-    invoke<string | null>("switch_library_via_dialog"),
+  pickLibraryDirectory: () =>
+    invoke<PickedLibraryDirectory | null>("pick_library_directory"),
   listRecentLibraries: () =>
     invoke<RecentLibraryEntry[]>("list_recent_libraries"),
   librarySummary: () => invoke<LibrarySummary>("library_summary"),

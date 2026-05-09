@@ -35,7 +35,7 @@ pub fn run() {
             commands::open_library,
             commands::auto_open_library,
             commands::switch_library,
-            commands::switch_library_via_dialog,
+            commands::pick_library_directory,
             commands::list_recent_libraries,
             commands::library_summary,
             commands::list_documents,
