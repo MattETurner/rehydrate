@@ -1005,8 +1005,45 @@ impl Library {
 
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
+
+        // Snapshot the prior sync_state row before record_version_in_tx
+        // potentially writes one. We use this to decide whether to
+        // auto-advance `last_seen_manifest` (see below).
+        let prior_last_seen: Option<String> = tx
+            .query_row(
+                "SELECT last_seen_manifest FROM sync_state WHERE document_id = ?1",
+                params![document_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+
         let outcome =
             self.record_version_in_tx(&tx, &manifest, &manifest_hash, Source::Imported)?;
+
+        // Derived artefacts (OCR transcripts) live entirely on the
+        // PC — push.rs filters them out of the upload payload. Without
+        // this clause, the unchanged `current_manifest` → new
+        // `current_manifest` delta still flips `has_unpushed_changes`
+        // to true and trips `plan_push` into queuing a no-op
+        // re-upload of every other file.
+        //
+        // Auto-advance `last_seen_manifest` to the new hash IF the
+        // device was already in sync with the prior manifest. If the
+        // user had unpushed changes (rename, move, archive…), leave
+        // `last_seen` alone so the next push still ships them — the
+        // derived file gets filtered out of that push regardless.
+        if prior_last_seen.as_deref() == Some(manifest_hex.as_str()) {
+            let now = OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default();
+            tx.execute(
+                "UPDATE sync_state SET last_seen_manifest = ?1, last_synced_at = ?2 \
+                 WHERE document_id = ?3",
+                params![manifest_hash.as_str(), now, document_id],
+            )?;
+        }
+
         tx.commit()?;
         Ok(outcome)
     }
@@ -2340,6 +2377,64 @@ mod tests {
             .collect();
         assert_eq!(transcripts.len(), 1);
         assert!(transcripts[0].derived);
+    }
+
+    #[test]
+    fn record_derived_artefact_does_not_dirty_an_already_synced_doc() {
+        // OCR transcripts live PC-side. If the device was in sync
+        // before the user OCR'd, it should still be in sync after —
+        // no push queued, no "unsynced" badge.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("doc-1.content", b"{}")]);
+        // Pull-source recording sets last_seen = current, putting
+        // the doc in the "in sync" state.
+        let pulled = lib.record_version(&m, Source::Pulled).unwrap();
+        assert!(!doc_dirty(&lib, "doc-1"));
+
+        let derived = lib
+            .record_derived_artefact("doc-1", "ocr/transcript.md", b"hello")
+            .unwrap();
+        assert_ne!(derived.version_id, pulled.version_id);
+        assert!(
+            !doc_dirty(&lib, "doc-1"),
+            "derived-only change must not flip has_unpushed_changes"
+        );
+    }
+
+    #[test]
+    fn record_derived_artefact_preserves_pending_unpushed_changes() {
+        // If the user had unpushed edits before OCR'ing (e.g. a
+        // rename), we must NOT swallow them by auto-advancing
+        // last_seen all the way to the post-OCR manifest. The
+        // pending-push state has to survive the derived-only edit.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("doc-1.content", b"{}")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+
+        // Rename → leaves last_seen behind (still pointing at the
+        // pre-rename manifest), so the doc is dirty.
+        lib.rename_document("doc-1", "Renamed").unwrap();
+        assert!(doc_dirty(&lib, "doc-1"));
+
+        // OCR on top of the rename. Auto-advance must NOT fire here
+        // because last_seen != prior current.
+        lib.record_derived_artefact("doc-1", "ocr/transcript.md", b"hi")
+            .unwrap();
+        assert!(
+            doc_dirty(&lib, "doc-1"),
+            "rename was already pending; OCR must not silence the unsynced state"
+        );
+    }
+
+    fn doc_dirty(lib: &Library, document_id: &str) -> bool {
+        lib.list_documents()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.document_id == document_id)
+            .map(|d| d.has_unpushed_changes)
+            .unwrap_or(false)
     }
 
     #[test]
