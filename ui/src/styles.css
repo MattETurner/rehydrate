@@ -260,14 +260,8 @@ textarea {
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  background:
-    linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent), white 30%));
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-size: 12px;
-  font-weight: 700;
+  object-fit: cover;
+  display: inline-block;
   box-shadow: var(--shadow-1);
 }
 
@@ -766,6 +760,14 @@ input[type="search"]:focus {
   background: var(--accent-bg);
   color: var(--accent);
   margin-bottom: var(--space-3);
+}
+.empty .empty-logo {
+  width: 120px;
+  height: 120px;
+  object-fit: contain;
+  border-radius: var(--radius-xl);
+  margin-bottom: var(--space-4);
+  box-shadow: var(--shadow-1);
 }
 
 /* =====================================================================

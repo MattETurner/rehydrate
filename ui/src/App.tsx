@@ -918,7 +918,7 @@ export function App() {
     <div className="app">
       <header className="toolbar" data-tauri-drag-region>
         <span className="brand">
-          <span className="brand-mark">M</span>
+          <img className="brand-mark" src="/logo.png" alt="" />
           Marginalia
         </span>
         <StatusPill
@@ -1528,9 +1528,7 @@ function WelcomeEmpty({
 }) {
   return (
     <div className="empty">
-      <div className="empty-art">
-        <Icon name="library" size={36} />
-      </div>
+      <img className="empty-logo" src="/logo.png" alt="" />
       <h2>Welcome to Marginalia</h2>
       <p>
         A calm, offline home for everything on your reMarkable. Sync stays
