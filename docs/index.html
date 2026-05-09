@@ -18,151 +18,154 @@
   <h1>reHydrate</h1>
   <p class="hero__tagline">An offline companion for the reMarkable.</p>
   <p class="hero__lede">
-    Pulls notebooks over USB, renders ink as sharp PDFs, runs handwriting OCR
-    on your machine, and ships drafts to your own CMS — without touching a
-    cloud you didn't choose.
+    Pulls your notebooks over USB, makes proper PDFs from your handwriting,
+    turns them into editable text, and posts them to your blog as drafts —
+    all without sending your notes to anybody else's server.
   </p>
-  <p class="hero__cta">
-    <a class="btn" href="https://github.com/dm807cam/rehydrate/releases">Download</a>
-    <a class="btn btn--ghost" href="https://github.com/dm807cam/rehydrate">Source</a>
-  </p>
+  <div class="hero__cta">
+    <p class="hero__cta-row" id="downloads">
+      <a class="btn" data-asset-suffix="aarch64.dmg"
+         href="https://github.com/dm807cam/rehydrate/releases/latest">
+        <span class="btn__platform">macOS</span>
+        <span class="btn__detail">Apple Silicon</span>
+      </a>
+      <a class="btn" data-asset-suffix=".AppImage"
+         href="https://github.com/dm807cam/rehydrate/releases/latest">
+        <span class="btn__platform">Linux</span>
+        <span class="btn__detail">AppImage</span>
+      </a>
+      <a class="btn" data-asset-suffix=".msi"
+         href="https://github.com/dm807cam/rehydrate/releases/latest">
+        <span class="btn__platform">Windows</span>
+        <span class="btn__detail">Installer</span>
+      </a>
+    </p>
+    <p class="hero__cta-row">
+      <a class="btn btn--ghost" href="https://github.com/dm807cam/rehydrate">View source on GitHub</a>
+    </p>
+  </div>
 </header>
 
 <main>
 
 <section>
-  <h2>Sync over USB</h2>
+  <h2>Truly offline</h2>
   <p>
-    Your tablet talks to reHydrate at <code>10.11.99.1</code> over SSH/SFTP —
-    the same endpoint reMarkable's own developer mode exposes. No Connect
-    subscription, no third-party servers, no pull cycles billed to a storage
-    quota.
+    reHydrate connects to your reMarkable through its USB cable. No
+    Wi-Fi, no subscription, no servers in the middle. Your notes go
+    from the tablet to your computer and stop there.
   </p>
   <p>
-    The only outbound destinations from the running app are the tablet, the
-    HuggingFace model registry on first OCR run, and your own Ghost or
-    WordPress endpoint when you explicitly publish a draft. A privacy
-    integration test bans every general-purpose HTTP client from the sync,
-    device, and library crates and fails the build if one slips back in.
+    There's no reMarkable Connect needed and no monthly fee. The app
+    works exactly the same with the tablet's cloud features turned
+    off entirely.
   </p>
 </section>
 
 <section>
-  <h2>A library, not a folder</h2>
+  <h2>Version history</h2>
   <p>
-    Every pull becomes a new version of every changed document, content-addressed
-    by SHA-256. Browse history per document, restore an older state, garbage-
-    collect what you no longer reference. Renames, moves, archives, and folder
-    edits are first-class — they queue locally and ship to the tablet on the
-    next push.
+    Every time you sync, reHydrate keeps a snapshot of every notebook
+    that changed. Decided you preferred last week's draft? It's still
+    there — open the history view and restore. Want to see how a
+    notebook looked a month ago? Same.
   </p>
   <p>
-    More than one reMarkable? Keep a library per device and switch between them
-    from the toolbar. Each library is locked at the OS level so two app
-    instances can't trample each other's blob store.
+    If you have more than one reMarkable, keep a separate library
+    for each one and switch between them from the toolbar.
   </p>
 </section>
 
 <section>
-  <h2>Vector ink</h2>
+  <h2>Beautiful PDFs</h2>
   <p>
-    Notebook PDFs render straight from the device's stroke data through PDF's
-    native stroking pipeline — every pen, ballpoint, marker, fineliner,
-    calligraphy stroke and highlighter, with the right caps and joins. Sharp
-    at any zoom, no thumbnail-stitched approximations.
+    Notebooks open as proper PDFs — not blurry screenshots. Every pen,
+    ballpoint, marker, fineliner, calligraphy stroke, and highlighter
+    looks the way it does on the tablet. Sharp at any zoom, ready to
+    print or share.
   </p>
 </section>
 
 <section>
-  <h2>On-device OCR</h2>
+  <h2>Handwriting to text</h2>
   <p>
-    Click <em>Convert to text</em> on a notebook. A vision-language model loads
-    on your machine — Qwen2.5-VL-7B by default — and transcribes handwriting
-    in any major script. The transcript is stored alongside the notebook in
-    the library's manifest and never pushed to the tablet.
+    Click <em>Convert to text</em> on any notebook and reHydrate reads
+    your handwriting and turns it into editable text. It works on
+    English, German, French, Spanish, Japanese, Chinese, Arabic, and
+    most other scripts.
   </p>
   <p>
-    First run downloads the model from HuggingFace (a few GB; visible progress
-    indicator) and stays in your local cache afterwards. Subsequent runs are
-    seconds-of-load + seconds-per-page.
-  </p>
-</section>
-
-<section>
-  <h2>Drafts to your CMS</h2>
-  <p>
-    From a transcript, save as plain text or Markdown, or post a draft directly
-    to your <strong>Ghost</strong> or <strong>WordPress</strong> site. Credentials
-    live in your OS keychain. The publish layer's HTTP client is pinned to the
-    host you configured — no redirects, no surprises, no third party in the
-    middle.
+    The first time you do this, the app downloads the recognition
+    engine to your computer (a one-time setup that takes a few
+    minutes). After that everything happens locally — no internet
+    needed, no notes uploaded to anyone.
   </p>
 </section>
 
 <section>
-  <h2>Privacy invariants</h2>
+  <h2>Publish to your blog</h2>
+  <p>
+    Once your handwriting is text, save it as a <strong>plain text</strong>
+    file, a <strong>Markdown</strong> file, or send it straight to your
+    <strong>Ghost</strong> or <strong>WordPress</strong> site as a draft.
+    Polish and publish from your CMS the way you usually do — only this
+    time the rough first pass came from your handwriting.
+  </p>
+</section>
+
+<section>
+  <h2>Privacy</h2>
+  <p>
+    reHydrate is built so your notes never leave your computer unless
+    <em>you</em> click "publish" to a destination <em>you</em> chose.
+    Concretely:
+  </p>
   <ul class="invariants">
-    <li>All sync traffic goes to <code>10.11.99.1</code>. Nothing else, ever.</li>
-    <li>Tauri capabilities are scoped to <code>core:default</code> +
-      <code>opener:default</code>. No <code>tauri-plugin-http</code> in the
-      dep graph; the renderer cannot make arbitrary network calls.</li>
-    <li>The WebView CSP only allows <code>'self'</code>. Inline event handlers
-      and <code>eval</code> are denied.</li>
-    <li>Credentials sit in the OS keychain (Keychain on macOS,
-      libsecret on Linux, Credential Manager on Windows). Never plaintext on
-      disk.</li>
-    <li>Model weights download once on user-explicit action from
-      <code>huggingface.co</code> only and stay in
-      <code>~/.cache/huggingface</code>.</li>
-    <li>The publish layer's HTTP client is a wrapper that refuses redirects
-      and rejects any request whose host doesn't match the user-configured
-      CMS URL.</li>
-    <li>A privacy integration test grep-asserts these invariants on every
-      build.</li>
+    <li>No telemetry, no analytics, no "anonymous usage statistics".
+      The app makes no network calls on launch.</li>
+    <li>Sync between your tablet and your computer happens entirely
+      over the USB cable. The reMarkable's cloud is not in the loop.</li>
+    <li>Handwriting recognition runs on your machine. The text never
+      gets sent anywhere for processing.</li>
+    <li>Passwords for your tablet and your blog are stored in your
+      computer's secure password store (Keychain on macOS, the
+      equivalent on Linux and Windows). Never in plain text on disk.</li>
+    <li>The only servers the app ever contacts are: your tablet (over
+      USB), the recognition-model download (once, the first time you
+      use OCR), and your own blog (only when you click publish).</li>
+    <li>An automated check runs on every release to make sure nobody
+      accidentally adds a network call somewhere they shouldn't.</li>
   </ul>
 </section>
 
 <section>
   <h2>What it's not</h2>
   <ul>
-    <li>Not a cloud service.</li>
-    <li>Not a Connect-tier replacement.</li>
-    <li>Not signed or notarized today — first launch on macOS needs a
-      right-click → Open, Windows needs a SmartScreen confirm.</li>
-    <li>Not battle-tested on every Linux distro. Daily on Arch + Wayland and
-      Ubuntu 24.04.</li>
+    <li>It's not a cloud service. There's nothing to subscribe to.</li>
+    <li>It doesn't replace your reMarkable's tablet experience — it
+      sits next to it, on your computer.</li>
+    <li>It's not yet officially signed for macOS or Windows, so the
+      first launch needs an extra confirmation step (right-click →
+      Open on macOS, "Run anyway" on Windows). Signing is on the
+      roadmap.</li>
   </ul>
-</section>
-
-<section>
-  <h2>For the curious</h2>
-  <p>
-    Rust workspace, Tauri 2, React 18 + Vite 8 for the renderer. The library
-    is a content-addressed blob store + SQLite version log; manifest edits
-    commit under a single transaction so a crash never leaves you in a
-    half-pushed state. The OCR runtime is
-    <a href="https://github.com/EricLBuehler/mistral.rs">mistral.rs</a>
-    with Apple Metal kernels via
-    <a href="https://github.com/huggingface/candle">candle</a>. The publish
-    layer is a hand-rolled <code>ureq + rustls</code> agent.
-  </p>
 </section>
 
 <section>
   <h2>Get it</h2>
   <p>
-    Pre-built bundles for macOS (Apple Silicon + Intel), Linux (AppImage and
-    .deb), and Windows (MSI) are attached to each
-    <a href="https://github.com/dm807cam/rehydrate/releases">release</a>.
+    Pre-built apps are on the
+    <a href="https://github.com/dm807cam/rehydrate/releases">releases page</a>
+    for Mac (Apple Silicon and Intel), Linux (AppImage and .deb), and
+    Windows. Pick your platform from the buttons at the top, or browse
+    the full list.
   </p>
-  <p>From source:</p>
+  <p>
+    Want to build it yourself?
+  </p>
   <pre><code>git clone https://github.com/dm807cam/rehydrate
 cd rehydrate
 ./build.sh</code></pre>
-  <p class="muted">
-    First cold build pulls in Metal + candle + mistral.rs and takes 5–10
-    minutes. Subsequent builds are seconds.
-  </p>
 </section>
 
 </main>
@@ -179,6 +182,38 @@ cd rehydrate
     reHydrate is unaffiliated with reMarkable AS.
   </p>
 </footer>
+
+<script>
+/* Resolve each download button to the actual asset URL of the
+ * latest release. GitHub doesn't expose a wildcard "latest .dmg"
+ * pattern, so we ask the API once and rewrite the hrefs. If the
+ * fetch fails (offline, rate-limited, no releases yet), the
+ * default href on each button still drops the user on the
+ * releases page where they can pick manually. */
+(async function resolveDownloads() {
+  const buttons = document.querySelectorAll("[data-asset-suffix]");
+  if (buttons.length === 0) return;
+  try {
+    const r = await fetch(
+      "https://api.github.com/repos/dm807cam/rehydrate/releases/latest",
+      { headers: { Accept: "application/vnd.github+json" } }
+    );
+    if (!r.ok) return;
+    const release = await r.json();
+    const assets = release.assets || [];
+    for (const btn of buttons) {
+      const suffix = btn.getAttribute("data-asset-suffix");
+      const match = assets.find((a) => a.name && a.name.endsWith(suffix));
+      if (match && match.browser_download_url) {
+        btn.href = match.browser_download_url;
+        btn.setAttribute("download", match.name);
+      }
+    }
+  } catch {
+    /* Stay on the releases-page fallback. */
+  }
+})();
+</script>
 
 </body>
 </html>

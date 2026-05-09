@@ -124,6 +124,13 @@ body {
 .hero__cta {
   margin-top: var(--space-6);
   display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: center;
+}
+.hero__cta-row {
+  margin: 0;
+  display: flex;
   gap: var(--space-3);
   justify-content: center;
   flex-wrap: wrap;
@@ -159,6 +166,32 @@ body {
 }
 .btn--ghost:hover {
   background: var(--bg-sunken);
+}
+
+/* Platform-specific download buttons stack the OS name above a
+ * smaller architecture / installer-format hint, so a glance tells
+ * the reader "this is the macOS Apple Silicon build" without
+ * making the button text wrap awkwardly. */
+.btn .btn__platform {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.btn .btn__detail {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.85;
+  line-height: 1.2;
+  margin-top: 2px;
+}
+#downloads .btn {
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 10px 18px;
+  min-width: 130px;
 }
 
 /* =====================================================================
