@@ -63,6 +63,74 @@ export interface RecentLibraryEntry {
   current: boolean;
 }
 
+export interface OcrModelDescriptor {
+  id: string;
+  display_name: string;
+  download_url: string;
+  sha256: string;
+  size_bytes: number;
+}
+
+export type OcrStatusReport =
+  | { kind: "missing"; descriptor: OcrModelDescriptor }
+  | { kind: "partial"; descriptor: OcrModelDescriptor; bytes_done: number }
+  | {
+      kind: "ready";
+      descriptor: OcrModelDescriptor;
+      path: string;
+      size: number;
+    };
+
+export type OcrProgressEvent =
+  | { kind: "page_started"; page_index: number }
+  | { kind: "page_done"; page_index: number; chars: number }
+  | { kind: "page_failed"; page_index: number; message: string }
+  | { kind: "done"; pages_done: number; total_chars: number }
+  | { kind: "download_progress"; done: number; total: number | null }
+  | { kind: "download_done" };
+
+export interface TranscriptSummary {
+  document_id: string;
+  version_id: number;
+  page_count: number;
+  char_count: number;
+  model: string;
+}
+
+export interface TranscriptDocument {
+  document_id: string;
+  version_id: number;
+  markdown: string;
+  model: string | null;
+  created_at: string | null;
+  language: string | null;
+}
+
+export type ExportFormat = "txt" | "markdown";
+export type PublishKind = "ghost" | "wordpress";
+
+export interface PublishResult {
+  post_id: string;
+  edit_url: string;
+  target: PublishKind;
+}
+
+export interface PublishCredentialStatus {
+  ghost: boolean;
+  wordpress: boolean;
+}
+
+export interface GhostCredentials {
+  base_url: string;
+  admin_api_key: string;
+}
+
+export interface WordpressCredentials {
+  base_url: string;
+  username: string;
+  application_password: string;
+}
+
 export interface DeviceInfo {
   model: string;
   serial: string | null;
