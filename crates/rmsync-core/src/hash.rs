@@ -1,13 +1,34 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Hex-lowercased SHA-256. The canonical content address used everywhere in
 /// the library (blob filenames, manifest references, version identifiers).
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Deserialization is strict: any string that isn't exactly 64 lowercase
+/// hex characters is rejected. The previous derived `Deserialize` (via
+/// `#[serde(transparent)]`) accepted uppercase, short, or non-hex input;
+/// callers that did `[..12]` on the inner string could then panic, and
+/// the blob fanout silently missed on disk.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct Sha256Hex(String);
+
+impl<'de> Deserialize<'de> for Sha256Hex {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Self::from_hex(&s).ok_or_else(|| {
+            de::Error::custom(format!(
+                "invalid sha256 hex (expected 64 lowercase hex chars, got {})",
+                s.len()
+            ))
+        })
+    }
+}
 
 impl Sha256Hex {
     pub fn from_bytes(bytes: &[u8]) -> Self {
@@ -40,7 +61,9 @@ impl Sha256Hex {
 
 impl fmt::Debug for Sha256Hex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "sha256:{}", &self.0[..12])
+        // Defensive: from_hex enforces 64 chars, but Debug must never panic.
+        let prefix = self.0.get(..12).unwrap_or(self.0.as_str());
+        write!(f, "sha256:{prefix}")
     }
 }
 

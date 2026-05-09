@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
+use fs4::fs_std::FileExt;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -217,6 +218,21 @@ pub struct ArchivedDocument {
     pub archived_at: String,
 }
 
+/// Optional second SQL operation glued to the same transaction as
+/// `record_metadata_change`'s record_version. Used by archive /
+/// unarchive so the metadata edit and the documents↔archived_documents
+/// move commit together (audit fix C2).
+enum PostAction<'a> {
+    None,
+    Archive {
+        reason: ArchiveReason,
+        visible_name: &'a str,
+        doc_type: &'a str,
+        original_parent: Option<&'a str>,
+    },
+    Unarchive,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct GarbageCollectReport {
     pub scanned: usize,
@@ -261,6 +277,13 @@ pub struct Library {
     /// async I/O (the sync engine pulls all bytes into memory before
     /// calling record_version, so the critical section is short).
     write_lock: Mutex<()>,
+    /// OS-level advisory exclusive lock held for the lifetime of the
+    /// library instance. Audit fix H3: without this, two app
+    /// instances pointed at the same library can each hold their own
+    /// `write_lock` mutex, and instance A's GC may delete a blob that
+    /// instance B just committed. The handle is kept alive in this
+    /// field; dropping it releases the OS lock automatically.
+    _lock_file: std::fs::File,
 }
 
 impl Library {
@@ -268,6 +291,21 @@ impl Library {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let paths = LibraryPaths::new(path.as_ref());
         paths.ensure_dirs()?;
+
+        // Acquire the inter-process advisory lock first. If another
+        // app instance has the same library open, fail fast — sharing
+        // a library across processes corrupts the GC vs. record_version
+        // invariant.
+        let lock_path = paths.root.join(".lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        if lock_file.try_lock_exclusive().is_err() {
+            return Err(Error::AlreadyOpen(paths.root.display().to_string()));
+        }
 
         if !paths.library_json.exists() {
             let meta = LibraryMeta {
@@ -288,6 +326,7 @@ impl Library {
             blobs,
             db,
             write_lock: Mutex::new(()),
+            _lock_file: lock_file,
         })
     }
 
@@ -320,15 +359,37 @@ impl Library {
         let canonical = manifest.canonical_json()?;
         let manifest_hash = Sha256Hex::from_bytes(&canonical);
 
-        // Persist the manifest itself as a blob.
+        // Persist the manifest itself as a blob (idempotent — orphan
+        // collected by GC after the grace if we never commit).
         self.blobs.put_bytes(&canonical)?;
-
-        let now = OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default();
 
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
+        let outcome = self.record_version_in_tx(&tx, manifest, &manifest_hash, source)?;
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    /// Pure-SQL part of `record_version`. The caller is expected to have
+    /// already written the manifest blob to disk and to be holding both
+    /// `write_lock` and a SQLite transaction.
+    ///
+    /// Factoring this out lets `record_metadata_change`,
+    /// `archive_document`, and `unarchive_document` compose multiple
+    /// row mutations into a single transaction — without it, each
+    /// caller had to commit a partial state and then take a second
+    /// lock + tx to finish, which left a window for crash-recovery
+    /// and concurrent-edit races (audit findings C1 + C2).
+    fn record_version_in_tx(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        manifest: &Manifest,
+        manifest_hash: &Sha256Hex,
+        source: Source,
+    ) -> Result<RecordOutcome> {
+        let now = OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
 
         // Already the current version?
         let current: Option<(String, i64)> = tx
@@ -352,10 +413,9 @@ impl Library {
                         params![manifest_hash.as_str(), now, manifest.document_id],
                     )?;
                 }
-                tx.commit()?;
                 return Ok(RecordOutcome {
                     version_id: *cur_id,
-                    manifest_hash,
+                    manifest_hash: manifest_hash.clone(),
                     unchanged: true,
                 });
             }
@@ -421,10 +481,9 @@ impl Library {
             )?;
         }
 
-        tx.commit()?;
         Ok(RecordOutcome {
             version_id,
-            manifest_hash,
+            manifest_hash: manifest_hash.clone(),
             unchanged: false,
         })
     }
@@ -485,31 +544,50 @@ impl Library {
     }
 
     pub fn get_history(&self, document_id: &str) -> Result<Vec<VersionEntry>> {
+        // Pull raw rows first; defer hash validation so a single corrupt
+        // row produces a typed `Error::Corrupt` instead of getting
+        // wrapped through rusqlite's error type or — worse, before
+        // the H4 fix — silently fabricated.
+        type RawRow = (i64, String, String, Option<i64>, String, String, Option<String>);
         let conn = self.db.lock();
         let mut stmt = conn.prepare(
             "SELECT id, document_id, manifest_hash, parent_version_id, observed_at, source, note \
              FROM versions WHERE document_id = ?1 ORDER BY id ASC",
         )?;
-        let mut rows: Vec<VersionEntry> = stmt
+        let raw: Vec<RawRow> = stmt
             .query_map(params![document_id], |r| {
-                let manifest_hex: String = r.get(2)?;
-                let source_str: String = r.get(5)?;
-                Ok(VersionEntry {
-                    id: r.get(0)?,
-                    document_id: r.get(1)?,
-                    manifest_hash: Sha256Hex::from_hex(&manifest_hex)
-                        .unwrap_or_else(|| Sha256Hex::from_bytes(manifest_hex.as_bytes())),
-                    parent_version_id: r.get(3)?,
-                    observed_at: r.get(4)?,
-                    source: Source::parse(&source_str).unwrap_or(Source::Pulled),
-                    note: r.get(6)?,
-                    total_size_bytes: None,
-                    file_count: None,
-                })
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
             })?
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
         drop(conn);
+
+        let mut rows: Vec<VersionEntry> = Vec::with_capacity(raw.len());
+        for (id, doc_id, manifest_hex, parent, observed_at, source_str, note) in raw {
+            let manifest_hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+                path: self.paths.db.display().to_string(),
+                reason: format!("bad manifest hash for version {id}"),
+            })?;
+            rows.push(VersionEntry {
+                id,
+                document_id: doc_id,
+                manifest_hash,
+                parent_version_id: parent,
+                observed_at,
+                source: Source::parse(&source_str).unwrap_or(Source::Pulled),
+                note,
+                total_size_bytes: None,
+                file_count: None,
+            });
+        }
 
         // Populate size + file count by reading each manifest blob. Cheap
         // for typical libraries (a few hundred bytes per manifest); if it
@@ -534,18 +612,31 @@ impl Library {
     /// (deleted=true), unarchive (deleted=false). Bumps the device-facing
     /// `lastModified` and `modified` flags so the tablet treats the file
     /// as freshly changed.
+    ///
+    /// The whole read → mutate → write sequence runs under `write_lock`
+    /// + a single SQLite transaction. `post_action` lets archive /
+    /// unarchive piggy-back their `documents` ↔ `archived_documents`
+    /// move on the same transaction (audit fixes C1 + C2 — without
+    /// this, two callers could observe the same parent manifest and
+    /// silently overwrite each other, and a crash between the
+    /// version-record commit and the archive move could leave a row
+    /// in a deleted-but-not-archived limbo).
     fn record_metadata_change<F>(
         &self,
         document_id: &str,
         mutate: F,
+        post_action: PostAction<'_>,
     ) -> Result<RecordOutcome>
     where
         F: FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<()>,
     {
-        // Resolve the current manifest hash from either the live or the
-        // archived table. We support editing both: archive→delete needs to
-        // mutate a live doc, while unarchive→restore mutates an archived
-        // one whose row no longer exists in `documents`.
+        // Take the write lock for the WHOLE flow — read, mutate, write —
+        // so concurrent rename/move/archive callers serialise properly.
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+
+        // Brief db lock to resolve the current manifest hash (live or
+        // archived). We must drop this before doing filesystem I/O
+        // because the connection is held by transactional code below.
         let manifest_hex: String = {
             let conn = self.db.lock();
             let live: Option<String> = conn
@@ -624,7 +715,64 @@ impl Library {
             manifest.visible_name = name.to_string();
         }
 
-        self.record_version(&manifest, Source::Restored)
+        // Write the new manifest blob (idempotent; GC reclaims if we
+        // fail to commit below) and run the SQL atomically.
+        let canonical = manifest.canonical_json()?;
+        let manifest_hash = Sha256Hex::from_bytes(&canonical);
+        self.blobs.put_bytes(&canonical)?;
+
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        let outcome =
+            self.record_version_in_tx(&tx, &manifest, &manifest_hash, Source::Restored)?;
+
+        match post_action {
+            PostAction::None => {}
+            PostAction::Archive {
+                reason,
+                visible_name,
+                doc_type,
+                original_parent,
+            } => {
+                let now = OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default();
+                tx.execute(
+                    "INSERT INTO archived_documents \
+                        (document_id, visible_name, doc_type, parent, manifest_hash, \
+                         version_id, reason, archived_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                     ON CONFLICT(document_id) DO UPDATE SET \
+                        manifest_hash = excluded.manifest_hash, \
+                        version_id = excluded.version_id, \
+                        reason = excluded.reason, \
+                        archived_at = excluded.archived_at",
+                    params![
+                        document_id,
+                        visible_name,
+                        doc_type,
+                        original_parent,
+                        outcome.manifest_hash.as_str(),
+                        outcome.version_id,
+                        reason.as_str(),
+                        now,
+                    ],
+                )?;
+                tx.execute(
+                    "DELETE FROM documents WHERE document_id = ?1",
+                    params![document_id],
+                )?;
+            }
+            PostAction::Unarchive => {
+                tx.execute(
+                    "DELETE FROM archived_documents WHERE document_id = ?1",
+                    params![document_id],
+                )?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(outcome)
     }
 
     /// Rename a document. Writes the new title into `.metadata`'s
@@ -643,13 +791,17 @@ impl Library {
                 "document name must not be empty".into(),
             ));
         }
-        self.record_metadata_change(document_id, |map| {
-            map.insert(
-                "visibleName".into(),
-                serde_json::Value::String(trimmed.clone()),
-            );
-            Ok(())
-        })
+        self.record_metadata_change(
+            document_id,
+            |map| {
+                map.insert(
+                    "visibleName".into(),
+                    serde_json::Value::String(trimmed.clone()),
+                );
+                Ok(())
+            },
+            PostAction::None,
+        )
     }
 
     /// Move a live document into a different folder (`new_parent` =
@@ -661,10 +813,14 @@ impl Library {
         new_parent: Option<&str>,
     ) -> Result<RecordOutcome> {
         let parent = new_parent.unwrap_or("").to_string();
-        self.record_metadata_change(document_id, |map| {
-            map.insert("parent".into(), serde_json::Value::String(parent));
-            Ok(())
-        })
+        self.record_metadata_change(
+            document_id,
+            |map| {
+                map.insert("parent".into(), serde_json::Value::String(parent));
+                Ok(())
+            },
+            PostAction::None,
+        )
     }
 
     /// Move a document from the live `documents` table into the archive.
@@ -679,73 +835,50 @@ impl Library {
             return Ok(());
         }
 
-        // Capture the doc's pre-archive parent so a later unarchive can
-        // restore it to where the user originally had it. Read this
-        // BEFORE mutating the metadata, because the mutation flips
-        // parent to "trash".
-        let (manifest_hex, _version_id, original_parent, visible_name, doc_type) = {
+        // Capture the doc's pre-archive parent + visibleName + doc_type
+        // so a later unarchive can restore it where the user had it.
+        // Reading before record_metadata_change is fine — the mutation
+        // flips parent to "trash", and record_metadata_change re-reads
+        // under write_lock + tx so the rename/move race window is
+        // closed even though this read runs first.
+        let (original_parent, visible_name, doc_type) = {
             let conn = self.db.lock();
-            let row: Option<(String, i64)> = conn
+            let h: String = conn
                 .query_row(
-                    "SELECT current_manifest, current_version_id FROM documents \
-                     WHERE document_id = ?1",
+                    "SELECT current_manifest FROM documents WHERE document_id = ?1",
                     params![document_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| r.get(0),
                 )
-                .optional()?;
-            let (h, v) = row.ok_or_else(|| Error::NotFound(format!("document {document_id}")))?;
+                .optional()?
+                .ok_or_else(|| Error::NotFound(format!("document {document_id}")))?;
+            drop(conn);
             let hash = Sha256Hex::from_hex(&h).ok_or_else(|| Error::Corrupt {
                 path: self.paths.db.display().to_string(),
                 reason: format!("bad manifest hash for {document_id}"),
             })?;
             let bytes = self.blobs.read_to_vec(&hash)?;
             let m = Manifest::from_canonical_json(&bytes)?;
-            (h, v, m.parent.clone(), m.visible_name, m.doc_type)
+            (m.parent.clone(), m.visible_name, m.doc_type)
         };
 
-        // Record a new version with deleted=true and parent="trash". This
-        // becomes the current manifest, which means the next push will
-        // upload it to the device — that's how the deletion propagates.
-        let outcome = self.record_metadata_change(document_id, |map| {
-            map.insert("deleted".into(), serde_json::Value::Bool(true));
-            map.insert(
-                "parent".into(),
-                serde_json::Value::String("trash".into()),
-            );
-            Ok(())
-        })?;
-
-        // Now move the SQL row from `documents` into `archived_documents`,
-        // pinning the archive entry to the new (deleted) manifest version
-        // so list_pushable_documents picks it up for the next sync.
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
-        let now = OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default();
-        let mut conn = self.db.lock();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO archived_documents \
-                (document_id, visible_name, doc_type, parent, manifest_hash, \
-                 version_id, reason, archived_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                document_id,
-                visible_name,
-                doc_type,
-                original_parent,
-                outcome.manifest_hash.as_str(),
-                outcome.version_id,
-                reason.as_str(),
-                now,
-            ],
+        // One atomic transaction: write the deleted=true version AND
+        // move documents → archived_documents in the same tx (audit
+        // fix C2). A crash mid-way used to leave the doc with a
+        // deleted manifest but never archived; now it's all-or-nothing.
+        self.record_metadata_change(
+            document_id,
+            |map| {
+                map.insert("deleted".into(), serde_json::Value::Bool(true));
+                map.insert("parent".into(), serde_json::Value::String("trash".into()));
+                Ok(())
+            },
+            PostAction::Archive {
+                reason,
+                visible_name: &visible_name,
+                doc_type: &doc_type,
+                original_parent: original_parent.as_deref(),
+            },
         )?;
-        tx.execute(
-            "DELETE FROM documents WHERE document_id = ?1",
-            params![document_id],
-        )?;
-        tx.commit()?;
-        let _ = manifest_hex;
         Ok(())
     }
 
@@ -754,8 +887,9 @@ impl Library {
     /// archive.
     pub fn unarchive_document(&self, document_id: &str) -> Result<DocumentSummary> {
         // Read the archive entry first — it tells us the original parent
-        // to restore the doc to. Hold no write lock while we read so the
-        // subsequent record_metadata_change can take it cleanly.
+        // to restore the doc to. record_metadata_change re-reads under
+        // write_lock + tx so any concurrent edit lands either before
+        // or after this whole flow.
         let row: (String, String, Option<String>) = {
             let conn = self.db.lock();
             conn.query_row(
@@ -770,47 +904,34 @@ impl Library {
         let (visible_name, doc_type, original_parent) = row;
         let parent_for_meta = original_parent.clone().unwrap_or_default();
 
-        // Record a new version with deleted=false and the original parent
-        // — this is what gets pushed to the device on next sync, undoing
-        // the trash move.
-        let outcome = self.record_metadata_change(document_id, |map| {
-            map.insert("deleted".into(), serde_json::Value::Bool(false));
-            map.insert(
-                "parent".into(),
-                serde_json::Value::String(parent_for_meta.clone()),
-            );
-            Ok(())
-        })?;
+        // Single tx writes the deleted=false version AND deletes the
+        // archived_documents row (record_version_in_tx already inserts
+        // into documents). Audit fix C2.
+        let outcome = self.record_metadata_change(
+            document_id,
+            |map| {
+                map.insert("deleted".into(), serde_json::Value::Bool(false));
+                map.insert(
+                    "parent".into(),
+                    serde_json::Value::String(parent_for_meta.clone()),
+                );
+                Ok(())
+            },
+            PostAction::Unarchive,
+        )?;
 
-        // Move the row back: archived_documents → documents.
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
-        let mut conn = self.db.lock();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO documents(document_id, current_manifest, current_version_id) \
-             VALUES (?1, ?2, ?3) \
-             ON CONFLICT(document_id) DO UPDATE SET \
-                 current_manifest = excluded.current_manifest, \
-                 current_version_id = excluded.current_version_id",
-            params![
-                document_id,
-                outcome.manifest_hash.as_str(),
-                outcome.version_id,
-            ],
-        )?;
-        tx.execute(
-            "DELETE FROM archived_documents WHERE document_id = ?1",
-            params![document_id],
-        )?;
-        let observed_at: String = tx
-            .query_row(
+        // Read observed_at for the freshly-recorded version. No lock —
+        // it's a read-only query.
+        let observed_at: String = {
+            let conn = self.db.lock();
+            conn.query_row(
                 "SELECT observed_at FROM versions WHERE id = ?1",
                 params![outcome.version_id],
                 |r| r.get(0),
             )
             .optional()?
-            .unwrap_or_default();
-        tx.commit()?;
+            .unwrap_or_default()
+        };
 
         Ok(DocumentSummary {
             document_id: document_id.to_string(),
@@ -864,6 +985,16 @@ impl Library {
 
     /// Return the current archive contents, newest first.
     pub fn list_archived(&self) -> Result<Vec<ArchivedDocument>> {
+        type RawRow = (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            i64,
+            String,
+            String,
+        );
         let conn = self.db.lock();
         let mut stmt = conn.prepare(
             "SELECT document_id, visible_name, doc_type, parent, \
@@ -871,23 +1002,50 @@ impl Library {
              FROM archived_documents \
              ORDER BY archived_at DESC, document_id ASC",
         )?;
-        let rows: Vec<ArchivedDocument> = stmt
+        let raw: Vec<RawRow> = stmt
             .query_map([], |r| {
-                let manifest_hex: String = r.get(4)?;
-                let reason_str: String = r.get(6)?;
-                Ok(ArchivedDocument {
-                    document_id: r.get(0)?,
-                    visible_name: r.get(1)?,
-                    doc_type: r.get(2)?,
-                    parent: r.get(3)?,
-                    manifest_hash: Sha256Hex::from_hex(&manifest_hex)
-                        .unwrap_or_else(|| Sha256Hex::from_bytes(manifest_hex.as_bytes())),
-                    version_id: r.get(5)?,
-                    reason: ArchiveReason::parse(&reason_str).unwrap_or(ArchiveReason::Local),
-                    archived_at: r.get(7)?,
-                })
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
             })?
             .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        drop(conn);
+
+        let mut rows = Vec::with_capacity(raw.len());
+        for (
+            document_id,
+            visible_name,
+            doc_type,
+            parent,
+            manifest_hex,
+            version_id,
+            reason_str,
+            archived_at,
+        ) in raw
+        {
+            let manifest_hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+                path: self.paths.db.display().to_string(),
+                reason: format!("bad manifest hash for archived document {document_id}"),
+            })?;
+            rows.push(ArchivedDocument {
+                document_id,
+                visible_name,
+                doc_type,
+                parent,
+                manifest_hash,
+                version_id,
+                reason: ArchiveReason::parse(&reason_str).unwrap_or(ArchiveReason::Local),
+                archived_at,
+            });
+        }
         Ok(rows)
     }
 
@@ -1928,6 +2086,19 @@ mod tests {
             .filter(|p| p.file_name().and_then(|s| s.to_str()) == Some(h.as_str()))
             .collect();
         assert_eq!(matching.len(), 1, "blob should be stored exactly once");
+    }
+
+    #[test]
+    fn second_open_on_same_root_is_rejected() {
+        // Audit fix H3: two app instances pointed at the same library
+        // would corrupt the GC vs. record_version invariant.
+        let tmp = tempfile::tempdir().unwrap();
+        let _first = Library::open(tmp.path()).unwrap();
+        let second = Library::open(tmp.path());
+        assert!(matches!(second, Err(Error::AlreadyOpen(_))));
+        // After dropping the first, the lock is released.
+        drop(_first);
+        let _third = Library::open(tmp.path()).unwrap();
     }
 
     fn walkdir(p: &std::path::Path) -> Vec<std::path::PathBuf> {

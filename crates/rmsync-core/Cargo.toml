@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Marginalia library core: content-addressed blob store, manifests, version log."
 
 [dependencies]
+fs4 = { version = "0.9", features = ["sync"] }
 hex = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }

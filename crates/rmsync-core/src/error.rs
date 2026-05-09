@@ -25,6 +25,9 @@ pub enum Error {
 
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("library at {0} is already open by another process")]
+    AlreadyOpen(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -194,13 +194,41 @@ impl SshDevice {
     ///
     /// If step 2 fails, restore by renaming the backup back into place so
     /// the device never sees a hole where the file used to be.
+    ///
+    /// Audit fix H2: pre-existing backups are conditionally cleaned.
+    /// If `<path>` is missing but `<path>.marginalia-bak` exists, a
+    /// previous push must have hit a double-fault (step 2 failed AND
+    /// the rollback rename also failed) — the only surviving copy of
+    /// the user's file is the backup. Recover it instead of wiping it.
     async fn commit_staged(&self, sftp: &SftpSession, path: &str) -> DeviceResult<()> {
         let tmp_path = staged_path(path);
         let bak_path = backup_path(path);
 
-        // Clean any prior abandoned backup.
-        let _ = sftp.remove_file(&bak_path).await;
+        // Conditional pre-cleanup of any leftover backup.
+        let live_existed = sftp.metadata(path).await.is_ok();
+        let bak_existed = sftp.metadata(&bak_path).await.is_ok();
+        match (live_existed, bak_existed) {
+            (true, true) => {
+                // Live exists; bak is leftover from a prior cycle that
+                // forgot to clean up. Safe to drop.
+                let _ = sftp.remove_file(&bak_path).await;
+            }
+            (false, true) => {
+                // Live missing, bak present → recover bak as live
+                // before staging. Surfaces a previous double-fault as
+                // a recovery action rather than silent data loss.
+                tracing::warn!(
+                    path,
+                    "previous push left {path}.marginalia-bak with no live copy; recovering"
+                );
+                sftp.rename(&bak_path, path)
+                    .await
+                    .map_err(|e| sftp_err("recover(bak→live)", path, e))?;
+            }
+            _ => {}
+        }
 
+        // Re-check live presence after a possible recovery rename.
         let live_existed = sftp.metadata(path).await.is_ok();
         if live_existed {
             sftp.rename(path, &bak_path)
@@ -216,10 +244,17 @@ impl SshDevice {
                 Ok(())
             }
             Err(e) => {
-                // Promotion failed — try to restore the backup so the
-                // device's view of this file is unchanged.
+                // Promotion failed. Try to restore the backup. If even
+                // the rollback fails, surface a distinct error pointing
+                // at the surviving bak so the user — and the next
+                // push's recovery branch — can find it.
                 if live_existed {
-                    let _ = sftp.rename(&bak_path, path).await;
+                    if let Err(roll_err) = sftp.rename(&bak_path, path).await {
+                        return Err(DeviceError::Other(format!(
+                            "promotion failed for {path} ({e}); rollback also failed ({roll_err}); \
+                             previous file preserved at {bak_path}"
+                        )));
+                    }
                 }
                 Err(sftp_err("rename(tmp→live)", path, e))
             }
@@ -439,6 +474,14 @@ impl Device for SshDevice {
             }
             // Skip subdirs under xochitl/ — handled below.
             if entry.file_type().is_dir() {
+                continue;
+            }
+            // Audit fix H1: a previously-failed push leaves staging
+            // tombstones (`*.marginalia-tmp`, `*.marginalia-bak`) on
+            // the device. Without this filter we'd hash them as if
+            // they were real document files, store them in the
+            // manifest, and round-trip them back on the next push.
+            if name.ends_with(".marginalia-tmp") || name.ends_with(".marginalia-bak") {
                 continue;
             }
             let path = format!("{dir}/{name}");
