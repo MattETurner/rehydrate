@@ -42,7 +42,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Vite 8 requires Node ^20.19 || >=22.12. Pinning "22" picks
+          # the latest Node 22 LTS on the runner so we're never closer
+          # to the bound than necessary.
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: ui/package-lock.json
 
