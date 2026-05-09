@@ -259,7 +259,9 @@ textarea {
 .brand-mark {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  /* Matches the squircle radius baked into logo.png so the
+   * box-shadow halo traces the squircle rather than a rectangle. */
+  border-radius: 22.5%;
   object-fit: cover;
   display: inline-block;
   box-shadow: var(--shadow-1);
@@ -765,7 +767,9 @@ input[type="search"]:focus {
   width: 120px;
   height: 120px;
   object-fit: contain;
-  border-radius: var(--radius-xl);
+  /* Same 22.5% squircle as logo.png — keeps the box-shadow
+   * conforming to the icon shape at this larger size. */
+  border-radius: 22.5%;
   margin-bottom: var(--space-4);
   box-shadow: var(--shadow-1);
 }
