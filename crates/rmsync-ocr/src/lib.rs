@@ -16,7 +16,7 @@ pub mod model_store;
 pub mod page_render;
 pub mod progress;
 
-pub use backend::{Mock, OcrBackend, OcrError, PageTranscript, TranscribeOptions};
+pub use backend::{Mock, OcrBackend, OcrCancel, OcrError, PageTranscript, TranscribeOptions};
 pub use model_store::{ModelDescriptor, ModelStatus, ModelStore};
 pub use page_render::render_rm_to_png;
 pub use progress::OcrProgressEvent;

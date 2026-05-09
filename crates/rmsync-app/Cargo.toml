@@ -21,6 +21,9 @@ tauri-build = { version = "2", features = [] }
 rmsync-core = { path = "../rmsync-core" }
 rmsync-device = { path = "../rmsync-device", features = ["ssh"] }
 rmsync-sync = { path = "../rmsync-sync" }
+rmsync-publish = { path = "../rmsync-publish" }
+rmsync-ocr = { path = "../rmsync-ocr" }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 anyhow = { workspace = true }
 directories = { workspace = true }
