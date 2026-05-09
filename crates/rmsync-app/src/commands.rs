@@ -108,13 +108,28 @@ pub struct TwoWayReport {
 
 #[tauri::command]
 pub async fn open_library(path: PathBuf, state: State<'_, AppState>) -> Result<(), String> {
-    let lib = Library::open(&path).map_err(err)?;
+    open_library_at(&path, &state).await
+}
+
+/// Common path-validated open used by `open_library`, `switch_library`,
+/// and `switch_library_via_dialog`. Drops the previously-held library
+/// (and its OS lock) before opening the new one, so the same process
+/// can move between per-device libraries without restarting.
+async fn open_library_at(path: &std::path::Path, state: &State<'_, AppState>) -> Result<(), String> {
+    // Drop the existing Library first so its `.lock` is released. If
+    // the user is switching to the SAME library, this avoids
+    // `AlreadyOpen` when we re-open it below.
+    {
+        let mut slot = state.library.lock().await;
+        *slot = None;
+    }
+    let lib = Library::open(path).map_err(err)?;
     *state.library.lock().await = Some(Arc::new(lib));
-    *state.library_path.lock().await = Some(path.clone());
-    // Persist for next launch. Best-effort — if the config dir isn't
-    // writable we still succeed at opening the library this session.
+    *state.library_path.lock().await = Some(path.to_path_buf());
+
+    // Persist for next launch + push to recents. Best-effort.
     let mut cfg = config::load();
-    cfg.library_path = Some(path);
+    cfg.record_open(path.to_path_buf());
     if let Err(e) = config::save(&cfg) {
         tracing::warn!("failed to persist app config: {e}");
     }
@@ -134,13 +149,97 @@ pub async fn auto_open_library(state: State<'_, AppState>) -> Result<Option<Path
         // Stale config — drop the entry silently so the user sees the
         // welcome screen again rather than a confusing error.
         cfg.library_path = None;
+        cfg.recent_libraries.retain(|r| r.path != path);
         let _ = config::save(&cfg);
         return Ok(None);
     }
-    let lib = Library::open(&path).map_err(err)?;
-    *state.library.lock().await = Some(Arc::new(lib));
-    *state.library_path.lock().await = Some(path.clone());
+    open_library_at(&path, &state).await?;
     Ok(Some(path))
+}
+
+/// Switch to a previously-opened library by path. The path must
+/// already be in the recents list (so the user has consciously opened
+/// it before via the picker). Returns the path opened, or an error if
+/// the library is no longer there or its stamp is invalid.
+#[tauri::command]
+pub async fn switch_library(
+    path: PathBuf,
+    state: State<'_, AppState>,
+) -> Result<PathBuf, String> {
+    let cfg = config::load();
+    if !cfg.recent_libraries.iter().any(|r| r.path == path) {
+        return Err(format!(
+            "{} is not in the recent libraries list; use 'Open another library…' to add it",
+            path.display()
+        ));
+    }
+    open_library_at(&path, &state).await?;
+    Ok(path)
+}
+
+/// Open a folder picker for the user to choose a library directory,
+/// then switch to it. Returns the chosen path, or `None` if the user
+/// cancelled. Adds the path to recents on success.
+#[tauri::command]
+pub async fn switch_library_via_dialog(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<PathBuf>, String> {
+    let app_for_pick = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app_for_pick
+            .dialog()
+            .file()
+            .set_title("Open a Marginalia library folder")
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(err)?;
+
+    let Some(file_path) = picked else {
+        return Ok(None);
+    };
+    let path = file_path
+        .into_path()
+        .map_err(|e| format!("could not resolve picked folder: {e}"))?;
+
+    open_library_at(&path, &state).await?;
+    Ok(Some(path))
+}
+
+#[derive(Serialize)]
+pub struct RecentLibraryEntry {
+    pub path: PathBuf,
+    pub label: String,
+    pub last_opened: String,
+    /// True if `path` still exists and looks like a library on disk.
+    /// The UI uses this to grey out stale entries.
+    pub available: bool,
+    /// True if this is the currently-open library.
+    pub current: bool,
+}
+
+#[tauri::command]
+pub async fn list_recent_libraries(
+    state: State<'_, AppState>,
+) -> Result<Vec<RecentLibraryEntry>, String> {
+    let cfg = config::load();
+    let active = state.library_path.lock().await.clone();
+    Ok(cfg
+        .recent_libraries
+        .into_iter()
+        .map(|r| {
+            let available = r.path.is_dir() && r.path.join("library.json").is_file();
+            let current = active.as_ref() == Some(&r.path);
+            RecentLibraryEntry {
+                path: r.path,
+                label: r.label,
+                last_opened: r.last_opened,
+                available,
+                current,
+            }
+        })
+        .collect())
 }
 
 /// Import a PDF or EPUB from disk into the library.

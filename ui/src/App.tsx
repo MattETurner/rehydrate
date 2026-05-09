@@ -14,6 +14,7 @@ import { PasswordDialog } from "./components/PasswordDialog";
 import { StatusPill } from "./components/StatusPill";
 import { SyncDrawer } from "./components/SyncDrawer";
 import { Icon } from "./components/Icon";
+import { LibrarySwitcher } from "./components/LibrarySwitcher";
 import { Menu } from "./components/Menu";
 import { Skeleton } from "./components/Skeleton";
 import { useToast } from "./components/Toast";
@@ -31,12 +32,16 @@ import type {
   DocumentSummary,
   FolderEntry,
   LibrarySummary,
+  RecentLibraryEntry,
 } from "./types";
 
 export function App() {
   const [defaultPath, setDefaultPath] = useState<string | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryPath, setLibraryPath] = useState<string | null>(null);
+  const [recentLibraries, setRecentLibraries] = useState<RecentLibraryEntry[]>(
+    [],
+  );
   const [summary, setSummary] = useState<LibrarySummary | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[] | null>(null);
   const [folders, setFolders] = useState<FolderEntry[]>([]);
@@ -114,6 +119,10 @@ export function App() {
           setDocuments([]);
           setShowOnboarding(true);
         }
+        // Always load the recents list — even on first launch with no
+        // library open, the switcher hides itself but having the data
+        // means switching after first-open doesn't flicker.
+        await refreshRecentLibraries();
       } catch (e) {
         if (!cancelled) setError(String(e));
       }
@@ -159,6 +168,15 @@ export function App() {
   }, []);
 
   // ---- Library / device commands --------------------------------------
+  async function refreshRecentLibraries() {
+    try {
+      const list = await ipc.listRecentLibraries();
+      setRecentLibraries(list);
+    } catch {
+      // Non-fatal — the switcher just shows whatever it had.
+    }
+  }
+
   async function openLibrary() {
     if (!defaultPath) return;
     setError(null);
@@ -167,7 +185,54 @@ export function App() {
       setLibraryOpen(true);
       setLibraryPath(defaultPath);
       setShowOnboarding(false);
-      await refreshLibrary();
+      await Promise.all([refreshLibrary(), refreshRecentLibraries()]);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  // Switch to a library that's already in the recents list (shown in
+  // the library-switcher dropdown).
+  async function switchToLibrary(path: string) {
+    if (path === libraryPath) return;
+    setError(null);
+    // Clear stale UI before fetching the new library so the user sees
+    // an obvious "loading" state instead of cross-library leakage.
+    setDocuments(null);
+    setFolders([]);
+    setArchived([]);
+    setSummary(null);
+    setSelectedIds(new Set());
+    setFocusId(null);
+    setExpanded(new Set());
+    try {
+      const opened = await ipc.switchLibrary(path);
+      setLibraryPath(opened);
+      await Promise.all([refreshLibrary(), refreshRecentLibraries()]);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  // Pick a brand-new library directory (never opened before) via the
+  // server-side folder picker.
+  async function openAnotherLibrary() {
+    setError(null);
+    try {
+      const opened = await ipc.switchLibraryViaDialog();
+      if (!opened) return;
+      setLibraryOpen(true);
+      setLibraryPath(opened);
+      setShowOnboarding(false);
+      // Wipe stale UI just like switchToLibrary does.
+      setDocuments(null);
+      setFolders([]);
+      setArchived([]);
+      setSummary(null);
+      setSelectedIds(new Set());
+      setFocusId(null);
+      setExpanded(new Set());
+      await Promise.all([refreshLibrary(), refreshRecentLibraries()]);
     } catch (e) {
       setError(String(e));
     }
@@ -917,6 +982,14 @@ export function App() {
           <img className="brand-mark" src="/logo.png" alt="" />
           Marginalia
         </span>
+        {libraryOpen && (
+          <LibrarySwitcher
+            currentPath={libraryPath}
+            recents={recentLibraries}
+            onSwitch={switchToLibrary}
+            onOpenAnother={openAnotherLibrary}
+          />
+        )}
         <StatusPill
           state={device}
           phase={syncPhase}

@@ -13,8 +13,55 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// Path of the library to auto-open on next launch.
     #[serde(default)]
     pub library_path: Option<PathBuf>,
+    /// Recently-used libraries, most-recent-first. Lets the user
+    /// switch between per-device libraries without re-picking the
+    /// folder each time.
+    #[serde(default)]
+    pub recent_libraries: Vec<RecentLibrary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentLibrary {
+    pub path: PathBuf,
+    /// Cached display name for the library (currently the directory's
+    /// final path component). Re-derived on read; persisted so the
+    /// switcher can show something even if the directory has moved.
+    #[serde(default)]
+    pub label: String,
+    /// RFC3339 timestamp of the last time this library was opened.
+    #[serde(default)]
+    pub last_opened: String,
+}
+
+impl AppConfig {
+    /// Insert `path` at the head of `recent_libraries`, dedupe-by-path,
+    /// and trim to `MAX_RECENT`. Updates `library_path` to match.
+    pub fn record_open(&mut self, path: PathBuf) {
+        const MAX_RECENT: usize = 10;
+        let label = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("library")
+            .to_string();
+        let now = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+
+        self.recent_libraries.retain(|r| r.path != path);
+        self.recent_libraries.insert(
+            0,
+            RecentLibrary {
+                path: path.clone(),
+                label,
+                last_opened: now,
+            },
+        );
+        self.recent_libraries.truncate(MAX_RECENT);
+        self.library_path = Some(path);
+    }
 }
 
 fn config_dir() -> Option<PathBuf> {

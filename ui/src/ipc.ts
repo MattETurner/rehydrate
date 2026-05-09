@@ -14,6 +14,7 @@ import type {
   PullPlan,
   PushPlan,
   PushReport,
+  RecentLibraryEntry,
   SyncReport,
   TwoWayReport,
   VerifyReport,
@@ -26,6 +27,11 @@ export const ipc = {
   defaultLibraryPath: () => invoke<string | null>("default_library_path"),
   openLibrary: (path: string) => invoke<void>("open_library", { path }),
   autoOpenLibrary: () => invoke<string | null>("auto_open_library"),
+  switchLibrary: (path: string) => invoke<string>("switch_library", { path }),
+  switchLibraryViaDialog: () =>
+    invoke<string | null>("switch_library_via_dialog"),
+  listRecentLibraries: () =>
+    invoke<RecentLibraryEntry[]>("list_recent_libraries"),
   librarySummary: () => invoke<LibrarySummary>("library_summary"),
   listDocuments: () => invoke<DocumentSummary[]>("list_documents"),
   listFolders: () => invoke<FolderEntry[]>("list_folders"),

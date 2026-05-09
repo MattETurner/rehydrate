@@ -55,6 +55,14 @@ export interface LibrarySummary {
   size_bytes: number;
 }
 
+export interface RecentLibraryEntry {
+  path: string;
+  label: string;
+  last_opened: string;
+  available: boolean;
+  current: boolean;
+}
+
 export interface DeviceInfo {
   model: string;
   serial: string | null;
