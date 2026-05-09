@@ -576,24 +576,30 @@ pub async fn connect_device(
     // Resolve the password without persisting yet. Persisting before we
     // know the password is correct means a typo gets cached and the next
     // connect attempt silently uses the bad value.
+    //
+    // Audit fix M4: a parallel un-zeroized `Option<String>` shadow used
+    // to defeat SecretString's zero-on-drop. We now carry only the
+    // SecretString and a flag — the keychain write reads the bytes
+    // back out via expose_secret().
     let (secret, freshly_typed) = match password {
-        Some(p) => (SecretString::from(p.clone()), Some(p)),
+        Some(p) => (SecretString::from(p), true),
         None => {
             let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER).map_err(err)?;
-            let p = entry
+            let stored = entry
                 .get_password()
                 .map_err(|e| format!("no password stored ({e}); pass one to connect_device"))?;
-            (SecretString::from(p), None)
+            (SecretString::from(stored), false)
         }
     };
 
-    let dev = SshDevice::connect(cfg, secret).await.map_err(err)?;
+    let dev = SshDevice::connect(cfg, secret.clone()).await.map_err(err)?;
     let info = dev.ping().await.map_err(err)?;
 
-    // Connection succeeded — only NOW persist the freshly-typed password.
-    if let Some(plain) = freshly_typed {
+    // Connection succeeded — only NOW persist a freshly-typed password.
+    if freshly_typed {
+        use secrecy::ExposeSecret;
         if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER) {
-            if let Err(e) = entry.set_password(&plain) {
+            if let Err(e) = entry.set_password(secret.expose_secret()) {
                 tracing::warn!("could not persist device password to keychain: {e}");
             }
         }

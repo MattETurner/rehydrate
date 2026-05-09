@@ -163,7 +163,10 @@ pub async fn execute_push(
     // rename when it next refreshes its file index. Failures here are
     // logged and counted as skips so a single broken folder doesn't
     // block the rest of the queue.
-    let pending_folders = library.list_pending_folder_pushes().unwrap_or_default();
+    // Audit fix M3: propagate DB errors instead of treating them as
+    // "no pending folders" — silently skipping a folder rename used
+    // to make the user think the sync succeeded.
+    let pending_folders = library.list_pending_folder_pushes()?;
     for (folder_id, metadata_json) in pending_folders {
         if cancel.is_cancelled() {
             break;
@@ -175,10 +178,21 @@ pub async fn execute_push(
         };
         match device.put_document_tree(&folder_id, &[file]).await {
             Ok(()) => {
+                // Audit fix M2: the mark_folder_pushed failure path
+                // used to log-and-continue, so the same folder rename
+                // re-pushed forever. Count it as skipped instead so
+                // the user sees a non-zero skip count and the loop
+                // doesn't claim success.
                 if let Err(e) = library.mark_folder_pushed(&folder_id) {
-                    tracing::warn!(folder = %folder_id, error = %e, "could not clear folder pending_push");
+                    tracing::warn!(
+                        folder = %folder_id,
+                        error = %e,
+                        "could not clear folder pending_push (will retry next sync)"
+                    );
+                    skipped += 1;
+                } else {
+                    pushed += 1;
                 }
-                pushed += 1;
             }
             Err(e) => {
                 tracing::warn!(folder = %folder_id, error = %e, "folder push failed");
