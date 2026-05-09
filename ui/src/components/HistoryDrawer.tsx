@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ipc } from "../ipc";
 import { useConfirm } from "./Confirm";
 import { useToast } from "./Toast";
@@ -69,14 +68,11 @@ export function HistoryDrawer({ document, onClose }: Props) {
   async function exportVersion(v: VersionEntry) {
     setError(null);
     try {
-      const dest = await openDialog({
-        directory: true,
-        multiple: false,
-        title: `Export "${document.visible_name}" v${v.id} to…`,
-      });
-      if (!dest || typeof dest !== "string") return;
       setBusy(v.id);
-      const result = await ipc.exportVersion(v.id, dest);
+      // Server-side folder picker (audit fix H7) — `null` means the
+      // user cancelled.
+      const result = await ipc.exportVersion(v.id);
+      if (!result) return;
       toast.show({
         tone: "ok",
         body: `Exported ${result.file_count} file${result.file_count === 1 ? "" : "s"} to ${result.path}`,

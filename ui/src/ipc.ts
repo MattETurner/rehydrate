@@ -50,10 +50,10 @@ export const ipc = {
     invoke<VersionEntry[]>("get_history", { documentId }),
   setVersionNote: (versionId: number, note: string | null) =>
     invoke<void>("set_version_note", { versionId, note }),
-  exportVersion: (versionId: number, destDir: string) =>
-    invoke<ExportResult>("export_version", { versionId, destDir }),
+  exportVersion: (versionId: number) =>
+    invoke<ExportResult | null>("export_version", { versionId }),
   verifyLibrary: () => invoke<VerifyReport>("verify_library"),
-  importFile: (path: string) => invoke<DocumentSummary>("import_file", { path }),
+  importFile: () => invoke<DocumentSummary | null>("import_file"),
   garbageCollect: () => invoke<GarbageCollectReport>("garbage_collect"),
   getRecentLogs: (maxLines?: number) =>
     invoke<LogTail>("get_recent_logs", { maxLines: maxLines ?? null }),

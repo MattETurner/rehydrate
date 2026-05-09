@@ -14,6 +14,7 @@ use rmsync_sync::{
 use secrecy::SecretString;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::config;
@@ -142,14 +143,41 @@ pub async fn auto_open_library(state: State<'_, AppState>) -> Result<Option<Path
     Ok(Some(path))
 }
 
-/// Import a PDF or EPUB from disk into the library. The kind is inferred
-/// from the file extension; `visible_name` defaults to the filename stem.
+/// Import a PDF or EPUB from disk into the library.
+///
+/// Audit fix H6: the OS file picker runs server-side here; the
+/// renderer can no longer hand us a path of its choosing (e.g. a
+/// symlink `evil.pdf → ~/.ssh/id_rsa`). Returns `None` if the user
+/// cancelled the dialog. We also sniff the magic bytes after picking
+/// so a renamed-but-not-actually-PDF/EPUB is rejected early.
 #[tauri::command]
 pub async fn import_file(
-    path: PathBuf,
+    app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<DocumentSummary, String> {
+) -> Result<Option<DocumentSummary>, String> {
     let lib = lib_arc(&state).await?;
+
+    // The dialog is a blocking OS call; run it on a worker thread so
+    // we don't tie up the Tauri main thread.
+    let app_for_pick = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app_for_pick
+            .dialog()
+            .file()
+            .add_filter("Documents", &["pdf", "epub"])
+            .set_title("Import a PDF or EPUB")
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(err)?;
+
+    let Some(file_path) = picked else {
+        return Ok(None);
+    };
+    let path = file_path
+        .into_path()
+        .map_err(|e| format!("could not resolve picked path: {e}"))?;
+
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
@@ -157,12 +185,38 @@ pub async fn import_file(
     let kind = ImportKind::from_extension(ext).ok_or_else(|| {
         format!("unsupported file type: .{ext} — only PDF and EPUB are supported")
     })?;
+
+    // Magic-byte sniff: refuse a "*.pdf" symlink that actually points
+    // at, say, an SSH private key. PDF starts with "%PDF-", EPUB is a
+    // ZIP ("PK\x03\x04").
+    let mut head = [0u8; 5];
+    {
+        use std::io::Read;
+        let mut f = std::fs::File::open(&path).map_err(err)?;
+        let _ = f.read(&mut head).map_err(err)?;
+    }
+    let looks_pdf = head.starts_with(b"%PDF-");
+    let looks_epub = head.starts_with(b"PK\x03\x04");
+    let extension_kind_ok = match kind {
+        ImportKind::Pdf => looks_pdf,
+        ImportKind::Epub => looks_epub,
+    };
+    if !extension_kind_ok {
+        return Err(format!(
+            "{} does not look like a {} file (header check failed)",
+            path.display(),
+            ext.to_uppercase()
+        ));
+    }
+
     let visible_name = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled")
         .to_string();
-    lib.import_file(&path, kind, &visible_name).map_err(err)
+    lib.import_file(&path, kind, &visible_name)
+        .map(Some)
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -276,8 +330,22 @@ pub async fn open_document(
         .find(|f| f.path.ends_with(".pdf") || f.path.ends_with(".epub"))
     {
         let bytes = lib.read_blob(&body.sha256).map_err(err)?;
-        let ext = body.path.rsplit('.').next().unwrap_or("bin");
-        let p = cache_root.join(format!("{safe_name}-{}.{ext}", &body.sha256.as_str()[..12]));
+        // Audit fix H8: explicitly allow-list the cache extension to
+        // {pdf, epub}. The previous `body.path.rsplit('.').next()`
+        // accepted any tail — a manifest with `body.path = "x.command"`
+        // landed a `.command` file that LaunchServices would then
+        // execute. Manifest::validate_paths blocks `..`/absolutes but
+        // doesn't restrict extensions.
+        let ext = if body.path.ends_with(".pdf") {
+            "pdf"
+        } else {
+            "epub"
+        };
+        // Sha256Hex deserialization is now strict (audit H4) so the
+        // hash is always 64 chars; .get(..12) defends against any
+        // future relaxation.
+        let prefix = body.sha256.as_str().get(..12).unwrap_or(body.sha256.as_str());
+        let p = cache_root.join(format!("{safe_name}-{prefix}.{ext}"));
         if !p.exists() {
             std::fs::write(&p, &bytes).map_err(err)?;
         }
@@ -290,9 +358,14 @@ pub async fn open_document(
         // Cache key includes a layout version suffix so bumping the
         // assembly logic invalidates stale previews automatically.
         const PREVIEW_LAYOUT_VERSION: &str = "ink-v15";
+        // Defensive `.get(..12)` so we can never panic on a hex-string
+        // that for some reason is shorter than expected (audit H4 made
+        // this impossible at the type level, but the slice was a UI
+        // panic vector before that fix).
+        let manifest_hex = doc.current_manifest.as_str();
+        let prefix = manifest_hex.get(..12).unwrap_or(manifest_hex);
         let p = cache_root.join(format!(
-            "{safe_name}-{}-{PREVIEW_LAYOUT_VERSION}.pdf",
-            &doc.current_manifest.as_str()[..12]
+            "{safe_name}-{prefix}-{PREVIEW_LAYOUT_VERSION}.pdf"
         ));
         if !p.exists() {
             let mut rm_pages: Vec<_> = manifest
@@ -453,20 +526,45 @@ pub struct ExportResult {
     pub file_count: usize,
 }
 
-/// Export a version's file tree under `dest_dir`, into a freshly-created
-/// subdirectory named like `<visible_name>-v<version_id>-<observed_at>`.
-/// Returns the full path that was written and the number of files in it.
+/// Export a version's file tree under a user-picked directory, into
+/// a freshly-created subdirectory named like
+/// `<visible_name>-v<version_id>-<observed_at>`. Returns the full path
+/// that was written and the number of files in it, or `None` if the
+/// user cancelled the directory picker.
+///
+/// Audit fix H7: the destination is chosen via a server-side folder
+/// picker so the renderer can't direct writes into
+/// `~/Library/LaunchAgents` or similar.
 #[tauri::command]
 pub async fn export_version(
+    app: AppHandle,
     version_id: i64,
-    dest_dir: PathBuf,
     state: State<'_, AppState>,
-) -> Result<ExportResult, String> {
+) -> Result<Option<ExportResult>, String> {
     let lib = lib_arc(&state).await?;
 
     let entry = lib.get_version(version_id).map_err(err)?;
     let manifest_bytes = lib.read_blob(&entry.manifest_hash).map_err(err)?;
     let manifest = rmsync_core::Manifest::from_canonical_json(&manifest_bytes).map_err(err)?;
+
+    let app_for_pick = app.clone();
+    let title = format!("Export \"{}\" v{} to…", manifest.visible_name, version_id);
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app_for_pick
+            .dialog()
+            .file()
+            .set_title(&title)
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(err)?;
+
+    let Some(dest_path) = picked else {
+        return Ok(None);
+    };
+    let dest_dir = dest_path
+        .into_path()
+        .map_err(|e| format!("could not resolve picked folder: {e}"))?;
 
     let safe_name = sanitize(&manifest.visible_name);
     let safe_ts = entry
@@ -486,10 +584,10 @@ pub async fn export_version(
 
     lib.reconstruct(version_id, &target).map_err(err)?;
 
-    Ok(ExportResult {
+    Ok(Some(ExportResult {
         path: target,
         file_count: manifest.files.len(),
-    })
+    }))
 }
 
 fn thumbnail_fallback_pdf(

@@ -288,14 +288,22 @@ pub struct Library {
 
 impl Library {
     /// Open an existing library or initialize a new one at `path`.
+    ///
+    /// Audit fix H9: refuses to silently claim a non-empty directory
+    /// that doesn't already look like a Marginalia library. Without
+    /// this check, a renderer-supplied path like `~/Documents/` would
+    /// have `blobs/`, `tmp/`, `logs/`, and `db.sqlite` written into
+    /// it — and a subsequent `garbage_collect` would walk that
+    /// `blobs/` and `remove_file` matching entries.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let paths = LibraryPaths::new(path.as_ref());
+        Self::validate_library_path(&paths)?;
         paths.ensure_dirs()?;
 
         // Acquire the inter-process advisory lock first. If another
         // app instance has the same library open, fail fast — sharing
         // a library across processes corrupts the GC vs. record_version
-        // invariant.
+        // invariant (audit fix H3).
         let lock_path = paths.root.join(".lock");
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
@@ -328,6 +336,68 @@ impl Library {
             write_lock: Mutex::new(()),
             _lock_file: lock_file,
         })
+    }
+
+    /// A path is a valid library target if either:
+    /// - The directory does not yet exist (fresh init), or
+    /// - The directory exists and contains a parseable `library.json`
+    ///   with a recognised schema and a UUID stamp, or
+    /// - The directory exists and is effectively empty (only dotfiles
+    ///   like `.DS_Store` / our own `.lock`).
+    ///
+    /// Anything else — a directory full of foreign files — is
+    /// rejected so we never silently scatter blobs into the user's
+    /// Documents folder.
+    fn validate_library_path(paths: &LibraryPaths) -> Result<()> {
+        if !paths.root.exists() {
+            // Fresh init: ensure_dirs will create it.
+            return Ok(());
+        }
+        if paths.library_json.exists() {
+            // Existing library — verify the stamp is sane.
+            let bytes = fs::read(&paths.library_json).map_err(|e| Error::InvalidPath(format!(
+                "could not read {}: {e}",
+                paths.library_json.display()
+            )))?;
+            let meta: LibraryMeta = serde_json::from_slice(&bytes).map_err(|e| {
+                Error::InvalidPath(format!(
+                    "{} has a malformed library.json: {e}",
+                    paths.root.display()
+                ))
+            })?;
+            if meta.schema != LIBRARY_SCHEMA {
+                return Err(Error::InvalidPath(format!(
+                    "{} has library schema {} (expected {})",
+                    paths.root.display(),
+                    meta.schema,
+                    LIBRARY_SCHEMA
+                )));
+            }
+            if uuid::Uuid::parse_str(&meta.library_id).is_err() {
+                return Err(Error::InvalidPath(format!(
+                    "{} has an invalid library_id stamp",
+                    paths.root.display()
+                )));
+            }
+            return Ok(());
+        }
+        // No library.json yet — only proceed if the dir is empty (modulo
+        // dotfiles + a stale `.lock` from a prior failed init).
+        let foreign: Vec<_> = fs::read_dir(&paths.root)?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let s = name.to_string_lossy();
+                !s.starts_with('.')
+            })
+            .collect();
+        if !foreign.is_empty() {
+            return Err(Error::InvalidPath(format!(
+                "{} is not empty and is not a Marginalia library (no library.json)",
+                paths.root.display()
+            )));
+        }
+        Ok(())
     }
 
     pub fn paths(&self) -> &LibraryPaths {
@@ -2086,6 +2156,25 @@ mod tests {
             .filter(|p| p.file_name().and_then(|s| s.to_str()) == Some(h.as_str()))
             .collect();
         assert_eq!(matching.len(), 1, "blob should be stored exactly once");
+    }
+
+    #[test]
+    fn refuses_non_empty_foreign_directory() {
+        // Audit fix H9: a renderer-supplied path like ~/Documents/ must
+        // not become a "library" with blobs/, db.sqlite, etc. scattered
+        // into it.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("foreign.txt"), b"hello").unwrap();
+        let result = Library::open(tmp.path());
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    #[test]
+    fn rejects_existing_library_json_with_bad_stamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("library.json"), b"{not valid json").unwrap();
+        let result = Library::open(tmp.path());
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
     }
 
     #[test]

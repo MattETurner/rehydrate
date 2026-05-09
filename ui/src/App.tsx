@@ -7,7 +7,6 @@ import {
   type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ipc, onDeviceReachable } from "./ipc";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LogDrawer } from "./components/LogDrawer";
@@ -308,14 +307,11 @@ export function App() {
   async function importFile() {
     setError(null);
     try {
-      const picked = await openDialog({
-        multiple: false,
-        directory: false,
-        filters: [{ name: "Documents", extensions: ["pdf", "epub"] }],
-        title: "Import a PDF or EPUB",
-      });
-      if (!picked || typeof picked !== "string") return;
-      const summary = await ipc.importFile(picked);
+      // The native picker now runs server-side (audit fix H6) so the
+      // renderer can't substitute an arbitrary path. `null` means the
+      // user cancelled the dialog.
+      const summary = await ipc.importFile();
+      if (!summary) return;
       await refreshLibrary();
       toast.show({
         tone: "ok",

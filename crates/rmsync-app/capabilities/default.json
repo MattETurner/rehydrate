@@ -5,9 +5,6 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "dialog:default",
-    "opener:default",
-    "opener:allow-open-path",
-    "shell:default"
+    "opener:default"
   ]
 }

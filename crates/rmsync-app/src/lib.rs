@@ -14,10 +14,14 @@ pub fn run() {
     logging::init();
     tracing::info!("marginalia starting; log dir = {:?}", logging::log_dir());
 
+    // Audit fix M6: tauri-plugin-shell was registered but never used
+    // from Rust; the renderer's `plugin:shell|open` IPC was a free
+    // surface for opening arbitrary http/tel/mailto URLs. The opener
+    // plugin handles the legitimate "open the document I just
+    // exported" path on its own.
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_shell::init())
         .manage(AppState::new())
         .setup(|app| {
             commands::spawn_reachability_watcher(app.handle().clone());
