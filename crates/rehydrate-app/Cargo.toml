@@ -1,0 +1,45 @@
+[package]
+name = "rehydrate-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "reHydrate desktop app: Tauri binary."
+
+[lib]
+name = "rehydrate_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "rehydrate-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rehydrate-core = { path = "../rehydrate-core" }
+rehydrate-device = { path = "../rehydrate-device", features = ["ssh"] }
+rehydrate-sync = { path = "../rehydrate-sync" }
+rehydrate-publish = { path = "../rehydrate-publish" }
+rehydrate-ocr = { path = "../rehydrate-ocr" }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+anyhow = { workspace = true }
+directories = { workspace = true }
+keyring = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+time = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+printpdf = { workspace = true }
+image = { workspace = true }
+rm-parser = { path = "../rm-parser" }
+base64 = "0.22"

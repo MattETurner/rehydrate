@@ -3496,13 +3496,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c41e0c4fef86961ac6d6f8a82609f55f31b05e4fce149ac5710e439df7619ba4"
 
 [[package]]
-name = "marginalia-tests-integration"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
 name = "markup5ever"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5229,6 +5222,131 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "rehydrate-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "directories",
+ "image",
+ "keyring",
+ "printpdf",
+ "pulldown-cmark",
+ "rehydrate-core",
+ "rehydrate-device",
+ "rehydrate-ocr",
+ "rehydrate-publish",
+ "rehydrate-sync",
+ "rm-parser",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "rehydrate-core"
+version = "0.1.0"
+dependencies = [
+ "fs4",
+ "hex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "time",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "rehydrate-device"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "keyring",
+ "russh",
+ "russh-sftp",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rehydrate-ocr"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "image",
+ "imageproc",
+ "rm-parser",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "rehydrate-publish"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "jsonwebtoken",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "time",
+ "tiny_http",
+ "tracing",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "rehydrate-sync"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "rehydrate-core",
+ "rehydrate-device",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rehydrate-tests-integration"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5319,124 +5437,6 @@ dependencies = [
 [[package]]
 name = "rm-parser"
 version = "0.1.0"
-
-[[package]]
-name = "rmsync-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "directories",
- "image",
- "keyring",
- "printpdf",
- "pulldown-cmark",
- "rm-parser",
- "rmsync-core",
- "rmsync-device",
- "rmsync-ocr",
- "rmsync-publish",
- "rmsync-sync",
- "secrecy",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "time",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rmsync-core"
-version = "0.1.0"
-dependencies = [
- "fs4",
- "hex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 1.0.69",
- "time",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "rmsync-device"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "keyring",
- "russh",
- "russh-sftp",
- "secrecy",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rmsync-ocr"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "hex",
- "image",
- "imageproc",
- "rm-parser",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "rmsync-publish"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "hex",
- "jsonwebtoken",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "time",
- "tiny_http",
- "tracing",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "rmsync-sync"
-version = "0.1.0"
-dependencies = [
- "futures",
- "rmsync-core",
- "rmsync-device",
- "secrecy",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
-]
 
 [[package]]
 name = "roxmltree"

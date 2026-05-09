@@ -1,5 +1,5 @@
 /* =====================================================================
- * Marginalia design tokens.
+ * reHydrate design tokens.
  * Spacing, type, radius, shadow, motion. Components reference these so
  * a future redesign stays a single-file change.
  * ===================================================================== */
@@ -272,8 +272,8 @@ textarea {
 .spacer { flex: 1; }
 
 /* Library switcher chip in the toolbar — current library name + a
- * dropdown of recent libraries. Sized so a typical "Marginalia" /
- * "Marginalia Work" label sits comfortably; longer names ellipsis. */
+ * dropdown of recent libraries. Sized so a typical "reHydrate" /
+ * "reHydrate Work" label sits comfortably; longer names ellipsis. */
 .library-switcher {
   display: inline-flex;
   align-items: center;

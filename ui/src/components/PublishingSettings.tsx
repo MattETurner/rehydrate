@@ -163,7 +163,7 @@ export function PublishingSettings({ onClose, notify }: Props) {
         </header>
 
         <p className="muted">
-          Credentials are stored in your OS keychain. Marginalia only contacts
+          Credentials are stored in your OS keychain. reHydrate only contacts
           the host you enter — no third-party services see your transcripts.
         </p>
 

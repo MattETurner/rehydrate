@@ -1,5 +1,5 @@
 [package]
-name = "marginalia-tests-integration"
+name = "rehydrate-tests-integration"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

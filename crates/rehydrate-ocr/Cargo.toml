@@ -1,0 +1,25 @@
+[package]
+name = "rehydrate-ocr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "reHydrate OCR layer: vision-LLM transcript pipeline (model store + page render + backend trait)."
+
+[dependencies]
+async-trait = { workspace = true }
+hex = { workspace = true }
+image = { workspace = true }
+imageproc = "0.25"
+rm-parser = { path = "../rm-parser" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["tls"] }
+url = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

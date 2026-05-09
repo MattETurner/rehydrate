@@ -1,6 +1,6 @@
 //! Privacy invariant tests.
 //!
-//! The only outbound network destination Marginalia talks to is the
+//! The only outbound network destination reHydrate talks to is the
 //! reMarkable USB endpoint at `10.11.99.1`, contacted via SSH/SFTP through
 //! `russh`. These are static checks against `Cargo.lock` rather than a
 //! runtime sniffer because the latter would need a kernel-level network
@@ -54,7 +54,7 @@ fn no_http_capability_plugins_loaded() {
         let needle = format!("name = \"{crate_name}\"");
         assert!(
             !lock.contains(&needle),
-            "Marginalia must not depend on `{crate_name}`. The webview UI must \
+            "reHydrate must not depend on `{crate_name}`. The webview UI must \
              not be able to issue arbitrary network requests. If this dependency \
              is intentional, update no_egress.rs together with a justification."
         );
@@ -62,14 +62,14 @@ fn no_http_capability_plugins_loaded() {
 }
 
 #[test]
-fn rmsync_crates_have_no_general_purpose_http_clients() {
+fn rehydrate_business_crates_have_no_http_clients() {
     // Business-logic crates that must NEVER speak HTTP. The
     // user-explicit publish + ocr crates are intentionally NOT in
     // this list — they're the only crates allowed to make
     // outbound HTTP, and only to user-configured CMS hosts /
     // HuggingFace's allow-list.
     use std::process::Command;
-    let crates = ["rmsync-core", "rmsync-device", "rmsync-sync"];
+    let crates = ["rehydrate-core", "rehydrate-device", "rehydrate-sync"];
     let workspace_root = workspace_root_path();
 
     let banned = [
@@ -110,7 +110,7 @@ fn publish_and_ocr_crates_use_ureq_only() {
     use std::process::Command;
     let workspace_root = workspace_root_path();
 
-    for crate_name in ["rmsync-publish", "rmsync-ocr"] {
+    for crate_name in ["rehydrate-publish", "rehydrate-ocr"] {
         let output = Command::new(env!("CARGO"))
             .args([
                 "tree", "--target", "all", "-p", crate_name, "-e", "normal", "--prefix", "none",
@@ -144,7 +144,7 @@ fn publish_http_uses_restricted_agent_wrapper() {
     // `AgentBuilder::new` only appear inside http.rs.
     let publish_root = workspace_root_path()
         .join("crates")
-        .join("rmsync-publish")
+        .join("rehydrate-publish")
         .join("src");
     let mut offenders = Vec::new();
     for entry in fs::read_dir(&publish_root).expect("read publish src") {
@@ -176,7 +176,7 @@ fn tauri_conf_keeps_csp_set() {
     // regression to `"csp": null`.
     let conf = workspace_root_path()
         .join("crates")
-        .join("rmsync-app")
+        .join("rehydrate-app")
         .join("tauri.conf.json");
     let body = fs::read_to_string(&conf).expect("read tauri.conf.json");
     let json: serde_json::Value = serde_json::from_str(&body).expect("tauri.conf.json json");

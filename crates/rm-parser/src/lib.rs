@@ -1,7 +1,7 @@
 // Vendored fork of remarkable_lines 0.1.2 — upstream code, kept close to
 // the original so we can rebase on future releases. Clippy + rustc style
 // lints are relaxed here to match upstream; they are still enforced
-// strictly in the crates we own (rmsync-*).
+// strictly in the crates we own (rehydrate-*).
 #![allow(clippy::all, dead_code, unused)]
 
 //! # Remarkable Lines File Parser

@@ -2,12 +2,12 @@
 resolver = "2"
 members = [
     "crates/rm-parser",
-    "crates/rmsync-core",
-    "crates/rmsync-device",
-    "crates/rmsync-sync",
-    "crates/rmsync-publish",
-    "crates/rmsync-ocr",
-    "crates/rmsync-app",
+    "crates/rehydrate-core",
+    "crates/rehydrate-device",
+    "crates/rehydrate-sync",
+    "crates/rehydrate-publish",
+    "crates/rehydrate-ocr",
+    "crates/rehydrate-app",
     "tests-integration",
 ]
 
@@ -15,7 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/dmayk/marginalia"
+repository = "https://github.com/dmayk/rehydrate"
 rust-version = "1.82"
 
 [workspace.dependencies]

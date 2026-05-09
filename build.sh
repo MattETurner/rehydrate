@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Marginalia desktop app.
+# Build the reHydrate desktop app.
 #
 # Usage:
 #   ./build.sh          # release build, then launch the app
@@ -45,7 +45,7 @@ else
   echo "==> skipping UI build (--skip-ui)"
 fi
 
-CARGO_FLAGS=(-p rmsync-app)
+CARGO_FLAGS=(-p rehydrate-app)
 if [[ "$PROFILE" == "release" ]]; then
   CARGO_FLAGS+=(--release)
 fi
@@ -57,9 +57,9 @@ else
   echo "==> cargo build ${CARGO_FLAGS[*]}"
   cargo build "${CARGO_FLAGS[@]}"
   if [[ "$PROFILE" == "release" ]]; then
-    BIN="target/release/rmsync-app"
+    BIN="target/release/rehydrate-app"
   else
-    BIN="target/debug/rmsync-app"
+    BIN="target/debug/rehydrate-app"
   fi
   echo "==> built: $BIN"
 fi

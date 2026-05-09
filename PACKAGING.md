@@ -1,6 +1,6 @@
-# Packaging Marginalia for distribution
+# Packaging reHydrate for distribution
 
-`cargo run -p rmsync-app --release` runs the app from source. For
+`cargo run -p rehydrate-app --release` runs the app from source. For
 distributable installers the project uses Tauri's bundler — locally
 via `cargo tauri build`, or in CI via the `Release` workflow which
 attaches signed-on-the-runner bundles to a draft GitHub Release.
@@ -43,8 +43,8 @@ Done — the icon set is generated from `logo.png` via `tauri icon`:
 - `icons/icon.ico` (Windows)
 
 Regenerate with `npx @tauri-apps/cli icon logo.png` from
-`crates/rmsync-app/`. `bundle.active` is `true` in
-`crates/rmsync-app/tauri.conf.json`.
+`crates/rehydrate-app/`. `bundle.active` is `true` in
+`crates/rehydrate-app/tauri.conf.json`.
 
 ### 2. macOS signing + notarization
 

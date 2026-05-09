@@ -54,7 +54,7 @@ export function Onboarding({
         </div>
         <h1>Plug in your reMarkable</h1>
         <p>
-          Connect the tablet to this Mac with its USB-C cable. Marginalia
+          Connect the tablet to this Mac with its USB-C cable. reHydrate
           watches for it automatically — you don't need to do anything else.
         </p>
         <div className="actions">

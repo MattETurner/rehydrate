@@ -991,7 +991,7 @@ export function App() {
       <header className="toolbar" data-tauri-drag-region>
         <span className="brand">
           <img className="brand-mark" src="/logo.png" alt="" />
-          Marginalia
+          reHydrate
         </span>
         {libraryOpen && (
           <LibrarySwitcher
@@ -1464,8 +1464,8 @@ export function App() {
 // Drag & drop helpers
 // =====================================================================
 
-const DOC_DRAG_MIME = "application/x-marginalia-doc";
-const DOC_DRAG_BATCH_MIME = "application/x-marginalia-doc-batch";
+const DOC_DRAG_MIME = "application/x-rehydrate-doc";
+const DOC_DRAG_BATCH_MIME = "application/x-rehydrate-doc-batch";
 
 function setDocumentDragData(
   e: ReactDragEvent,
@@ -1642,7 +1642,7 @@ function WelcomeEmpty({
   return (
     <div className="empty">
       <img className="empty-logo" src="/logo.png" alt="" />
-      <h2>Welcome to Marginalia</h2>
+      <h2>Welcome to reHydrate</h2>
       <p>
         A calm, offline home for everything on your reMarkable. Sync stays
         on your machine — no cloud, no telemetry.

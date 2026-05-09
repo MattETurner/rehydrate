@@ -1,4 +1,4 @@
-# Marginalia
+# reHydrate
 
 A privacy-respecting desktop app for managing documents on a reMarkable 2 over USB. No cloud, no telemetry; the app talks only to a tablet plugged into your computer.
 
@@ -10,7 +10,7 @@ Pre-alpha, under active development. Phase 1 (read-only mirror) is the current t
 
 ## Stack
 
-- **Core:** Rust workspace (`crates/rmsync-core`, `rmsync-device`, `rmsync-sync`, `rmsync-app`)
+- **Core:** Rust workspace (`crates/rehydrate-core`, `rehydrate-device`, `rehydrate-sync`, `rehydrate-app`)
 - **UI:** Tauri 2 + Vite + React + TypeScript (`ui/`)
 - **Transport:** SSH/SFTP over USB-ethernet (`10.11.99.1`)
 
@@ -23,7 +23,7 @@ Prerequisites: Rust stable, Node 20+, npm.
 (cd ui && npm install && npm run build)
 
 # Run the app
-cargo run -p rmsync-app --release
+cargo run -p rehydrate-app --release
 ```
 
 For day-to-day dev with UI hot reload, install the Tauri CLI:
@@ -41,11 +41,11 @@ are read-only.
 ```sh
 # Capture password: tablet → Settings → Help → Copyrights and licenses
 MARGINALIA_RM_PASSWORD='...' \
-    cargo test -p rmsync-device --features ssh \
+    cargo test -p rehydrate-device --features ssh \
     --test ssh_smoke -- --ignored --nocapture
 
 MARGINALIA_RM_PASSWORD='...' \
-    cargo test -p rmsync-sync \
+    cargo test -p rehydrate-sync \
     --test full_pull_smoke -- --ignored --nocapture
 ```
 
@@ -56,9 +56,9 @@ Packaging notes (signed installers, icons, notarization) are in
 
 ```
 crates/
-  rmsync-core/    blob store, manifests, version log
-  rmsync-device/  device transport: trait + fake + ssh
-  rmsync-sync/    sync engine
-  rmsync-app/     tauri binary
+  rehydrate-core/    blob store, manifests, version log
+  rehydrate-device/  device transport: trait + fake + ssh
+  rehydrate-sync/    sync engine
+  rehydrate-app/     tauri binary
 ui/               react frontend
 ```

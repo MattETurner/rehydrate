@@ -5,10 +5,10 @@ name: Release
 # public — gives a chance to spot-check the artefacts before shipping.
 #
 # Outputs per tag:
-#   - macOS (Intel):         Marginalia_<ver>_x64.dmg, .app.tar.gz
-#   - macOS (Apple Silicon): Marginalia_<ver>_aarch64.dmg, .app.tar.gz
-#   - Linux:                 Marginalia_<ver>_amd64.AppImage, .deb
-#   - Windows:               Marginalia_<ver>_x64_en-US.msi
+#   - macOS (Intel):         reHydrate_<ver>_x64.dmg, .app.tar.gz
+#   - macOS (Apple Silicon): reHydrate_<ver>_aarch64.dmg, .app.tar.gz
+#   - Linux:                 reHydrate_<ver>_amd64.AppImage, .deb
+#   - Windows:               reHydrate_<ver>_x64_en-US.msi
 #
 # Tag the release with `git tag v0.1.0 && git push --tags` to start a
 # build. Use `workflow_dispatch` for dry-runs that produce GitHub
@@ -109,17 +109,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: crates/rmsync-app
+          projectPath: crates/rehydrate-app
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
-          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('Marginalia {0}', github.ref_name) || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('reHydrate {0}', github.ref_name) || '' }}
           releaseBody: |
             Automated build for `${{ github.ref_name }}`.
 
             **Downloads**
-            - macOS (Apple Silicon): `Marginalia_*_aarch64.dmg`
-            - macOS (Intel):         `Marginalia_*_x64.dmg`
-            - Linux:                 `Marginalia_*_amd64.AppImage` or `.deb`
-            - Windows:               `Marginalia_*_x64_en-US.msi`
+            - macOS (Apple Silicon): `reHydrate_*_aarch64.dmg`
+            - macOS (Intel):         `reHydrate_*_x64.dmg`
+            - Linux:                 `reHydrate_*_amd64.AppImage` or `.deb`
+            - Windows:               `reHydrate_*_x64_en-US.msi`
 
             macOS builds are unsigned — first launch needs a right-click → Open
             to bypass Gatekeeper. Windows builds are unsigned for the same reason.
@@ -136,7 +136,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@v4
         with:
-          name: marginalia-${{ matrix.target }}
+          name: rehydrate-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
