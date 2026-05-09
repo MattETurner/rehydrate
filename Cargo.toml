@@ -6,6 +6,7 @@ members = [
     "crates/rmsync-device",
     "crates/rmsync-sync",
     "crates/rmsync-publish",
+    "crates/rmsync-ocr",
     "crates/rmsync-app",
     "tests-integration",
 ]
