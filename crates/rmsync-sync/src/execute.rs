@@ -239,6 +239,7 @@ async fn fetch_and_record(
             sha256: res.hash.clone(),
             size: res.size,
             mode: f.mode,
+            derived: false,
         });
         if let Some(p) = progress {
             let _ = p

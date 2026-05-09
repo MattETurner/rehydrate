@@ -17,7 +17,7 @@ use crate::blob::BlobStore;
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::hash::Sha256Hex;
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, ManifestFile};
 use crate::paths::LibraryPaths;
 
 const LIBRARY_SCHEMA: u32 = 1;
@@ -893,6 +893,98 @@ impl Library {
         )
     }
 
+    /// Attach a library-side derived artefact (e.g. an OCR transcript)
+    /// to the document's current manifest. Creates a fresh version
+    /// containing `<path>` with `derived: true`, replacing any prior
+    /// entry at the same path. The blob bytes are content-addressed and
+    /// committed to the blob store before the SQL transaction; any
+    /// pre-existing file with the same path is removed from the
+    /// manifest (its blob will be reclaimed by GC if unreferenced).
+    ///
+    /// The whole read → mutate → write sequence runs under `write_lock`
+    /// + a single SQLite tx, same shape as `record_metadata_change`,
+    /// so concurrent edits don't lose the transcript.
+    pub fn record_derived_artefact(
+        &self,
+        document_id: &str,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<RecordOutcome> {
+        if !path.starts_with("ocr/") {
+            // Defence: keep the derived namespace tightly scoped so a
+            // future caller can't shadow legitimate device files via
+            // this back-door.
+            return Err(Error::InvalidArgument(format!(
+                "derived artefact path must live under `ocr/`, got {path:?}"
+            )));
+        }
+
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+
+        let manifest_hex: String = {
+            let conn = self.db.lock();
+            conn.query_row(
+                "SELECT current_manifest FROM documents WHERE document_id = ?1",
+                params![document_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("document {document_id}")))?
+        };
+        let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+            path: self.paths.db.display().to_string(),
+            reason: format!("bad manifest hash for {document_id}"),
+        })?;
+        let manifest_bytes = self.blobs.read_to_vec(&hash)?;
+        let mut manifest = Manifest::from_canonical_json(&manifest_bytes)?;
+
+        let put = self.put_blob(bytes)?;
+        let new_file = ManifestFile {
+            path: path.to_string(),
+            sha256: put.hash,
+            size: put.size,
+            mode: 0o644,
+            derived: true,
+        };
+        if let Some(existing) = manifest.files.iter_mut().find(|f| f.path == path) {
+            *existing = new_file;
+        } else {
+            manifest.files.push(new_file);
+        }
+
+        let canonical = manifest.canonical_json()?;
+        let manifest_hash = Sha256Hex::from_bytes(&canonical);
+        self.blobs.put_bytes(&canonical)?;
+
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        let outcome =
+            self.record_version_in_tx(&tx, &manifest, &manifest_hash, Source::Imported)?;
+        tx.commit()?;
+        Ok(outcome)
+    }
+
+    /// Read a derived artefact from the manifest at `version_id`. Used
+    /// to surface OCR transcripts in the UI without round-tripping
+    /// through `reconstruct`.
+    pub fn read_derived_artefact(
+        &self,
+        version_id: VersionId,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let entry = self.get_version(version_id)?;
+        let manifest_bytes = self.blobs.read_to_vec(&entry.manifest_hash)?;
+        let manifest = Manifest::from_canonical_json(&manifest_bytes)?;
+        let Some(f) = manifest
+            .files
+            .iter()
+            .find(|f| f.derived && f.path == path)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(self.blobs.read_to_vec(&f.sha256)?))
+    }
+
     /// Move a document from the live `documents` table into the archive.
     /// Versions stay intact so a later `unarchive_document` can restore the
     /// listing exactly. If the document is already archived this is a
@@ -1314,18 +1406,21 @@ impl Library {
                 sha256: metadata_put.hash,
                 size: metadata_put.size,
                 mode: 0o644,
+                derived: false,
             },
             ManifestFile {
                 path: format!("{document_id}.content"),
                 sha256: content_put.hash,
                 size: content_put.size,
                 mode: 0o644,
+                derived: false,
             },
             ManifestFile {
                 path: format!("{document_id}.{}", body_kind.extension()),
                 sha256: body_put.hash,
                 size: body_put.size,
                 mode: 0o644,
+                derived: false,
             },
         ];
 
@@ -1819,6 +1914,7 @@ mod tests {
             sha256: meta_put.hash,
             size: meta_put.size,
             mode: 0o644,
+            derived: false,
         });
         for (path, bytes) in contents {
             let res = lib.put_blob(bytes).unwrap();
@@ -1827,6 +1923,7 @@ mod tests {
                 sha256: res.hash,
                 size: res.size,
                 mode: 0o644,
+                derived: false,
             });
         }
         let mut m = Manifest::new(doc_id, "Notebook", "Test");
@@ -2147,6 +2244,7 @@ mod tests {
                 sha256: h.clone(),
                 size: shared.len() as u64,
                 mode: 0o644,
+                derived: false,
             });
             lib.record_version(&m, Source::Pulled).unwrap();
         }
@@ -2156,6 +2254,55 @@ mod tests {
             .filter(|p| p.file_name().and_then(|s| s.to_str()) == Some(h.as_str()))
             .collect();
         assert_eq!(matching.len(), 1, "blob should be stored exactly once");
+    }
+
+    #[test]
+    fn record_derived_artefact_attaches_under_ocr_prefix_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("doc-1.content", b"{}")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+
+        let outcome = lib
+            .record_derived_artefact("doc-1", "ocr/transcript.md", b"# Hello\n\nWorld")
+            .unwrap();
+        let bytes = lib
+            .read_derived_artefact(outcome.version_id, "ocr/transcript.md")
+            .unwrap()
+            .expect("transcript should be readable");
+        assert_eq!(bytes, b"# Hello\n\nWorld");
+
+        // A second write at the same path replaces the prior entry rather
+        // than accumulating duplicates in the manifest.
+        let outcome2 = lib
+            .record_derived_artefact("doc-1", "ocr/transcript.md", b"# Updated")
+            .unwrap();
+        assert_ne!(outcome.version_id, outcome2.version_id);
+        let bytes2 = lib
+            .read_derived_artefact(outcome2.version_id, "ocr/transcript.md")
+            .unwrap()
+            .unwrap();
+        assert_eq!(bytes2, b"# Updated");
+        let entry = lib.get_version(outcome2.version_id).unwrap();
+        let manifest_bytes = lib.read_blob(&entry.manifest_hash).unwrap();
+        let m = Manifest::from_canonical_json(&manifest_bytes).unwrap();
+        let transcripts: Vec<_> = m
+            .files
+            .iter()
+            .filter(|f| f.path == "ocr/transcript.md")
+            .collect();
+        assert_eq!(transcripts.len(), 1);
+        assert!(transcripts[0].derived);
+    }
+
+    #[test]
+    fn record_derived_artefact_rejects_non_ocr_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("doc-1.content", b"{}")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+        let r = lib.record_derived_artefact("doc-1", "evil/exec.sh", b"#!/bin/sh");
+        assert!(matches!(r, Err(Error::InvalidArgument(_))));
     }
 
     #[test]

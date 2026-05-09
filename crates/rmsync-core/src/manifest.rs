@@ -39,6 +39,16 @@ pub struct ManifestFile {
     pub sha256: Sha256Hex,
     pub size: u64,
     pub mode: u32,
+    /// Library-side derived artefact (OCR transcript, future cache
+    /// products) that should travel with the manifest but never get
+    /// pushed to the device. Skipped from canonical JSON when
+    /// `false` so existing manifests roundtrip byte-for-byte.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub derived: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Manifest {
@@ -163,12 +173,14 @@ mod tests {
                 sha256: h(b"b"),
                 size: 1,
                 mode: 0o644,
+                derived: false,
             },
             ManifestFile {
                 path: "a".into(),
                 sha256: h(b"a"),
                 size: 1,
                 mode: 0o644,
+                derived: false,
             },
         ];
         let mut b = a.clone();
@@ -176,6 +188,58 @@ mod tests {
 
         assert_eq!(a.canonical_json().unwrap(), b.canonical_json().unwrap());
         assert_eq!(a.hash().unwrap(), b.hash().unwrap());
+    }
+
+    #[test]
+    fn derived_field_is_skipped_when_false_for_canonical_stability() {
+        // A manifest written before the `derived` field existed must
+        // hash identically after being loaded and re-serialized — the
+        // canonical JSON is the version identifier, so any drift here
+        // is silent data corruption.
+        let pre_field_json = br#"{"content_meta":null,"doc_type":"Notebook","document_id":"u","files":[{"mode":420,"path":"a","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size":1}],"metadata":null,"parent":null,"schema":1,"visible_name":"X"}"#;
+        let m = Manifest::from_canonical_json(pre_field_json).unwrap();
+        assert!(!m.files[0].derived);
+        let canonical = m.canonical_json().unwrap();
+        assert_eq!(
+            canonical, pre_field_json,
+            "canonical JSON drifted: derived: false must be skipped"
+        );
+    }
+
+    #[test]
+    fn derived_files_roundtrip() {
+        // Files are sorted by path during canonicalization, so build
+        // the manifest pre-sorted to make the equality check trivial.
+        let m = Manifest {
+            schema: MANIFEST_SCHEMA,
+            document_id: "u".into(),
+            doc_type: "Notebook".into(),
+            visible_name: "T".into(),
+            parent: None,
+            metadata: Value::Null,
+            content_meta: Value::Null,
+            files: vec![
+                ManifestFile {
+                    path: "ocr/transcript.md".into(),
+                    sha256: h(b"transcript"),
+                    size: 1,
+                    mode: 0o644,
+                    derived: true,
+                },
+                ManifestFile {
+                    path: "page.rm".into(),
+                    sha256: h(b"page"),
+                    size: 1,
+                    mode: 0o644,
+                    derived: false,
+                },
+            ],
+        };
+        let bytes = m.canonical_json().unwrap();
+        let parsed = Manifest::from_canonical_json(&bytes).unwrap();
+        assert_eq!(parsed, m);
+        let transcript = parsed.files.iter().find(|f| f.derived).unwrap();
+        assert_eq!(transcript.path, "ocr/transcript.md");
     }
 
     #[test]
@@ -193,6 +257,7 @@ mod tests {
                 sha256: h(b"pdf"),
                 size: 1024,
                 mode: 0o644,
+                derived: false,
             }],
         };
         let bytes = m.canonical_json().unwrap();

@@ -228,6 +228,13 @@ async fn push_one(
 
     let mut files = Vec::with_capacity(manifest.files.len());
     for f in &manifest.files {
+        // Skip library-side derived artefacts (OCR transcripts, etc.).
+        // They live in the manifest so they version + restore + GC
+        // cleanly, but they don't belong on the tablet's xochitl
+        // file index.
+        if f.derived {
+            continue;
+        }
         let bytes = library.read_blob(&f.sha256)?;
         let size = bytes.len() as u64;
         if let Some(p) = progress {
@@ -274,6 +281,7 @@ mod tests {
                 sha256: res.hash,
                 size: res.size,
                 mode: 0o644,
+                derived: false,
             });
         }
         lib.record_version(&m, Source::Pulled).unwrap();
@@ -315,6 +323,7 @@ mod tests {
             sha256: res.hash,
             size: res.size,
             mode: 0o644,
+            derived: false,
         });
         let res2 = lib.put_blob(b"{}").unwrap();
         m.files.push(ManifestFile {
@@ -322,6 +331,7 @@ mod tests {
             sha256: res2.hash,
             size: res2.size,
             mode: 0o644,
+            derived: false,
         });
         lib.record_version(&m, Source::Restored).unwrap();
 
@@ -348,5 +358,34 @@ mod tests {
             .items
             .iter()
             .all(|i| i.status == PushItemStatus::Unchanged));
+    }
+
+    #[tokio::test]
+    async fn derived_files_are_not_pushed_to_device() {
+        // Library-side artefacts (OCR transcripts, future caches)
+        // travel with the manifest for versioning + restore but must
+        // never end up on the tablet's xochitl file index.
+        let lib_dir = tempfile::tempdir().unwrap();
+        let dev_dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(lib_dir.path()).unwrap();
+        let dev = FakeDevice::new(dev_dir.path());
+
+        seed_doc(
+            &lib,
+            "doc-1",
+            "Doc One",
+            &[("doc-1.metadata", b"{}"), ("doc-1.content", b"{}")],
+        );
+        lib.record_derived_artefact("doc-1", "ocr/transcript.md", b"# Hi")
+            .unwrap();
+
+        let plan = plan_push(&lib).unwrap();
+        execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+
+        // The derived file must not be present on the device.
+        let on_device = dev_dir.path().join("ocr").join("transcript.md");
+        assert!(!on_device.exists(), "derived file leaked to device");
     }
 }
