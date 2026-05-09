@@ -63,14 +63,14 @@ fn no_http_capability_plugins_loaded() {
 
 #[test]
 fn rmsync_crates_have_no_general_purpose_http_clients() {
+    // Business-logic crates that must NEVER speak HTTP. The
+    // user-explicit publish + ocr crates are intentionally NOT in
+    // this list — they're the only crates allowed to make
+    // outbound HTTP, and only to user-configured CMS hosts /
+    // HuggingFace's allow-list.
     use std::process::Command;
     let crates = ["rmsync-core", "rmsync-device", "rmsync-sync"];
-    let workspace_root = std::env::var("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(".."));
+    let workspace_root = workspace_root_path();
 
     let banned = [
         "reqwest",
@@ -82,11 +82,6 @@ fn rmsync_crates_have_no_general_purpose_http_clients() {
         "awc",
     ];
 
-    // For each business-logic crate, ensure no banned HTTP client appears
-    // in its transitive dep graph. The Tauri binary crate (rmsync-app) is
-    // exempt because Tauri itself pulls reqwest internally — but the
-    // business logic in rmsync-{core,device,sync} must stay clean so a
-    // future CLI / headless tool built on top stays clean too.
     for crate_name in &crates {
         let output = Command::new(env!("CARGO"))
             .args([
@@ -105,6 +100,102 @@ fn rmsync_crates_have_no_general_purpose_http_clients() {
             );
         }
     }
+}
+
+#[test]
+fn publish_and_ocr_crates_use_ureq_only() {
+    // Positive controls: the publish + ocr crates DO depend on
+    // ureq (the sanctioned HTTP client). If a refactor accidentally
+    // drops them, the feature is silently gone.
+    use std::process::Command;
+    let workspace_root = workspace_root_path();
+
+    for crate_name in ["rmsync-publish", "rmsync-ocr"] {
+        let output = Command::new(env!("CARGO"))
+            .args([
+                "tree", "--target", "all", "-p", crate_name, "-e", "normal", "--prefix", "none",
+            ])
+            .current_dir(&workspace_root)
+            .output()
+            .expect("cargo tree failed to execute");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("ureq v"),
+            "{crate_name} must depend on `ureq` (sanctioned HTTP client). \
+             If this dependency disappeared the feature is broken."
+        );
+        // And conversely — the *banned* clients must not slip in.
+        for banned_crate in ["reqwest", "isahc", "surf", "awc"] {
+            assert!(
+                !stdout.contains(&format!("{banned_crate} v")),
+                "{crate_name} must not depend on `{banned_crate}`; ureq is the \
+                 sanctioned HTTP client for the publish/ocr layer."
+            );
+        }
+    }
+}
+
+#[test]
+fn publish_http_uses_restricted_agent_wrapper() {
+    // Defence-in-depth: the publish crate's `RestrictedAgent` is
+    // the only sanctioned way to obtain a `ureq::Agent`. Anything
+    // else would let a future caller open connections to arbitrary
+    // hosts. Grep the source files to confirm `Agent::new` /
+    // `AgentBuilder::new` only appear inside http.rs.
+    let publish_root = workspace_root_path()
+        .join("crates")
+        .join("rmsync-publish")
+        .join("src");
+    let mut offenders = Vec::new();
+    for entry in fs::read_dir(&publish_root).expect("read publish src") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            continue;
+        }
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        if name == "http.rs" {
+            continue; // wrapper itself is allowed to construct an Agent
+        }
+        let body = fs::read_to_string(&path).unwrap();
+        if body.contains("ureq::AgentBuilder")
+            || body.contains("ureq::Agent::")
+            || body.contains("AgentBuilder::new")
+        {
+            offenders.push(name);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "ureq::Agent must only be constructed inside http.rs. Offenders: {offenders:?}"
+    );
+}
+
+#[test]
+fn tauri_conf_keeps_csp_set() {
+    // Audit fix M5 set a real CSP; this test prevents a silent
+    // regression to `"csp": null`.
+    let conf = workspace_root_path()
+        .join("crates")
+        .join("rmsync-app")
+        .join("tauri.conf.json");
+    let body = fs::read_to_string(&conf).expect("read tauri.conf.json");
+    let json: serde_json::Value = serde_json::from_str(&body).expect("tauri.conf.json json");
+    let csp = json
+        .pointer("/app/security/csp")
+        .expect("missing /app/security/csp in tauri.conf.json");
+    assert!(
+        csp.is_string() && !csp.as_str().unwrap().is_empty(),
+        "tauri.conf.json /app/security/csp must be a non-empty string"
+    );
+}
+
+fn workspace_root_path() -> PathBuf {
+    std::env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".."))
 }
 
 #[test]

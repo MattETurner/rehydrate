@@ -9,3 +9,6 @@ description = "Cross-cutting integration tests (privacy invariants, etc.)."
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+serde_json = { workspace = true }
