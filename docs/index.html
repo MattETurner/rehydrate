@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>reHydrate — Offline reMarkable companion</title>
+  <link rel="icon" type="image/png" href="logo.png">
+  <meta name="description" content="An offline-first companion for the reMarkable. Pulls notebooks over USB, renders ink as sharp PDFs, runs handwriting OCR locally, and ships drafts to your CMS — without touching a cloud you didn't choose.">
+  <meta property="og:title" content="reHydrate">
+  <meta property="og:description" content="An offline-first companion for the reMarkable. Sync, browse, OCR, and publish — without the cloud.">
+  <meta property="og:image" content="logo.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <img class="hero__logo" src="logo.png" alt="">
+  <h1>reHydrate</h1>
+  <p class="hero__tagline">An offline companion for the reMarkable.</p>
+  <p class="hero__lede">
+    Pulls notebooks over USB, renders ink as sharp PDFs, runs handwriting OCR
+    on your machine, and ships drafts to your own CMS — without touching a
+    cloud you didn't choose.
+  </p>
+  <p class="hero__cta">
+    <a class="btn" href="https://github.com/dm807cam/rehydrate/releases">Download</a>
+    <a class="btn btn--ghost" href="https://github.com/dm807cam/rehydrate">Source</a>
+  </p>
+</header>
+
+<main>
+
+<section>
+  <h2>Sync over USB</h2>
+  <p>
+    Your tablet talks to reHydrate at <code>10.11.99.1</code> over SSH/SFTP —
+    the same endpoint reMarkable's own developer mode exposes. No Connect
+    subscription, no third-party servers, no pull cycles billed to a storage
+    quota.
+  </p>
+  <p>
+    The only outbound destinations from the running app are the tablet, the
+    HuggingFace model registry on first OCR run, and your own Ghost or
+    WordPress endpoint when you explicitly publish a draft. A privacy
+    integration test bans every general-purpose HTTP client from the sync,
+    device, and library crates and fails the build if one slips back in.
+  </p>
+</section>
+
+<section>
+  <h2>A library, not a folder</h2>
+  <p>
+    Every pull becomes a new version of every changed document, content-addressed
+    by SHA-256. Browse history per document, restore an older state, garbage-
+    collect what you no longer reference. Renames, moves, archives, and folder
+    edits are first-class — they queue locally and ship to the tablet on the
+    next push.
+  </p>
+  <p>
+    More than one reMarkable? Keep a library per device and switch between them
+    from the toolbar. Each library is locked at the OS level so two app
+    instances can't trample each other's blob store.
+  </p>
+</section>
+
+<section>
+  <h2>Vector ink</h2>
+  <p>
+    Notebook PDFs render straight from the device's stroke data through PDF's
+    native stroking pipeline — every pen, ballpoint, marker, fineliner,
+    calligraphy stroke and highlighter, with the right caps and joins. Sharp
+    at any zoom, no thumbnail-stitched approximations.
+  </p>
+</section>
+
+<section>
+  <h2>On-device OCR</h2>
+  <p>
+    Click <em>Convert to text</em> on a notebook. A vision-language model loads
+    on your machine — Qwen2.5-VL-7B by default — and transcribes handwriting
+    in any major script. The transcript is stored alongside the notebook in
+    the library's manifest and never pushed to the tablet.
+  </p>
+  <p>
+    First run downloads the model from HuggingFace (a few GB; visible progress
+    indicator) and stays in your local cache afterwards. Subsequent runs are
+    seconds-of-load + seconds-per-page.
+  </p>
+</section>
+
+<section>
+  <h2>Drafts to your CMS</h2>
+  <p>
+    From a transcript, save as plain text or Markdown, or post a draft directly
+    to your <strong>Ghost</strong> or <strong>WordPress</strong> site. Credentials
+    live in your OS keychain. The publish layer's HTTP client is pinned to the
+    host you configured — no redirects, no surprises, no third party in the
+    middle.
+  </p>
+</section>
+
+<section>
+  <h2>Privacy invariants</h2>
+  <ul class="invariants">
+    <li>All sync traffic goes to <code>10.11.99.1</code>. Nothing else, ever.</li>
+    <li>Tauri capabilities are scoped to <code>core:default</code> +
+      <code>opener:default</code>. No <code>tauri-plugin-http</code> in the
+      dep graph; the renderer cannot make arbitrary network calls.</li>
+    <li>The WebView CSP only allows <code>'self'</code>. Inline event handlers
+      and <code>eval</code> are denied.</li>
+    <li>Credentials sit in the OS keychain (Keychain on macOS,
+      libsecret on Linux, Credential Manager on Windows). Never plaintext on
+      disk.</li>
+    <li>Model weights download once on user-explicit action from
+      <code>huggingface.co</code> only and stay in
+      <code>~/.cache/huggingface</code>.</li>
+    <li>The publish layer's HTTP client is a wrapper that refuses redirects
+      and rejects any request whose host doesn't match the user-configured
+      CMS URL.</li>
+    <li>A privacy integration test grep-asserts these invariants on every
+      build.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>What it's not</h2>
+  <ul>
+    <li>Not a cloud service.</li>
+    <li>Not a Connect-tier replacement.</li>
+    <li>Not signed or notarized today — first launch on macOS needs a
+      right-click → Open, Windows needs a SmartScreen confirm.</li>
+    <li>Not battle-tested on every Linux distro. Daily on Arch + Wayland and
+      Ubuntu 24.04.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>For the curious</h2>
+  <p>
+    Rust workspace, Tauri 2, React 18 + Vite 8 for the renderer. The library
+    is a content-addressed blob store + SQLite version log; manifest edits
+    commit under a single transaction so a crash never leaves you in a
+    half-pushed state. The OCR runtime is
+    <a href="https://github.com/EricLBuehler/mistral.rs">mistral.rs</a>
+    with Apple Metal kernels via
+    <a href="https://github.com/huggingface/candle">candle</a>. The publish
+    layer is a hand-rolled <code>ureq + rustls</code> agent.
+  </p>
+</section>
+
+<section>
+  <h2>Get it</h2>
+  <p>
+    Pre-built bundles for macOS (Apple Silicon + Intel), Linux (AppImage and
+    .deb), and Windows (MSI) are attached to each
+    <a href="https://github.com/dm807cam/rehydrate/releases">release</a>.
+  </p>
+  <p>From source:</p>
+  <pre><code>git clone https://github.com/dm807cam/rehydrate
+cd rehydrate
+./build.sh</code></pre>
+  <p class="muted">
+    First cold build pulls in Metal + candle + mistral.rs and takes 5–10
+    minutes. Subsequent builds are seconds.
+  </p>
+</section>
+
+</main>
+
+<footer>
+  <p>
+    <a href="https://github.com/dm807cam/rehydrate">Source</a>
+    ·
+    <a href="https://github.com/dm807cam/rehydrate/issues">Issues</a>
+    ·
+    <a href="https://github.com/dm807cam/rehydrate/blob/main/PACKAGING.md">Packaging</a>
+  </p>
+  <p class="muted">
+    reHydrate is unaffiliated with reMarkable AS.
+  </p>
+</footer>
+
+</body>
+</html>
