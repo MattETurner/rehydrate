@@ -289,7 +289,7 @@ pub async fn open_document(
         //      preview, used only if a page has no parseable ink data).
         // Cache key includes a layout version suffix so bumping the
         // assembly logic invalidates stale previews automatically.
-        const PREVIEW_LAYOUT_VERSION: &str = "ink-v14";
+        const PREVIEW_LAYOUT_VERSION: &str = "ink-v15";
         let p = cache_root.join(format!(
             "{safe_name}-{}-{PREVIEW_LAYOUT_VERSION}.pdf",
             &doc.current_manifest.as_str()[..12]

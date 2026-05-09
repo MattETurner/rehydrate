@@ -2,30 +2,30 @@
 //!
 //! Two paths exist:
 //! - `build_pdf_from_rm_files`: parse the device's `.rm` ink files (v6
-//!   format) and render each stroke as a filled, variable-width
-//!   tessellated polygon. Sharp at any zoom, real pressure variation.
+//!   format) and render each stroke with PDF's native stroking pipeline.
+//!   Sharp at any zoom, real pressure variation.
 //! - `build_pdf_from_pngs`: stitch the device's per-page thumbnail PNGs
 //!   into a PDF. Used as a fallback when a page has no `.rm` data.
 //!
-//! Rendering approach (research-backed; see commit message for sources):
-//! PDF has no native variable-width stroke primitive, so for each stroke
-//! we build a quad strip along the centerline. For each consecutive pair
-//! of points (P_i, P_{i+1}) we compute the segment normal and offset
-//! left/right by half the per-point width. The quads are emitted as
-//! filled rings inside one Op::DrawPolygon per stroke. Joint gaps and
-//! stroke tips are filled with a small disc at each point — gives natural
-//! rounded caps and hides the seam where adjacent segments meet at
-//! varying widths.
+//! Rendering approach (matches rmrl, rmc, lines-are-rusty):
+//! Each stroke is emitted as one or more stroked polylines using
+//! `Op::DrawLine` (PDF `S` operator) with round caps + round joins. The
+//! round cap *is* a perfect half-disc at the line's endpoint, so we get
+//! authentic rounded ends without stamping geometry. For tools that vary
+//! width along the stroke (ballpoint, brush, pencil, mech pencil,
+//! calligraphy) we chunk the polyline into ~5-sample groups and stroke
+//! each group at its average width — adjacent chunks share an endpoint
+//! so the caps blend invisibly.
 //!
-//! Winding: every ring is wound clockwise in PDF (Y-up) space so
-//! NonZero winding never cancels overlapping rings into holes. Mixing
-//! orientations would punch disc-shaped voids through the stroke at
-//! every point.
+//! Highlighter is one wide constant-width polyline with butt caps and a
+//! ~0.39 alpha applied through an ExtGState; rendered before pens so it
+//! sits underneath the ink, matching the device.
 
 use image::ImageReader;
 use printpdf::{
-    Color, LineDashPattern, LinePoint, Mm, Op, PaintMode, PdfDocument, PdfPage, PdfSaveOptions,
-    Point, Polygon, PolygonRing, Pt, RawImage, Rgb, WindingOrder, XObjectTransform,
+    Color, ExtendedGraphicsState, ExtendedGraphicsStateId, Line as PdfLine, LineCapStyle,
+    LineDashPattern, LineJoinStyle, LinePoint, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Point,
+    Pt, RawImage, Rgb, XObjectTransform,
 };
 use rm_parser::shared::{pen_color::PenColor, tool::Tool};
 use rm_parser::v6::block::Block;
@@ -52,10 +52,24 @@ pub fn build_pdf_from_rm_files(title: &str, pages: &[Vec<u8>]) -> Result<Vec<u8>
     let mut warnings = Vec::new();
     let mut pdf_pages = Vec::with_capacity(pages.len());
 
+    // Register the two ExtGStates the renderer toggles between: opaque
+    // ink for normal pens, ~0.39 alpha for highlighter strokes (matches
+    // rmrl). Returned IDs are reused on every page.
+    let opaque_gs = doc.add_graphics_state(
+        ExtendedGraphicsState::default()
+            .with_current_stroke_alpha(1.0)
+            .with_current_fill_alpha(1.0),
+    );
+    let highlighter_gs = doc.add_graphics_state(
+        ExtendedGraphicsState::default()
+            .with_current_stroke_alpha(0.39)
+            .with_current_fill_alpha(0.39),
+    );
+
     for (i, bytes) in pages.iter().enumerate() {
         let rm =
             RemarkableFile::read(bytes.as_slice()).map_err(|e| format!("page {i} parse: {e}"))?;
-        let ops = render_rm_to_ops(&rm)?;
+        let ops = render_rm_to_ops(&rm, &opaque_gs, &highlighter_gs)?;
         pdf_pages.push(PdfPage::new(Mm(PAGE_W_MM), Mm(PAGE_H_MM), ops));
     }
 
@@ -64,7 +78,11 @@ pub fn build_pdf_from_rm_files(title: &str, pages: &[Vec<u8>]) -> Result<Vec<u8>
         .save(&PdfSaveOptions::default(), &mut warnings))
 }
 
-fn render_rm_to_ops(rm: &RemarkableFile) -> Result<Vec<Op>, String> {
+fn render_rm_to_ops(
+    rm: &RemarkableFile,
+    opaque_gs: &ExtendedGraphicsStateId,
+    highlighter_gs: &ExtendedGraphicsStateId,
+) -> Result<Vec<Op>, String> {
     let lines: Vec<&Line> = match rm {
         RemarkableFile::V6 { blocks, .. } => blocks
             .iter()
@@ -152,6 +170,19 @@ fn render_rm_to_ops(rm: &RemarkableFile) -> Result<Vec<Op>, String> {
     ops.push(Op::SetLineDashPattern {
         dash: LineDashPattern::default(),
     });
+    // Default state for pen tools: round caps + round joins. The round
+    // cap is a half-disc at each endpoint, so a stroked polyline looks
+    // exactly like the bead-of-discs approach was trying to fake — but
+    // composited correctly by PDF, with no winding artefacts.
+    ops.push(Op::SetLineCapStyle {
+        cap: LineCapStyle::Round,
+    });
+    ops.push(Op::SetLineJoinStyle {
+        join: LineJoinStyle::Round,
+    });
+    ops.push(Op::LoadGraphicsState {
+        gs: opaque_gs.clone(),
+    });
 
     // Render highlighters first so they sit underneath ink.
     let mut ordered: Vec<&Line> = lines.clone();
@@ -160,22 +191,55 @@ fn render_rm_to_ops(rm: &RemarkableFile) -> Result<Vec<Op>, String> {
         _ => 1,
     });
 
+    // Track the current PDF graphics-state values so we only emit a
+    // setter when something actually changes — keeps the content stream
+    // small and readable.
     let mut last_rgb: Option<(f32, f32, f32)> = None;
+    let mut last_width_pt: Option<f32> = None;
+    let mut last_cap = LineCapStyle::Round;
+    let mut last_gs_alpha: bool = false; // false = opaque, true = highlighter
 
     for line in &ordered {
         if !is_visible_tool(line.tool()) {
             continue;
         }
         let pts = line.points();
-        if pts.len() < 2 {
+        if pts.is_empty() {
             continue;
         }
 
-        let rgb = stroke_color_rgb(line.tool(), line.color());
+        let tool = line.tool();
+        let is_highlighter = matches!(tool, Tool::Highlighter);
+
+        // Switch to the highlighter alpha state only for highlighters,
+        // and only when not already there.
+        if is_highlighter != last_gs_alpha {
+            ops.push(Op::LoadGraphicsState {
+                gs: if is_highlighter {
+                    highlighter_gs.clone()
+                } else {
+                    opaque_gs.clone()
+                },
+            });
+            last_gs_alpha = is_highlighter;
+        }
+
+        // Highlighter uses square (butt) caps on the device; pens use
+        // round caps so endpoints look like the brush tip.
+        let want_cap = if is_highlighter {
+            LineCapStyle::Butt
+        } else {
+            LineCapStyle::Round
+        };
+        if want_cap != last_cap {
+            ops.push(Op::SetLineCapStyle { cap: want_cap });
+            last_cap = want_cap;
+        }
+
+        let rgb = stroke_color_rgb(tool, line.color());
         if last_rgb != Some(rgb) {
-            // We render strokes as filled polygons, so colour goes on the
-            // *fill* state. Outline ops are unused by this renderer.
-            ops.push(Op::SetFillColor {
+            // Strokes use the *outline* colour, not fill.
+            ops.push(Op::SetOutlineColor {
                 col: Color::Rgb(Rgb {
                     r: rgb.0,
                     g: rgb.1,
@@ -187,11 +251,6 @@ fn render_rm_to_ops(rm: &RemarkableFile) -> Result<Vec<Op>, String> {
         }
 
         let thickness = (line.thickness_scale() as f32).clamp(0.3, 3.0);
-        let tool = line.tool();
-
-        // Build one polygon with one ring per segment-quad plus one ring
-        // per per-point disc. printpdf renders this as a single fill op.
-        let mut rings: Vec<PolygonRing> = Vec::with_capacity(pts.len() * 2);
 
         // Pre-compute per-point widths (in pt) for reuse.
         let widths_pt: Vec<f32> = pts
@@ -199,100 +258,118 @@ fn render_rm_to_ops(rm: &RemarkableFile) -> Result<Vec<Op>, String> {
             .map(|p| width_pt_for(tool, p, thickness))
             .collect();
 
-        // Quad strip: one ring per segment.
-        for i in 0..pts.len() - 1 {
-            let p0 = &pts[i];
-            let p1 = &pts[i + 1];
-            let pos0 = map_xy(p0.x(), p0.y());
-            let pos1 = map_xy(p1.x(), p1.y());
-            let dx = pos1.x.0 - pos0.x.0;
-            let dy = pos1.y.0 - pos0.y.0;
-            let len = (dx * dx + dy * dy).sqrt();
-            if len < 0.05 {
-                // Degenerate segment — the disc at the point covers it.
-                continue;
-            }
-            let nx = -dy / len;
-            let ny = dx / len;
+        // Map all points into PDF space once.
+        let mapped: Vec<Point> = pts.iter().map(|p| map_xy(p.x(), p.y())).collect();
 
-            let half0 = (widths_pt[i] / 2.0).max(0.05);
-            let half1 = (widths_pt[i + 1] / 2.0).max(0.05);
-
-            let q = vec![
-                LinePoint {
-                    p: Point {
-                        x: Pt(pos0.x.0 + nx * half0),
-                        y: Pt(pos0.y.0 + ny * half0),
-                    },
-                    bezier: false,
-                },
-                LinePoint {
-                    p: Point {
-                        x: Pt(pos1.x.0 + nx * half1),
-                        y: Pt(pos1.y.0 + ny * half1),
-                    },
-                    bezier: false,
-                },
-                LinePoint {
-                    p: Point {
-                        x: Pt(pos1.x.0 - nx * half1),
-                        y: Pt(pos1.y.0 - ny * half1),
-                    },
-                    bezier: false,
-                },
-                LinePoint {
-                    p: Point {
-                        x: Pt(pos0.x.0 - nx * half0),
-                        y: Pt(pos0.y.0 - ny * half0),
-                    },
-                    bezier: false,
-                },
-            ];
-            rings.push(PolygonRing { points: q });
+        // For a single-sample stroke (just a tap), emit a zero-length
+        // polyline so the round cap renders as a dot.
+        if mapped.len() == 1 {
+            emit_stroke_segment(
+                &mut ops,
+                std::slice::from_ref(&mapped[0]),
+                widths_pt[0],
+                &mut last_width_pt,
+            );
+            continue;
         }
 
-        // Disc at every point — naturally rounds caps and fills joint gaps.
-        for (i, p) in pts.iter().enumerate() {
-            let pos = map_xy(p.x(), p.y());
-            let r = (widths_pt[i] / 2.0).max(0.05);
-            rings.push(PolygonRing {
-                points: disc(pos, r),
-            });
-        }
+        // Tools where width is essentially constant along the stroke can
+        // be drawn as one polyline with a single SetOutlineThickness.
+        // Variable-width tools are chunked into ~5-sample groups, each
+        // stroked at the chunk's mean width — same approach as rmc/rmrl.
+        let chunk_size = match tool {
+            Tool::FineLiner | Tool::Marker | Tool::Highlighter => usize::MAX,
+            _ => 5,
+        };
 
-        if !rings.is_empty() {
-            ops.push(Op::DrawPolygon {
-                polygon: Polygon {
-                    rings,
-                    mode: PaintMode::Fill,
-                    winding_order: WindingOrder::NonZero,
-                },
-            });
-        }
+        emit_chunked_strokes(&mut ops, &mapped, &widths_pt, chunk_size, &mut last_width_pt);
     }
 
     Ok(ops)
 }
 
-/// 16-vertex approximation of a circle, wound clockwise in PDF (Y-up)
-/// space to match the segment-quad winding. Sixteen sides keep caps
-/// looking round at the largest brush/highlighter widths.
-fn disc(center: Point, radius_pt: f32) -> Vec<LinePoint> {
-    use std::f32::consts::PI;
-    const SIDES: usize = 16;
-    (0..SIDES)
-        .map(|i| {
-            // Negative angle ⇒ clockwise traversal in Y-up coordinates.
-            let a = -(i as f32) * PI * 2.0 / (SIDES as f32);
-            LinePoint {
-                p: Point {
-                    x: Pt(center.x.0 + radius_pt * a.cos()),
-                    y: Pt(center.y.0 + radius_pt * a.sin()),
-                },
-                bezier: false,
-            }
+/// Emit one stroked polyline at a single width.
+fn emit_stroke_segment(
+    ops: &mut Vec<Op>,
+    pts: &[Point],
+    width_pt: f32,
+    last_width_pt: &mut Option<f32>,
+) {
+    if pts.is_empty() {
+        return;
+    }
+    let w = width_pt.max(0.04);
+    let needs_set = match last_width_pt {
+        Some(prev) => (*prev - w).abs() > 0.005,
+        None => true,
+    };
+    if needs_set {
+        ops.push(Op::SetOutlineThickness { pt: Pt(w) });
+        *last_width_pt = Some(w);
+    }
+    let line_pts: Vec<LinePoint> = pts
+        .iter()
+        .map(|p| LinePoint {
+            p: *p,
+            bezier: false,
         })
-        .collect()
+        .collect();
+    // For a single-point stroke, duplicate it: PDF round caps draw a
+    // disc at zero-length stroke endpoints, so the dot still appears.
+    let line_pts = if line_pts.len() == 1 {
+        vec![line_pts[0].clone(), line_pts[0].clone()]
+    } else {
+        line_pts
+    };
+    ops.push(Op::DrawLine {
+        line: PdfLine {
+            points: line_pts,
+            is_closed: false,
+        },
+    });
+}
+
+/// Stroke a polyline as several overlapping sub-polylines, each at
+/// the mean width of its samples. Adjacent chunks share an endpoint so
+/// their round caps coincide and produce no visible seam.
+fn emit_chunked_strokes(
+    ops: &mut Vec<Op>,
+    mapped: &[Point],
+    widths: &[f32],
+    chunk_size: usize,
+    last_width_pt: &mut Option<f32>,
+) {
+    let n = mapped.len();
+    if n < 2 {
+        if n == 1 {
+            emit_stroke_segment(ops, mapped, widths[0], last_width_pt);
+        }
+        return;
+    }
+
+    // chunk_size = MAX or larger than the polyline ⇒ one stroke at the
+    // average of the whole polyline (constant-width tools).
+    if chunk_size >= n {
+        let avg = mean(widths);
+        emit_stroke_segment(ops, mapped, avg, last_width_pt);
+        return;
+    }
+
+    let mut start = 0usize;
+    while start < n - 1 {
+        let end = (start + chunk_size).min(n - 1);
+        let avg = mean(&widths[start..=end]);
+        emit_stroke_segment(ops, &mapped[start..=end], avg, last_width_pt);
+        start = end;
+    }
+}
+
+fn mean(xs: &[f32]) -> f32 {
+    if xs.is_empty() {
+        0.0
+    } else {
+        xs.iter().sum::<f32>() / (xs.len() as f32)
+    }
 }
 
 fn is_visible_tool(tool: &Tool) -> bool {
@@ -362,13 +439,18 @@ fn width_pt_for(tool: &Tool, p: &RmPoint, thickness: f32) -> f32 {
 
 fn stroke_color_rgb(tool: &Tool, color: &PenColor) -> (f32, f32, f32) {
     match tool {
+        // Highlighter colours are the saturated source RGB; the actual
+        // translucency is applied via the highlighter ExtGState (alpha
+        // ≈ 0.39, matching rmrl). The classic device yellow is rgb
+        // (1.0, 0.914, 0.290) — anything paler reads as washed-out
+        // when laid over white through the alpha blend.
         Tool::Highlighter => match color {
-            PenColor::Yellow => (1.00, 0.94, 0.40),
-            PenColor::Green => (0.55, 0.95, 0.55),
-            PenColor::Pink => (1.00, 0.65, 0.82),
-            PenColor::Blue => (0.55, 0.80, 1.00),
-            PenColor::Red => (1.00, 0.55, 0.55),
-            _ => (1.00, 0.94, 0.40),
+            PenColor::Yellow => (1.000, 0.914, 0.290),
+            PenColor::Green => (0.482, 0.871, 0.420),
+            PenColor::Pink => (0.969, 0.408, 0.671),
+            PenColor::Blue => (0.341, 0.612, 0.953),
+            PenColor::Red => (0.949, 0.341, 0.341),
+            _ => (1.000, 0.914, 0.290),
         },
         Tool::Pencil | Tool::MechanicalPencil => {
             // Bias hard toward graphite-grey regardless of nominal colour.
