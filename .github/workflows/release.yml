@@ -1,0 +1,145 @@
+name: Release
+
+# Builds platform installers for every `v*` tag and attaches them to a
+# draft GitHub Release. Manually publishing the draft makes the build
+# public — gives a chance to spot-check the artefacts before shipping.
+#
+# Outputs per tag:
+#   - macOS (Intel):         Marginalia_<ver>_x64.dmg, .app.tar.gz
+#   - macOS (Apple Silicon): Marginalia_<ver>_aarch64.dmg, .app.tar.gz
+#   - Linux:                 Marginalia_<ver>_amd64.AppImage, .deb
+#   - Windows:               Marginalia_<ver>_x64_en-US.msi
+#
+# Tag the release with `git tag v0.1.0 && git push --tags` to start a
+# build. Use `workflow_dispatch` for dry-runs that produce GitHub
+# workflow artefacts but no Release entry.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS (Intel)
+            os: macos-latest
+            target: x86_64-apple-darwin
+            rust_targets: x86_64-apple-darwin
+            tauri_args: --target x86_64-apple-darwin --bundles app,dmg
+          - label: macOS (Apple Silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+            rust_targets: aarch64-apple-darwin
+            tauri_args: --target aarch64-apple-darwin --bundles app,dmg
+          - label: Linux
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rust_targets: x86_64-unknown-linux-gnu
+            tauri_args: --target x86_64-unknown-linux-gnu --bundles appimage,deb
+          - label: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
+            tauri_args: --target x86_64-pc-windows-msvc --bundles msi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri's Linux backend pulls in WebKit + GTK; the appimagetool
+      # bundler also needs librsvg and patchelf. These names match the
+      # CI workflow.
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache per target so cross-target builds don't
+          # invalidate each other.
+          key: ${{ matrix.target }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI deps
+        working-directory: ui
+        run: npm ci || npm install
+
+      # Build + (when triggered by a tag) upload to a draft release at
+      # `${{ github.ref_name }}`. The action creates the release on the
+      # first runner that finishes and then uploads to it from the
+      # others, so all platforms end up attached to the same tag.
+      #
+      # tagName is empty when triggered by workflow_dispatch so
+      # tauri-action just builds without creating a release named after
+      # whatever branch was used to launch the run.
+      - name: Build and release
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/rmsync-app
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('Marginalia {0}', github.ref_name) || '' }}
+          releaseBody: |
+            Automated build for `${{ github.ref_name }}`.
+
+            **Downloads**
+            - macOS (Apple Silicon): `Marginalia_*_aarch64.dmg`
+            - macOS (Intel):         `Marginalia_*_x64.dmg`
+            - Linux:                 `Marginalia_*_amd64.AppImage` or `.deb`
+            - Windows:               `Marginalia_*_x64_en-US.msi`
+
+            macOS builds are unsigned — first launch needs a right-click → Open
+            to bypass Gatekeeper. Windows builds are unsigned for the same reason.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.tauri_args }}
+
+      # On manual runs (no release to attach to), surface the bundles
+      # as workflow artefacts so they can still be downloaded. Each
+      # runner only produces files for its own platform; the unused
+      # globs below resolve to nothing and `if-no-files-found: ignore`
+      # keeps the step silent about that.
+      - name: Upload workflow artefacts (manual runs only)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: marginalia-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            target/${{ matrix.target }}/release/bundle/deb/*.deb
+            target/${{ matrix.target }}/release/bundle/msi/*.msi
+          if-no-files-found: ignore
+          retention-days: 14

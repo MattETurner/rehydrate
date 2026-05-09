@@ -1,36 +1,49 @@
 # Packaging Marginalia for distribution
 
-Phase 1 ships unbundled — `cargo run -p rmsync-app --release` is the
-supported way to launch the app. This document describes what's left
-before producing signed installers for end users.
+`cargo run -p rmsync-app --release` runs the app from source. For
+distributable installers the project uses Tauri's bundler — locally
+via `cargo tauri build`, or in CI via the `Release` workflow which
+attaches signed-on-the-runner bundles to a draft GitHub Release.
 
-## Prerequisites
+## Cutting a release
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `.github/workflows/release.yml` workflow fans out to four
+runners — macOS Intel, macOS Apple Silicon, Linux (Ubuntu 22.04), and
+Windows — and uploads the produced `.dmg`, `.AppImage`, `.deb`, and
+`.msi` artefacts to a draft release at the tag. Review the artefacts,
+then click **Publish release** in the GitHub UI to make the build
+public.
+
+A manual `workflow_dispatch` run produces the same artefacts as
+ordinary workflow artefacts (no Release entry), useful for testing
+the build itself.
+
+## Prerequisites for local builds
 
 ```sh
 cargo install tauri-cli --version "^2.0.0"
 ```
 
 Then `cargo tauri dev` runs the dev workflow with hot reload, and
-`cargo tauri build` produces platform installers (once the items below
-are addressed).
+`cargo tauri build` produces platform installers.
 
 ## What's left
 
 ### 1. Icons
 
-The repository ships a placeholder 32×32 transparent PNG at
-`crates/rmsync-app/icons/icon.png`. Real bundle builds need:
+Done — the icon set is generated from `logo.png` via `tauri icon`:
 
-- `icons/32x32.png` (Linux deb / generic)
-- `icons/128x128.png`
-- `icons/128x128@2x.png` (256×256)
-- `icons/icon.icns` (macOS — produced by `iconutil -c icns icon.iconset`)
-- `icons/icon.ico` (Windows — multi-resolution ICO)
+- `icons/32x32.png`, `128x128.png`, `128x128@2x.png` (Linux/Generic)
+- `icons/icon.icns` (macOS)
+- `icons/icon.ico` (Windows)
 
-`tauri icon path/to/source-1024.png` will generate the full set if you
-have a 1024×1024 master.
-
-Once the icons are in place, set `"bundle.active": true` in
+Regenerate with `npx @tauri-apps/cli icon logo.png` from
+`crates/rmsync-app/`. `bundle.active` is `true` in
 `crates/rmsync-app/tauri.conf.json`.
 
 ### 2. macOS signing + notarization
