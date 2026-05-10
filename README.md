@@ -6,7 +6,28 @@ The library lives in a single self-contained directory you control: every distin
 
 ## Status
 
-Pre-alpha, under active development. Phase 1 (read-only mirror) is the current target — see `remarkable-sync-implementation-plan.md` for the design, and `crates/` for the implementation.
+`v0.9.0` — first public release. Beta-quality: feature-complete for the
+sync + library use case, but bundles ship unsigned (macOS Gatekeeper /
+Windows SmartScreen will warn on first launch — `PACKAGING.md` documents
+the signing config that's deferred to `v1.0.0`). Working features:
+
+- Two-way sync (pull + push) over USB-SSH, with progress streamed live.
+- Content-addressed blob store, full version history, restore-any-version.
+- Archive with restore (soft-delete; the tablet only sees the deletion
+  on the next sync).
+- Import PDFs and EPUBs from disk; they upload to the tablet on the
+  next sync.
+- Folder organisation, drag-and-drop moves, multi-select with
+  Cmd-click + Shift-click + a selection toolbar.
+- Library health (`Verify`) and orphan-blob cleanup (`Clean up unused
+  files`) with confirmation.
+- Quick Look (Space), command palette (⌘K), keyboard navigation,
+  search.
+- Multi-library support: switch between per-tablet libraries from the
+  toolbar without restarting.
+
+Architecture notes are in `remarkable-sync-implementation-plan.md`;
+release notes are in `CHANGELOG.md`.
 
 ## Stack
 
