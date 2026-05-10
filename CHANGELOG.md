@@ -6,7 +6,45 @@ the project follows [Semantic Versioning](https://semver.org/) once it
 hits `1.0.0`. Pre-1.0 releases may break compatibility freely; the
 library on-disk format is forward-stable from `0.9.0`.
 
+## [0.9.1] — 2026-05-10
+
+Hotfix release. The macOS bundles in `v0.9.0` are unlaunchable on
+Apple Silicon: ship `v0.9.1` instead.
+
+### Fixed
+
+- **macOS bundle was structurally inconsistent and would not
+  launch on Apple Silicon** (`reHydrate_0.9.0_aarch64.dmg`,
+  `reHydrate_0.9.0_x64.dmg`). The Mach-O executable was
+  linker-signed (mandatory on Apple Silicon — the linker stamps an
+  ad-hoc signature on the binary) and that signature claimed the
+  bundle had sealed resources. But Tauri's bundler with
+  `signingIdentity: null` did not run a follow-up `codesign` on
+  the bundle as a whole, so `Contents/_CodeSignature/CodeResources`
+  was missing and `codesign -dv` reported `Sealed Resources=none`.
+  The kernel rejected the signature mismatch at load time and
+  macOS surfaced this as a misleading **"App is damaged and can't
+  be opened"** error. Right-click → Open and `xattr -d
+  com.apple.quarantine` did not help — the binary genuinely
+  refused to load.
+
+  Fix: set `signingIdentity: "-"` in `tauri.conf.json`. The `"-"`
+  value tells Tauri (via `codesign`) to apply a real ad-hoc
+  signature to the whole bundle, not just the binary. The result
+  is a self-consistent ad-hoc bundle that passes the kernel's
+  signature check at launch. Gatekeeper still warns on first run
+  (no Developer ID), and the right-click → Open dance is still
+  the documented workaround for that — but the app actually
+  launches.
+
+[0.9.1]: https://github.com/dm807cam/rehydrate/releases/tag/v0.9.1
+
 ## [0.9.0] — 2026-05-10
+
+> **⚠️ Do not use the v0.9.0 macOS bundles.** They will not launch
+> on Apple Silicon (and may misbehave on Intel). See `v0.9.1`
+> above for the fix. Linux and Windows builds are unaffected.
+
 
 First public release. Feature-complete for the sync + library use case
 the project set out to solve; bundles ship unsigned, full code-signing

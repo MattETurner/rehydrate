@@ -6,7 +6,9 @@ The library lives in a single self-contained directory you control: every distin
 
 ## Status
 
-`v0.9.0` — first public release. Beta-quality: feature-complete for the
+`v0.9.1` — first public release (`v0.9.0` macOS bundles were
+unlaunchable on Apple Silicon — see `CHANGELOG.md`). Beta-quality:
+feature-complete for the
 sync + library use case, but bundles ship unsigned (macOS Gatekeeper /
 Windows SmartScreen will warn on first launch — `PACKAGING.md` documents
 the signing config that's deferred to `v1.0.0`). Working features:

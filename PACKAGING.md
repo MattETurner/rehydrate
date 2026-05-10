@@ -66,14 +66,36 @@ Regenerate with `npx @tauri-apps/cli icon logo.png` from
 
 ### 2. macOS signing + notarization
 
-In `tauri.conf.json` under `bundle.macOS`:
+`tauri.conf.json` ships with `signingIdentity: "-"` — the magic
+value that tells Tauri (and the underlying `codesign`) to **ad-hoc
+sign** the whole bundle. Required even without a Developer ID,
+because:
 
-- `signingIdentity`: the common name of your Developer ID Application
-  certificate, e.g. `"Developer ID Application: Your Name (TEAMID)"`.
-- `providerShortName`: your App Store Connect provider short name (only
-  needed if your Apple ID is on multiple teams).
-- `entitlements`: path to a `.plist` if you need the hardened runtime
-  with specific exceptions. The app does not currently need any.
+- On Apple Silicon, the linker stamps an ad-hoc signature on the
+  Mach-O executable that claims the bundle has sealed resources.
+- Without a follow-up `codesign --force --deep --sign -` on the
+  bundle, those resources aren't actually sealed (`codesign -dv`
+  reports `Sealed Resources=none`).
+- The kernel rejects the signature mismatch at load time, and
+  macOS shows the misleading **"App is damaged and can't be
+  opened"** error — even with right-click → Open, even with
+  `xattr -d com.apple.quarantine`. The bundle is unlaunchable.
+
+`signingIdentity: "-"` produces a properly self-consistent ad-hoc
+bundle that passes the kernel check. Gatekeeper still warns on
+first launch (right-click → Open clears it) because there's no
+Developer ID, but the app actually launches.
+
+For a real Developer ID build, replace with:
+
+- `signingIdentity`: the common name of your Developer ID
+  Application certificate, e.g. `"Developer ID Application: Your
+  Name (TEAMID)"`.
+- `providerShortName`: your App Store Connect provider short name
+  (only needed if your Apple ID is on multiple teams).
+- `entitlements`: path to a `.plist` if you need the hardened
+  runtime with specific exceptions. The app does not currently
+  need any.
 
 Notarization requires environment variables at `tauri build` time:
 
