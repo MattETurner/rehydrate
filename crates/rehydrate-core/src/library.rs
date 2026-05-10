@@ -367,10 +367,12 @@ impl Library {
         }
         if paths.library_json.exists() {
             // Existing library — verify the stamp is sane.
-            let bytes = fs::read(&paths.library_json).map_err(|e| Error::InvalidPath(format!(
-                "could not read {}: {e}",
-                paths.library_json.display()
-            )))?;
+            let bytes = fs::read(&paths.library_json).map_err(|e| {
+                Error::InvalidPath(format!(
+                    "could not read {}: {e}",
+                    paths.library_json.display()
+                ))
+            })?;
             let meta: LibraryMeta = serde_json::from_slice(&bytes).map_err(|e| {
                 Error::InvalidPath(format!(
                     "{} has a malformed library.json: {e}",
@@ -665,7 +667,15 @@ impl Library {
         // row produces a typed `Error::Corrupt` instead of getting
         // wrapped through rusqlite's error type or — worse, before
         // the H4 fix — silently fabricated.
-        type RawRow = (i64, String, String, Option<i64>, String, String, Option<String>);
+        type RawRow = (
+            i64,
+            String,
+            String,
+            Option<i64>,
+            String,
+            String,
+            Option<String>,
+        );
         let conn = self.db.lock();
         let mut stmt = conn.prepare(
             "SELECT id, document_id, manifest_hash, parent_version_id, observed_at, source, note \
@@ -689,10 +699,11 @@ impl Library {
 
         let mut rows: Vec<VersionEntry> = Vec::with_capacity(raw.len());
         for (id, doc_id, manifest_hex, parent, observed_at, source_str, note) in raw {
-            let manifest_hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
-                path: self.paths.db.display().to_string(),
-                reason: format!("bad manifest hash for version {id}"),
-            })?;
+            let manifest_hash =
+                Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+                    path: self.paths.db.display().to_string(),
+                    reason: format!("bad manifest hash for version {id}"),
+                })?;
             rows.push(VersionEntry {
                 id,
                 document_id: doc_id,
@@ -730,14 +741,15 @@ impl Library {
     /// `lastModified` and `modified` flags so the tablet treats the file
     /// as freshly changed.
     ///
-    /// The whole read → mutate → write sequence runs under `write_lock`
-    /// + a single SQLite transaction. `post_action` lets archive /
-    /// unarchive piggy-back their `documents` ↔ `archived_documents`
-    /// move on the same transaction (audit fixes C1 + C2 — without
-    /// this, two callers could observe the same parent manifest and
-    /// silently overwrite each other, and a crash between the
-    /// version-record commit and the archive move could leave a row
-    /// in a deleted-but-not-archived limbo).
+    /// The whole read → mutate → write sequence runs under
+    /// `write_lock` plus a single SQLite transaction. `post_action`
+    /// lets archive / unarchive piggy-back their `documents` ↔
+    /// `archived_documents` move on the same transaction (audit
+    /// fixes C1 + C2). Without that coupling, two callers could
+    /// observe the same parent manifest and silently overwrite each
+    /// other, and a crash between the version-record commit and the
+    /// archive move could leave a row in a deleted-but-not-archived
+    /// limbo.
     fn record_metadata_change<F>(
         &self,
         document_id: &str,
@@ -787,11 +799,9 @@ impl Library {
             .files
             .iter()
             .position(|f| f.path.ends_with(".metadata"))
-            .ok_or_else(|| {
-                Error::Corrupt {
-                    path: "<manifest>".into(),
-                    reason: format!("document {document_id} has no .metadata file"),
-                }
+            .ok_or_else(|| Error::Corrupt {
+                path: "<manifest>".into(),
+                reason: format!("document {document_id} has no .metadata file"),
             })?;
         let meta_bytes = self.blobs.read_to_vec(&manifest.files[meta_idx].sha256)?;
         let mut meta_value: serde_json::Value = serde_json::from_slice(&meta_bytes)?;
@@ -897,11 +907,7 @@ impl Library {
     /// unpushed changes — the next sync sends the new metadata to the
     /// tablet which then displays the new name. Empty / whitespace-only
     /// names are rejected so the tablet never ends up with a blank title.
-    pub fn rename_document(
-        &self,
-        document_id: &str,
-        new_name: &str,
-    ) -> Result<RecordOutcome> {
+    pub fn rename_document(&self, document_id: &str, new_name: &str) -> Result<RecordOutcome> {
         let trimmed = new_name.trim().to_string();
         if trimmed.is_empty() {
             return Err(Error::InvalidArgument(
@@ -948,9 +954,10 @@ impl Library {
     /// pre-existing file with the same path is removed from the
     /// manifest (its blob will be reclaimed by GC if unreferenced).
     ///
-    /// The whole read → mutate → write sequence runs under `write_lock`
-    /// + a single SQLite tx, same shape as `record_metadata_change`,
-    /// so concurrent edits don't lose the transcript.
+    /// The whole read → mutate → write sequence runs under
+    /// `write_lock` plus a single SQLite tx, same shape as
+    /// `record_metadata_change`, so concurrent edits don't lose
+    /// the transcript.
     pub fn record_derived_artefact(
         &self,
         document_id: &str,
@@ -1059,11 +1066,7 @@ impl Library {
         let entry = self.get_version(version_id)?;
         let manifest_bytes = self.blobs.read_to_vec(&entry.manifest_hash)?;
         let manifest = Manifest::from_canonical_json(&manifest_bytes)?;
-        let Some(f) = manifest
-            .files
-            .iter()
-            .find(|f| f.derived && f.path == path)
-        else {
+        let Some(f) = manifest.files.iter().find(|f| f.derived && f.path == path) else {
             return Ok(None);
         };
         Ok(Some(self.blobs.read_to_vec(&f.sha256)?))
@@ -1277,10 +1280,11 @@ impl Library {
             archived_at,
         ) in raw
         {
-            let manifest_hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
-                path: self.paths.db.display().to_string(),
-                reason: format!("bad manifest hash for archived document {document_id}"),
-            })?;
+            let manifest_hash =
+                Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+                    path: self.paths.db.display().to_string(),
+                    reason: format!("bad manifest hash for archived document {document_id}"),
+                })?;
             rows.push(ArchivedDocument {
                 document_id,
                 visible_name,
@@ -1662,23 +1666,28 @@ impl Library {
                 |r| r.get(0),
             )
             .optional()?;
-        let metadata_json = row
-            .ok_or_else(|| Error::NotFound(format!("folder {folder_id}")))?;
+        let metadata_json = row.ok_or_else(|| Error::NotFound(format!("folder {folder_id}")))?;
 
         // Mutate the metadata JSON in place so we keep every device
         // field (parent, lastOpened, etc.) intact. If it isn't an
         // object we still produce a minimal one — folders should
         // always have object metadata, but defensive code is cheap.
-        let mut value: serde_json::Value = serde_json::from_str(&metadata_json)
-            .unwrap_or_else(|_| serde_json::json!({}));
+        let mut value: serde_json::Value =
+            serde_json::from_str(&metadata_json).unwrap_or_else(|_| serde_json::json!({}));
         if !value.is_object() {
             value = serde_json::json!({});
         }
         let map = value.as_object_mut().expect("ensured above");
-        map.insert("visibleName".into(), serde_json::Value::String(trimmed.clone()));
+        map.insert(
+            "visibleName".into(),
+            serde_json::Value::String(trimmed.clone()),
+        );
         // xochitl uses these to decide a re-index is needed.
         let now_ms = OffsetDateTime::now_utc().unix_timestamp() * 1000;
-        map.insert("lastModified".into(), serde_json::Value::String(now_ms.to_string()));
+        map.insert(
+            "lastModified".into(),
+            serde_json::Value::String(now_ms.to_string()),
+        );
         map.insert("modified".into(), serde_json::Value::Bool(true));
         map.insert("metadatamodified".into(), serde_json::Value::Bool(true));
         map.insert("synced".into(), serde_json::Value::Bool(false));
@@ -2201,7 +2210,10 @@ mod tests {
         let mut m = seed_manifest(&lib, "doc-1", &[("a.rm", b"AAA")]);
         m.parent = Some("folder-A".into());
         if let Some(map) = m.metadata.as_object_mut() {
-            map.insert("parent".into(), serde_json::Value::String("folder-A".into()));
+            map.insert(
+                "parent".into(),
+                serde_json::Value::String("folder-A".into()),
+            );
         }
         lib.record_version(&m, Source::Pulled).unwrap();
 
@@ -2270,7 +2282,10 @@ mod tests {
             .unwrap();
         let meta: serde_json::Value =
             serde_json::from_slice(&lib.read_blob(&meta_file.sha256).unwrap()).unwrap();
-        assert_eq!(meta.get("parent").and_then(|v| v.as_str()), Some("folder-X"));
+        assert_eq!(
+            meta.get("parent").and_then(|v| v.as_str()),
+            Some("folder-X")
+        );
 
         // Moving back to root sets metadata.parent="" and manifest.parent=None.
         lib.move_document("doc-1", None).unwrap();
@@ -2293,7 +2308,8 @@ mod tests {
             .clone();
         assert!(lib.has_blob(&body_hash));
 
-        lib.archive_document("doc-1", ArchiveReason::Device).unwrap();
+        lib.archive_document("doc-1", ArchiveReason::Device)
+            .unwrap();
         lib.purge_archived_document("doc-1").unwrap();
 
         // Both archive and version log are empty for this doc.

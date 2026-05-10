@@ -115,7 +115,10 @@ pub async fn open_library(path: PathBuf, state: State<'_, AppState>) -> Result<(
 /// and `switch_library_via_dialog`. Drops the previously-held library
 /// (and its OS lock) before opening the new one, so the same process
 /// can move between per-device libraries without restarting.
-async fn open_library_at(path: &std::path::Path, state: &State<'_, AppState>) -> Result<(), String> {
+async fn open_library_at(
+    path: &std::path::Path,
+    state: &State<'_, AppState>,
+) -> Result<(), String> {
     // Drop the existing Library first so its `.lock` is released. If
     // the user is switching to the SAME library, this avoids
     // `AlreadyOpen` when we re-open it below.
@@ -162,10 +165,7 @@ pub async fn auto_open_library(state: State<'_, AppState>) -> Result<Option<Path
 /// it before via the picker). Returns the path opened, or an error if
 /// the library is no longer there or its stamp is invalid.
 #[tauri::command]
-pub async fn switch_library(
-    path: PathBuf,
-    state: State<'_, AppState>,
-) -> Result<PathBuf, String> {
+pub async fn switch_library(path: PathBuf, state: State<'_, AppState>) -> Result<PathBuf, String> {
     let cfg = config::load();
     if !cfg.recent_libraries.iter().any(|r| r.path == path) {
         return Err(format!(
@@ -419,7 +419,10 @@ pub async fn document_thumbnail(
     }
     thumbs.sort_by(|a, b| a.path.cmp(&b.path));
     let bytes = lib.read_blob(&thumbs[0].sha256).map_err(err)?;
-    Ok(Some(format!("data:image/png;base64,{}", STANDARD.encode(&bytes))))
+    Ok(Some(format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(&bytes)
+    )))
 }
 
 /// Materialise a document's content into a cache directory and open it
@@ -472,7 +475,11 @@ pub async fn open_document(
         // Sha256Hex deserialization is now strict (audit H4) so the
         // hash is always 64 chars; .get(..12) defends against any
         // future relaxation.
-        let prefix = body.sha256.as_str().get(..12).unwrap_or(body.sha256.as_str());
+        let prefix = body
+            .sha256
+            .as_str()
+            .get(..12)
+            .unwrap_or(body.sha256.as_str());
         let p = cache_root.join(format!("{safe_name}-{prefix}.{ext}"));
         if !p.exists() {
             std::fs::write(&p, &bytes).map_err(err)?;
@@ -492,9 +499,7 @@ pub async fn open_document(
         // panic vector before that fix).
         let manifest_hex = doc.current_manifest.as_str();
         let prefix = manifest_hex.get(..12).unwrap_or(manifest_hex);
-        let p = cache_root.join(format!(
-            "{safe_name}-{prefix}-{PREVIEW_LAYOUT_VERSION}.pdf"
-        ));
+        let p = cache_root.join(format!("{safe_name}-{prefix}-{PREVIEW_LAYOUT_VERSION}.pdf"));
         if !p.exists() {
             let mut rm_pages: Vec<_> = manifest
                 .files
@@ -546,9 +551,7 @@ pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentSu
 }
 
 #[tauri::command]
-pub async fn list_archived(
-    state: State<'_, AppState>,
-) -> Result<Vec<ArchivedDocument>, String> {
+pub async fn list_archived(state: State<'_, AppState>) -> Result<Vec<ArchivedDocument>, String> {
     let lib = lib_arc(&state).await?;
     lib.list_archived().map_err(err)
 }

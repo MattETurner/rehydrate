@@ -166,23 +166,24 @@ fn render_rm_to_ops(
         }
     };
 
-    let mut ops: Vec<Op> = Vec::new();
-    ops.push(Op::SetLineDashPattern {
-        dash: LineDashPattern::default(),
-    });
     // Default state for pen tools: round caps + round joins. The round
     // cap is a half-disc at each endpoint, so a stroked polyline looks
     // exactly like the bead-of-discs approach was trying to fake — but
     // composited correctly by PDF, with no winding artefacts.
-    ops.push(Op::SetLineCapStyle {
-        cap: LineCapStyle::Round,
-    });
-    ops.push(Op::SetLineJoinStyle {
-        join: LineJoinStyle::Round,
-    });
-    ops.push(Op::LoadGraphicsState {
-        gs: opaque_gs.clone(),
-    });
+    let mut ops: Vec<Op> = vec![
+        Op::SetLineDashPattern {
+            dash: LineDashPattern::default(),
+        },
+        Op::SetLineCapStyle {
+            cap: LineCapStyle::Round,
+        },
+        Op::SetLineJoinStyle {
+            join: LineJoinStyle::Round,
+        },
+        Op::LoadGraphicsState {
+            gs: opaque_gs.clone(),
+        },
+    ];
 
     // Render highlighters first so they sit underneath ink.
     let mut ordered: Vec<&Line> = lines.clone();
@@ -282,7 +283,13 @@ fn render_rm_to_ops(
             _ => 5,
         };
 
-        emit_chunked_strokes(&mut ops, &mapped, &widths_pt, chunk_size, &mut last_width_pt);
+        emit_chunked_strokes(
+            &mut ops,
+            &mapped,
+            &widths_pt,
+            chunk_size,
+            &mut last_width_pt,
+        );
     }
 
     Ok(ops)

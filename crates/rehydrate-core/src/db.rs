@@ -21,7 +21,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0002_allow_repeat_manifests",
         include_str!("../migrations/0002_allow_repeat_manifests.sql"),
     ),
-    ("0003_archive", include_str!("../migrations/0003_archive.sql")),
+    (
+        "0003_archive",
+        include_str!("../migrations/0003_archive.sql"),
+    ),
     (
         "0004_folder_pending_push",
         include_str!("../migrations/0004_folder_pending_push.sql"),
