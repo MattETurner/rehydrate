@@ -10,10 +10,7 @@ import {
 import { ipc, onDeviceReachable } from "./ipc";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LogDrawer } from "./components/LogDrawer";
-import { OcrDialog } from "./components/OcrDialog";
 import { PasswordDialog } from "./components/PasswordDialog";
-import { PublishingSettings } from "./components/PublishingSettings";
-import { TranscriptDrawer } from "./components/TranscriptDrawer";
 import { StatusPill } from "./components/StatusPill";
 import { SyncDrawer } from "./components/SyncDrawer";
 import { Icon } from "./components/Icon";
@@ -74,11 +71,6 @@ export function App() {
   const [showCheatsheet, setShowCheatsheet] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [ocrDoc, setOcrDoc] = useState<DocumentSummary | null>(null);
-  const [transcriptDoc, setTranscriptDoc] = useState<DocumentSummary | null>(
-    null,
-  );
-  const [showPublishSettings, setShowPublishSettings] = useState(false);
   const [renaming, setRenaming] = useState<
     | { kind: "document"; id: string; current: string }
     | { kind: "folder"; id: string; current: string }
@@ -876,9 +868,6 @@ export function App() {
         if (showLogs) return setShowLogs(false);
         if (showSync) return setShowSync(false);
         if (historyDoc) return setHistoryDoc(null);
-        if (ocrDoc) return setOcrDoc(null);
-        if (transcriptDoc) return setTranscriptDoc(null);
-        if (showPublishSettings) return setShowPublishSettings(false);
         if (showSearch) {
           if (search) setSearch("");
           else setShowSearch(false);
@@ -1065,12 +1054,6 @@ export function App() {
               icon: <Icon name="delete" />,
               onClick: garbageCollect,
               disabled: !libraryOpen,
-            },
-            {
-              label: "Publishing settings…",
-              icon: <Icon name="info" />,
-              onClick: () => setShowPublishSettings(true),
-              separatorBefore: true,
             },
             {
               label: "Activity log",
@@ -1363,8 +1346,6 @@ export function App() {
                   onOpenInViewer={openInViewer}
                   onArchive={archiveOne}
                   onRename={startRenameDocument}
-                  onTranscribe={setOcrDoc}
-                  onShowTranscript={setTranscriptDoc}
                   leavingIds={leavingIds}
                   emptyHint={emptyHintFor(view)}
                 />
@@ -1426,31 +1407,6 @@ export function App() {
           initialName={renaming.current}
           onCancel={() => setRenaming(null)}
           onSubmit={performRename}
-        />
-      )}
-      {ocrDoc && (
-        <OcrDialog
-          document={ocrDoc}
-          onCancel={() => setOcrDoc(null)}
-          onDone={() => {
-            // After a fresh transcript lands, refresh the library so
-            // the new version_id surfaces and the transcript drawer
-            // can read it on next open.
-            refreshLibrary();
-          }}
-        />
-      )}
-      {transcriptDoc && (
-        <TranscriptDrawer
-          document={transcriptDoc}
-          onClose={() => setTranscriptDoc(null)}
-          notify={(tone, body) => toast.show({ tone, body })}
-        />
-      )}
-      {showPublishSettings && (
-        <PublishingSettings
-          onClose={() => setShowPublishSettings(false)}
-          notify={(tone, body) => toast.show({ tone, body })}
         />
       )}
       {showCheatsheet && <Cheatsheet onClose={() => setShowCheatsheet(false)} />}
@@ -2001,8 +1957,6 @@ function DocumentList({
   onOpenInViewer,
   onArchive,
   onRename,
-  onTranscribe,
-  onShowTranscript,
   leavingIds,
   emptyHint,
 }: {
@@ -2018,8 +1972,6 @@ function DocumentList({
   onOpenInViewer: (d: DocumentSummary) => void;
   onArchive: (d: DocumentSummary) => void;
   onRename: (d: DocumentSummary) => void;
-  onTranscribe: (d: DocumentSummary) => void;
-  onShowTranscript: (d: DocumentSummary) => void;
   leavingIds: Set<string>;
   emptyHint: { title: string; body: string };
 }) {
@@ -2125,20 +2077,10 @@ function DocumentList({
                       onClick: () => onRename(d),
                     },
                     {
-                      label: "Convert to text…",
-                      icon: <Icon name="info" />,
-                      onClick: () => onTranscribe(d),
-                      separatorBefore: true,
-                    },
-                    {
-                      label: "Show transcript…",
-                      icon: <Icon name="info" />,
-                      onClick: () => onShowTranscript(d),
-                    },
-                    {
                       label: "Show history",
                       icon: <Icon name="history" />,
                       onClick: () => onOpen(d),
+                      separatorBefore: true,
                     },
                     {
                       label: "Move to Archive",

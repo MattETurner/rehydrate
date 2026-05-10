@@ -5,8 +5,6 @@ members = [
     "crates/rehydrate-core",
     "crates/rehydrate-device",
     "crates/rehydrate-sync",
-    "crates/rehydrate-publish",
-    "crates/rehydrate-ocr",
     "crates/rehydrate-app",
     "tests-integration",
 ]

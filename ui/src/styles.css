@@ -171,13 +171,6 @@
   from { background-position: -400px 0; }
   to   { background-position: 400px 0; }
 }
-/* Indeterminate slide for the OCR download bar — moves a 30%-wide
- * gradient across the strip continuously. Distinct from `shimmer`
- * (which is a row-skeleton effect) so the two can coexist. */
-@keyframes barSlide {
-  from { left: -30%; }
-  to   { left: 100%; }
-}
 @keyframes rowEnter {
   from { background: var(--accent-bg); }
   to   { background: transparent; }
@@ -290,99 +283,6 @@ textarea {
   vertical-align: middle;
 }
 
-/* =====================================================================
- * Transcript drawer + OCR dialog + publish settings.
- * ===================================================================== */
-.transcript-body {
-  white-space: pre-wrap;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: var(--text-sm);
-  line-height: 1.5;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-3);
-  max-height: 60vh;
-  overflow: auto;
-  margin: var(--space-3) 0;
-}
-.drawer-actions {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  margin-top: var(--space-3);
-}
-.modal.modal-wide {
-  max-width: 560px;
-  width: 92vw;
-}
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-}
-.publish-section {
-  margin-top: var(--space-4);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border);
-}
-.publish-section h3 {
-  margin: 0 0 var(--space-2);
-  font-size: var(--text-md);
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.publish-section label {
-  display: block;
-  margin-bottom: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--muted);
-}
-.publish-section label input {
-  display: block;
-  width: 100%;
-  margin-top: 4px;
-  font-size: var(--text-sm);
-}
-
-/* OCR-dialog download bar. WebKit's bare <progress> rendering is
- * effectively invisible (1-pixel sliver, no animation in
- * indeterminate mode), so the dialog draws its own. Determinate
- * mode fills `width` directly; indeterminate mode rides the
- * `barSlide` keyframe so the user sees clear motion during the
- * multi-minute model download. */
-.ocr-download-bar {
-  position: relative;
-  height: 6px;
-  width: 100%;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  overflow: hidden;
-  margin: var(--space-3) 0 var(--space-2);
-}
-.ocr-download-bar > span {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  background: var(--accent);
-  border-radius: var(--radius-pill);
-  transition: width var(--motion-base) var(--ease);
-}
-.ocr-download-bar > span.indeterminate {
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--accent),
-    transparent
-  );
-  animation: barSlide 1.4s linear infinite;
-}
 .muted.small {
   font-size: var(--text-xs);
 }

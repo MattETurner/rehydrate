@@ -63,11 +63,12 @@ fn no_http_capability_plugins_loaded() {
 
 #[test]
 fn rehydrate_business_crates_have_no_http_clients() {
-    // Business-logic crates that must NEVER speak HTTP. The
-    // user-explicit publish + ocr crates are intentionally NOT in
-    // this list — they're the only crates allowed to make
-    // outbound HTTP, and only to user-configured CMS hosts /
-    // HuggingFace's allow-list.
+    // Every Rust crate in the workspace must stay free of
+    // general-purpose HTTP clients. The OCR + publish crates that
+    // previously had a sanctioned ureq exception have been removed
+    // — there is no JS-callable command in the app that issues
+    // outbound HTTP at all now. SSH to the tablet over USB is the
+    // only network transport we ship.
     use std::process::Command;
     let crates = ["rehydrate-core", "rehydrate-device", "rehydrate-sync"];
     let workspace_root = workspace_root_path();
@@ -100,109 +101,6 @@ fn rehydrate_business_crates_have_no_http_clients() {
             );
         }
     }
-}
-
-#[test]
-fn publish_crate_uses_ureq_only() {
-    // Positive control: rehydrate-publish DOES depend on ureq, the
-    // single sanctioned HTTP client for the user-CMS-only publish
-    // layer. A refactor that drops it would silently break the
-    // feature; a refactor that adds reqwest/isahc/surf/awc next to
-    // ureq would widen the egress surface beyond what
-    // `RestrictedAgent` enforces.
-    use std::process::Command;
-    let workspace_root = workspace_root_path();
-
-    let output = Command::new(env!("CARGO"))
-        .args([
-            "tree", "--target", "all", "-p", "rehydrate-publish", "-e", "normal", "--prefix",
-            "none",
-        ])
-        .current_dir(&workspace_root)
-        .output()
-        .expect("cargo tree failed to execute");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("ureq v"),
-        "rehydrate-publish must depend on `ureq` (sanctioned HTTP client)."
-    );
-    for banned_crate in ["reqwest", "isahc", "surf", "awc"] {
-        assert!(
-            !stdout.contains(&format!("{banned_crate} v")),
-            "rehydrate-publish must not depend on `{banned_crate}`; \
-             ureq + RestrictedAgent is the sanctioned HTTP path."
-        );
-    }
-}
-
-#[test]
-fn ocr_crate_keeps_ureq_for_legacy_path() {
-    // rehydrate-ocr keeps `ureq` for the legacy `model_store`
-    // download path. The mistral.rs feature additionally pulls
-    // `hf-hub`, which uses `reqwest` — that's allowed here but
-    // banned in the business-logic crates above. Privacy invariant
-    // for OCR: HuggingFace is the only outbound destination, gated
-    // by hf-hub's repo scope and triggered exclusively by the user
-    // clicking "Download model".
-    use std::process::Command;
-    let workspace_root = workspace_root_path();
-
-    let output = Command::new(env!("CARGO"))
-        .args([
-            "tree", "--target", "all", "-p", "rehydrate-ocr", "-e", "normal", "--prefix", "none",
-        ])
-        .current_dir(&workspace_root)
-        .output()
-        .expect("cargo tree failed to execute");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("ureq v"),
-        "rehydrate-ocr must keep `ureq` for the legacy model_store download path."
-    );
-    // `reqwest` is allowed here (hf-hub via mistral.rs) but isahc /
-    // surf / awc still aren't — they'd indicate a third HTTP stack
-    // sneaking in.
-    for banned_crate in ["isahc", "surf", "awc"] {
-        assert!(
-            !stdout.contains(&format!("{banned_crate} v")),
-            "rehydrate-ocr must not depend on `{banned_crate}`."
-        );
-    }
-}
-
-#[test]
-fn publish_http_uses_restricted_agent_wrapper() {
-    // Defence-in-depth: the publish crate's `RestrictedAgent` is
-    // the only sanctioned way to obtain a `ureq::Agent`. Anything
-    // else would let a future caller open connections to arbitrary
-    // hosts. Grep the source files to confirm `Agent::new` /
-    // `AgentBuilder::new` only appear inside http.rs.
-    let publish_root = workspace_root_path()
-        .join("crates")
-        .join("rehydrate-publish")
-        .join("src");
-    let mut offenders = Vec::new();
-    for entry in fs::read_dir(&publish_root).expect("read publish src") {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
-            continue;
-        }
-        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-        if name == "http.rs" {
-            continue; // wrapper itself is allowed to construct an Agent
-        }
-        let body = fs::read_to_string(&path).unwrap();
-        if body.contains("ureq::AgentBuilder")
-            || body.contains("ureq::Agent::")
-            || body.contains("AgentBuilder::new")
-        {
-            offenders.push(name);
-        }
-    }
-    assert!(
-        offenders.is_empty(),
-        "ureq::Agent must only be constructed inside http.rs. Offenders: {offenders:?}"
-    );
 }
 
 #[test]

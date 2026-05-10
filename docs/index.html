@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>reHydrate — Offline reMarkable companion</title>
   <link rel="icon" type="image/png" href="logo.png">
-  <meta name="description" content="An offline-first companion for the reMarkable. Pulls notebooks over USB, renders ink as sharp PDFs, runs handwriting OCR locally, and ships drafts to your CMS — without touching a cloud you didn't choose.">
+  <meta name="description" content="An offline-first companion for the reMarkable. Pulls notebooks over USB and renders ink as sharp PDFs — without touching a cloud you didn't choose.">
   <meta property="og:title" content="reHydrate">
-  <meta property="og:description" content="An offline-first companion for the reMarkable. Sync, browse, OCR, and publish — without the cloud.">
+  <meta property="og:description" content="An offline-first companion for the reMarkable. Sync and browse without the cloud.">
   <meta property="og:image" content="logo.png">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -18,8 +18,7 @@
   <h1>reHydrate</h1>
   <p class="hero__tagline">An offline companion for the reMarkable.</p>
   <p class="hero__lede">
-    Pulls your notebooks over USB, makes proper PDFs from your handwriting,
-    turns them into editable text, and posts them to your blog as drafts —
+    Pulls your notebooks over USB and makes proper PDFs from your handwriting —
     all without sending your notes to anybody else's server.
   </p>
   <div class="hero__cta">
@@ -87,37 +86,9 @@
 </section>
 
 <section>
-  <h2>Handwriting to text</h2>
-  <p>
-    Click <em>Convert to text</em> on any notebook and reHydrate reads
-    your handwriting and turns it into editable text. It works on
-    English, German, French, Spanish, Japanese, Chinese, Arabic, and
-    most other scripts.
-  </p>
-  <p>
-    The first time you do this, the app downloads the recognition
-    engine to your computer (a one-time setup that takes a few
-    minutes). After that everything happens locally — no internet
-    needed, no notes uploaded to anyone.
-  </p>
-</section>
-
-<section>
-  <h2>Publish to your blog</h2>
-  <p>
-    Once your handwriting is text, save it as a <strong>plain text</strong>
-    file, a <strong>Markdown</strong> file, or send it straight to your
-    <strong>Ghost</strong> or <strong>WordPress</strong> site as a draft.
-    Polish and publish from your CMS the way you usually do — only this
-    time the rough first pass came from your handwriting.
-  </p>
-</section>
-
-<section>
   <h2>Privacy</h2>
   <p>
-    reHydrate is built so your notes never leave your computer unless
-    <em>you</em> click "publish" to a destination <em>you</em> chose.
+    reHydrate is built so your notes never leave your computer.
     Concretely:
   </p>
   <ul class="invariants">
@@ -125,14 +96,11 @@
       The app makes no network calls on launch.</li>
     <li>Sync between your tablet and your computer happens entirely
       over the USB cable. The reMarkable's cloud is not in the loop.</li>
-    <li>Handwriting recognition runs on your machine. The text never
-      gets sent anywhere for processing.</li>
-    <li>Passwords for your tablet and your blog are stored in your
-      computer's secure password store (Keychain on macOS, the
-      equivalent on Linux and Windows). Never in plain text on disk.</li>
-    <li>The only servers the app ever contacts are: your tablet (over
-      USB), the recognition-model download (once, the first time you
-      use OCR), and your own blog (only when you click publish).</li>
+    <li>Your tablet password is stored in your computer's secure
+      password store (Keychain on macOS, the equivalent on Linux
+      and Windows). Never in plain text on disk.</li>
+    <li>The only server the app ever contacts is your tablet, over
+      USB.</li>
     <li>An automated check runs on every release to make sure nobody
       accidentally adds a network call somewhere they shouldn't.</li>
   </ul>

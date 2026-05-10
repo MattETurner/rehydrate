@@ -14,15 +14,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "rehydrate-app"
 path = "src/main.rs"
 
-[features]
-# `ocr-runtime` pulls in the embedded vision-LLM (mistral.rs +
-# candle + Metal kernels). On by default for the shipped binary;
-# devs iterating on the rest of the app can drop it via
-# `cargo run -p rehydrate-app --no-default-features` to skip the
-# 5–10 minute candle compile.
-default = ["ocr-runtime"]
-ocr-runtime = ["rehydrate-ocr/mistral"]
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -30,9 +21,6 @@ tauri-build = { version = "2", features = [] }
 rehydrate-core = { path = "../rehydrate-core" }
 rehydrate-device = { path = "../rehydrate-device", features = ["ssh"] }
 rehydrate-sync = { path = "../rehydrate-sync" }
-rehydrate-publish = { path = "../rehydrate-publish" }
-rehydrate-ocr = { path = "../rehydrate-ocr" }
-pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 anyhow = { workspace = true }
 directories = { workspace = true }

@@ -5,31 +5,21 @@ import type {
   DeviceInfo,
   DeviceState,
   DocumentSummary,
-  ExportFormat,
   ExportResult,
   FolderEntry,
   GarbageCollectReport,
-  GhostCredentials,
   LibrarySummary,
   LogTail,
-  OcrProgressEvent,
-  OcrStatusReport,
   PickedLibraryDirectory,
   ProgressEvent,
-  PublishCredentialStatus,
-  PublishKind,
-  PublishResult,
   PullPlan,
   PushPlan,
   PushReport,
   RecentLibraryEntry,
   SyncReport,
-  TranscriptDocument,
-  TranscriptSummary,
   TwoWayReport,
   VerifyReport,
   VersionEntry,
-  WordpressCredentials,
 } from "./types";
 
 export const ipc = {
@@ -90,35 +80,6 @@ export const ipc = {
   syncTwoWay: () => invoke<TwoWayReport>("sync_two_way"),
   restoreVersion: (versionId: number) =>
     invoke<number>("restore_version", { versionId }),
-
-  ocrStatus: () => invoke<OcrStatusReport>("ocr_status"),
-  ocrDownloadDefaultModel: () =>
-    invoke<void>("ocr_download_default_model"),
-  transcribeDocument: (documentId: string, language?: string) =>
-    invoke<TranscriptSummary>("transcribe_document", {
-      documentId,
-      language: language ?? null,
-    }),
-  getTranscript: (versionId: number) =>
-    invoke<TranscriptDocument | null>("get_transcript", { versionId }),
-  exportTranscript: (versionId: number, format: ExportFormat) =>
-    invoke<{ path: string } | null>("export_transcript", {
-      versionId,
-      format,
-    }),
-  publishTranscript: (versionId: number, target: PublishKind) =>
-    invoke<PublishResult>("publish_transcript", { versionId, target }),
-  setGhostCredentials: (creds: GhostCredentials) =>
-    invoke<void>("set_ghost_credentials", { creds }),
-  forgetGhostCredentials: () => invoke<void>("forget_ghost_credentials"),
-  setWordpressCredentials: (creds: WordpressCredentials) =>
-    invoke<void>("set_wordpress_credentials", { creds }),
-  forgetWordpressCredentials: () =>
-    invoke<void>("forget_wordpress_credentials"),
-  publishCredentialStatus: () =>
-    invoke<PublishCredentialStatus>("publish_credential_status"),
-  pingPublishTarget: (target: PublishKind) =>
-    invoke<void>("ping_publish_target", { target }),
 };
 
 export function onDeviceReachable(
@@ -137,10 +98,4 @@ export function onSyncPhase(
   cb: (phase: "pull" | "push") => void,
 ): Promise<UnlistenFn> {
   return listen<"pull" | "push">("sync:phase", (e) => cb(e.payload));
-}
-
-export function onOcrProgress(
-  cb: (event: OcrProgressEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<OcrProgressEvent>("ocr:progress", (e) => cb(e.payload));
 }

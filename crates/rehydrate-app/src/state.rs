@@ -4,7 +4,6 @@ use std::sync::Arc;
 use rehydrate_core::Library;
 use rehydrate_device::ssh::SshDevice;
 use rehydrate_device::DeviceInfo;
-use rehydrate_ocr::{ModelStore, OcrBackend};
 use tokio::sync::{Mutex, RwLock};
 
 /// Shared application state. Held in `tauri::State<AppState>` and accessed
@@ -22,28 +21,16 @@ pub struct AppState {
     pub device: Mutex<Option<Arc<SshDevice>>>,
     pub device_info: RwLock<Option<DeviceInfo>>,
     pub device_reachable: RwLock<bool>,
-    /// Active OCR backend. Defaults to a Mock that surfaces "model
-    /// not loaded" — the real `MistralRsBackend` is wired in after
-    /// the user downloads the GGUF on first OCR.
-    pub ocr_backend: RwLock<Arc<dyn OcrBackend>>,
-    /// Disk-backed store of downloaded models. Located under the
-    /// platform's data dir so it survives across library switches.
-    pub model_store: ModelStore,
 }
 
 impl AppState {
     pub fn new() -> Self {
-        let model_root = ocr_models_dir();
         Self {
             library: Mutex::new(None),
             library_path: Mutex::new(None),
             device: Mutex::new(None),
             device_info: RwLock::new(None),
             device_reachable: RwLock::new(false),
-            ocr_backend: RwLock::new(Arc::new(rehydrate_ocr::Mock {
-                canned: Vec::new(),
-            })),
-            model_store: ModelStore::new(model_root),
         }
     }
 }
@@ -67,24 +54,3 @@ pub fn default_library_dir() -> Option<PathBuf> {
 
 pub const KEYRING_SERVICE: &str = "reHydrate";
 pub const KEYRING_DEVICE_USER: &str = "remarkable-usb-password";
-
-/// Keychain entry for Ghost publish credentials. Stores a JSON blob
-/// (`{"base_url":..., "admin_api_key":...}`) so the URL travels with
-/// the secret; one entry instead of two reduces UI / forget logic.
-pub const KEYRING_GHOST_CREDS: &str = "publish-ghost";
-/// Keychain entry for WordPress publish credentials. Stores a JSON
-/// blob (`{"base_url":..., "username":..., "application_password":...}`).
-pub const KEYRING_WORDPRESS_CREDS: &str = "publish-wordpress";
-
-/// Where downloaded VLM weights live. Cross-platform via
-/// `directories::ProjectDirs`, falling back to `~/.rehydrate/models`
-/// if the platform doesn't expose a data dir (rare).
-pub fn ocr_models_dir() -> PathBuf {
-    if let Some(dirs) = directories::ProjectDirs::from("app", "rehydrate", "reHydrate") {
-        return dirs.data_dir().join("models");
-    }
-    if let Some(base) = directories::BaseDirs::new() {
-        return base.home_dir().join(".rehydrate").join("models");
-    }
-    PathBuf::from("./rehydrate-models")
-}
