@@ -19,8 +19,8 @@
 //! You can read any remarkble file
 //!
 //! ```no_run
-//! use std::{fs::read};
-//! use remarkable_lines::{RemarkableFile};
+//! use std::fs::read;
+//! use rm_parser::RemarkableFile;
 //!
 //! pub fn main() {
 //!     let test_file = read("./test.rm").unwrap();
