@@ -52,7 +52,7 @@ export function App() {
   const [showSync, setShowSync] = useState(false);
   const [historyDoc, setHistoryDoc] = useState<DocumentSummary | null>(null);
   const [showLogs, setShowLogs] = useState(false);
-  const [view, setView] = useState<View>("all");
+  const [view, setView] = useState<View>(() => loadPersistedView());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [anchorId, setAnchorId] = useState<string | null>(null);
@@ -65,7 +65,9 @@ export function App() {
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [leavingIds, setLeavingIds] = useState<Set<string>>(new Set());
-  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [viewMode, setViewMode] = useState<"list" | "grid">(() =>
+    loadPersistedViewMode(),
+  );
   const [selectMode, setSelectMode] = useState(false);
   const [quickLookId, setQuickLookId] = useState<string | null>(null);
   const [showCheatsheet, setShowCheatsheet] = useState(false);
@@ -283,9 +285,14 @@ export function App() {
           setFocusId(id);
           return;
         }
-        // Plain click in default mode: open the doc and paint no
-        // selection or focus highlight. Subsequent keyboard nav (if
-        // any) will start its cursor fresh.
+        // Plain click in default mode: open the doc, but also claim
+        // keyboard focus on this row. The focus ring stays subtle
+        // (no row-selection background) but it makes the typical
+        // "click a row, then press F2 to rename" flow work — without
+        // this, F2 was a no-op until the user pressed an arrow key
+        // first to seed the cursor.
+        setFocusId(id);
+        setAnchorId(id);
         openInViewer(d);
         return;
       }
@@ -344,6 +351,27 @@ export function App() {
     setFocusId(null);
   }, []);
 
+  // While Quick Look is open, follow the keyboard cursor — pressing
+  // ↑/↓ updates the previewed document, mirroring macOS Finder /
+  // Apple Mail. Only re-aim while QL is already showing; pressing
+  // Space from the list still picks up the current selection at
+  // open time (handled in the keyboard cascade).
+  useEffect(() => {
+    if (!quickLookId || !selectedId) return;
+    if (selectedId !== quickLookId) setQuickLookId(selectedId);
+  }, [quickLookId, selectedId]);
+
+  // Persist the last view + viewMode across launches. Power users
+  // who live in "Pending Sync" or grid view shouldn't have to set
+  // them every cold start. Folder views aren't persisted because
+  // folder ids may not exist after a library switch.
+  useEffect(() => {
+    persistView(view);
+  }, [view]);
+  useEffect(() => {
+    persistViewMode(viewMode);
+  }, [viewMode]);
+
   async function tryConnect() {
     setError(null);
     try {
@@ -393,6 +421,10 @@ export function App() {
   // ---- Import / GC / verify ---------------------------------------------
   async function importFile() {
     setError(null);
+    if (!libraryOpen) {
+      toast.show({ tone: "warn", body: "Open a library first." });
+      return;
+    }
     try {
       // The native picker now runs server-side (audit fix H6) so the
       // renderer can't substitute an arbitrary path. `null` means the
@@ -415,6 +447,29 @@ export function App() {
   }
 
   async function garbageCollect() {
+    if (!libraryOpen) {
+      toast.show({ tone: "warn", body: "Open a library first." });
+      return;
+    }
+    // Spell out exactly what "clean up unused files" means before
+    // running it — novices reasonably expect a maintenance action to
+    // ask first. The op is safe (only deletes blobs no manifest
+    // references) but a confirm avoids surprise.
+    const ok = await confirm({
+      title: "Clean up unused files?",
+      body: (
+        <>
+          <p>
+            Scans your library for stored files that no version of any
+            document references — usually leftovers from purging an
+            archived document or restoring an older version. Safe to run
+            any time.
+          </p>
+        </>
+      ),
+      confirmLabel: "Clean up",
+    });
+    if (!ok) return;
     setError(null);
     try {
       const r = await ipc.garbageCollect();
@@ -432,6 +487,10 @@ export function App() {
   }
 
   async function verify() {
+    if (!libraryOpen) {
+      toast.show({ tone: "warn", body: "Open a library first." });
+      return;
+    }
     setError(null);
     try {
       const r = await ipc.verifyLibrary();
@@ -865,6 +924,7 @@ export function App() {
         if (showPalette) return setShowPalette(false);
         if (showCheatsheet) return setShowCheatsheet(false);
         if (quickLookId) return setQuickLookId(null);
+        if (showPassword) return setShowPassword(false);
         if (showLogs) return setShowLogs(false);
         if (showSync) return setShowSync(false);
         if (historyDoc) return setHistoryDoc(null);
@@ -918,12 +978,15 @@ export function App() {
       }
       if (meta && (e.key === "s" || e.key === "S")) {
         e.preventDefault();
-        if (libraryOpen && device?.connected) openSync();
+        // Route through the same handler the toolbar button uses so
+        // the user gets the "Connect the tablet first" / "Open a
+        // library first" toasts instead of a silent no-op.
+        openSync();
         return;
       }
       if (meta && (e.key === "i" || e.key === "I")) {
         e.preventDefault();
-        if (libraryOpen) importFile();
+        importFile();
         return;
       }
       if (meta && (e.key === "Backspace" || e.key === "Delete")) {
@@ -932,7 +995,10 @@ export function App() {
         return;
       }
       if (e.key === " ") {
-        // Space → Quick Look the focused row.
+        // Space → Quick Look the focused row. If QL is already open,
+        // its own keydown handler closes it; suppress the App-level
+        // re-open path so Space works as a toggle.
+        if (quickLookId) return;
         if (selectedId) {
           e.preventDefault();
           setQuickLookId(selectedId);
@@ -963,6 +1029,9 @@ export function App() {
         return;
       }
       if (e.key === "Enter") {
+        // QuickLook handles Enter locally (open + dismiss). Don't
+        // double-fire the open call from here.
+        if (quickLookId) return;
         if (selectedId && documents) {
           const d = documents.find((x) => x.document_id === selectedId);
           if (d) {
@@ -987,6 +1056,7 @@ export function App() {
     showCheatsheet,
     showPalette,
     quickLookId,
+    showPassword,
     renaming,
     selectMode,
     focusId,
@@ -1196,7 +1266,6 @@ export function App() {
               defaultPath={defaultPath}
               initialDevice={device}
               onOpenLibrary={openLibrary}
-              onConnect={tryConnect}
               onSkip={() => setShowOnboarding(false)}
             />
           ) : !libraryOpen ? (
@@ -1330,6 +1399,8 @@ export function App() {
                   selectMode={selectMode}
                   focusId={focusId}
                   onClickRow={(d, e) => handleRowClick(d, filteredDocs, e)}
+                  onOpenInViewer={openInViewer}
+                  onRename={startRenameDocument}
                   onArchive={archiveOne}
                   onShowHistory={setHistoryDoc}
                   leavingIds={leavingIds}
@@ -1387,6 +1458,9 @@ export function App() {
           <SyncDrawer
             onClose={() => setShowSync(false)}
             onComplete={onSyncComplete}
+            onRunningChange={(running) =>
+              setSyncPhase(running ? "syncing" : "idle")
+            }
           />
         </div>
       )}
@@ -1602,6 +1676,57 @@ function summaryHealth(s: LibrarySummary): string {
   // Without an integrated verify result, treat as healthy by default;
   // proper health colouring lives in a future phase.
   return "";
+}
+
+// localStorage round-trip for the last view + viewMode the user was
+// on. Folder views (`{kind: "folder", id}`) are skipped on read because
+// the folder may not exist after a library switch; we'd rather drop
+// the user on "All Documents" than show a phantom empty folder.
+const LS_VIEW_KEY = "rh.view";
+const LS_VIEW_MODE_KEY = "rh.viewMode";
+const TOP_LEVEL_VIEWS: ReadonlySet<string> = new Set([
+  "all",
+  "recent",
+  "unsynced",
+  "notebooks",
+  "pdfs",
+  "epubs",
+  "archive",
+]);
+
+function loadPersistedView(): View {
+  try {
+    const raw = window.localStorage.getItem(LS_VIEW_KEY);
+    if (raw && TOP_LEVEL_VIEWS.has(raw)) return raw as View;
+  } catch {
+    // localStorage may throw in private mode or corrupted profiles —
+    // fall back to default rather than crash on launch.
+  }
+  return "all";
+}
+function persistView(v: View): void {
+  try {
+    if (typeof v === "string") window.localStorage.setItem(LS_VIEW_KEY, v);
+    // Folder views are intentionally not persisted (see comment above).
+  } catch {
+    /* ignore */
+  }
+}
+function loadPersistedViewMode(): "list" | "grid" {
+  try {
+    const raw = window.localStorage.getItem(LS_VIEW_MODE_KEY);
+    if (raw === "list" || raw === "grid") return raw;
+  } catch {
+    /* ignore */
+  }
+  return "list";
+}
+function persistViewMode(m: "list" | "grid"): void {
+  try {
+    window.localStorage.setItem(LS_VIEW_MODE_KEY, m);
+  } catch {
+    /* ignore */
+  }
 }
 
 // =====================================================================
@@ -2113,6 +2238,8 @@ function DocumentGrid({
   selectMode,
   focusId,
   onClickRow,
+  onOpenInViewer,
+  onRename,
   onArchive,
   onShowHistory,
   leavingIds,
@@ -2126,6 +2253,8 @@ function DocumentGrid({
     d: DocumentSummary,
     e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
   ) => void;
+  onOpenInViewer: (d: DocumentSummary) => void;
+  onRename: (d: DocumentSummary) => void;
   onArchive: (d: DocumentSummary) => void;
   onShowHistory: (d: DocumentSummary) => void;
   leavingIds: Set<string>;
@@ -2207,11 +2336,47 @@ function DocumentGrid({
                 Unsynced
               </span>
             )}
-            {/* Hidden helpers so onShowHistory + onArchive get used by
-                lint and stay symmetrical with list view. */}
-            <span style={{ display: "none" }}>
-              <button onClick={() => onShowHistory(d)} />
-              <button onClick={() => onArchive(d)} />
+            <span
+              className="tile-kebab"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Menu
+                align="right"
+                trigger={
+                  <button
+                    className="icon ghost"
+                    aria-label="More actions"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Icon name="more" />
+                  </button>
+                }
+                items={[
+                  {
+                    label: "Open in viewer",
+                    icon: <Icon name="library" />,
+                    onClick: () => onOpenInViewer(d),
+                  },
+                  {
+                    label: "Rename…",
+                    icon: <Icon name="folder" />,
+                    onClick: () => onRename(d),
+                  },
+                  {
+                    label: "Show history",
+                    icon: <Icon name="history" />,
+                    onClick: () => onShowHistory(d),
+                    separatorBefore: true,
+                  },
+                  {
+                    label: "Move to Archive",
+                    icon: <Icon name="trash" />,
+                    onClick: () => onArchive(d),
+                    danger: true,
+                    separatorBefore: true,
+                  },
+                ]}
+              />
             </span>
           </div>
         );

@@ -73,12 +73,6 @@ export function RenameDialog({
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
             placeholder={kind === "folder" ? "Folder name" : "Document name"}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.preventDefault();
-                onCancel();
-              }
-            }}
           />
           {error && <div className="error inline">{error}</div>}
           <div className="actions">

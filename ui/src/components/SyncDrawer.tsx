@@ -14,6 +14,11 @@ import type {
 interface Props {
   onClose: () => void;
   onComplete: () => void;
+  /** Optional: notified whenever the in-drawer `running` flag flips.
+   *  The App uses this to (a) light up the toolbar StatusPill with
+   *  "Syncing…" and (b) gate backdrop-click dismissal so the user
+   *  can't accidentally hide the drawer mid-sync. */
+  onRunningChange?: (running: boolean) => void;
 }
 
 interface DocProgress {
@@ -36,7 +41,7 @@ const PUSH_LABEL: Record<PushItemStatus, string> = {
   skipped: "Skipped",
 };
 
-export function SyncDrawer({ onClose, onComplete }: Props) {
+export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
   const [pullPlan, setPullPlan] = useState<PullPlan | null>(null);
   const [pushPlan, setPushPlan] = useState<PushPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -45,6 +50,13 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
   const [report, setReport] = useState<TwoWayReport | null>(null);
   const [progress, setProgress] = useState<Record<string, DocProgress>>({});
   const startedAtRef = useRef<number | null>(null);
+
+  // Mirror the local `running` flag up to the parent so the toolbar
+  // StatusPill can light up "Syncing…" and the App can gate
+  // backdrop-click dismissal.
+  useEffect(() => {
+    onRunningChange?.(running);
+  }, [running, onRunningChange]);
 
   // Build the plan preview up front so the user can see what's about
   // to happen before they hit Start.
@@ -197,7 +209,16 @@ export function SyncDrawer({ onClose, onComplete }: Props) {
     <div className="drawer" onClick={(e) => e.stopPropagation()}>
       <header>
         <h2>Sync with reMarkable</h2>
-        <button onClick={onClose} disabled={running} className="close" aria-label="Close">
+        <button
+          onClick={onClose}
+          className="close"
+          aria-label="Close"
+          title={
+            running
+              ? "Hide — sync keeps running; the toolbar shows progress"
+              : "Close"
+          }
+        >
           ×
         </button>
       </header>

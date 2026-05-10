@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -45,11 +46,38 @@ export function ConfirmHost({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const close = (ok: boolean) => {
+  const close = useCallback(
+    (ok: boolean) => {
+      if (!pending) return;
+      pending.resolve(ok);
+      setPending(null);
+    },
+    [pending],
+  );
+
+  // Capture-phase window listener so Esc/Enter handle the topmost
+  // Confirm BEFORE the App's bubble-phase global cascade fires. Without
+  // this, pressing Esc with a Confirm-on-top-of-Drawer would close the
+  // drawer underneath as well as the Confirm. `stopImmediatePropagation`
+  // also prevents anything else listening on `window` (e.g. dialog
+  // local handlers) from firing — which is what we want; the Confirm
+  // is unambiguously the top of the modal stack.
+  useEffect(() => {
     if (!pending) return;
-    pending.resolve(ok);
-    setPending(null);
-  };
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        close(false);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        close(true);
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [pending, close]);
 
   const ctx = useMemo<ConfirmContextValue>(() => ({ confirm }), [confirm]);
 
@@ -58,14 +86,7 @@ export function ConfirmHost({ children }: { children: ReactNode }) {
       {children}
       {pending && (
         <div className="modal-backdrop" onClick={() => close(false)}>
-          <div
-            className="modal"
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") close(false);
-              if (e.key === "Enter") close(true);
-            }}
-          >
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2>{pending.title}</h2>
             {pending.body && (
               <p style={{ marginTop: 8, color: "var(--muted)" }}>

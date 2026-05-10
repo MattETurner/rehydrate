@@ -7,18 +7,19 @@ interface Props {
   defaultPath: string | null;
   initialDevice: DeviceState | null;
   onOpenLibrary: () => void;
-  onConnect: () => void;
   onSkip: () => void;
 }
 
-/* Three-step first-run flow. The user can skip out of it at any
- * time; once a library is open the host falls through to the regular
- * empty state. */
+/* Two-step first-run flow: plug in the tablet, then open a library.
+ * The third "pair tablet" step that used to live here was unreachable
+ * — the moment the user opened a library, the host unmounted this
+ * component. Pairing is surfaced separately by the StatusPill in the
+ * toolbar (the connect/password flow is one click from there), so we
+ * don't need to bake it into onboarding. */
 export function Onboarding({
   defaultPath,
   initialDevice,
   onOpenLibrary,
-  onConnect,
   onSkip,
 }: Props) {
   const [step, setStep] = useState(0);
@@ -73,53 +74,29 @@ export function Onboarding({
     );
   }
 
-  if (step === 1) {
-    return (
-      <div className="onboarding">
-        <div className="step-art">
-          <Icon name="library" size={56} />
-        </div>
-        <h1>Open a library</h1>
-        <p>
-          Your library is a single folder on this machine that holds every
-          version of every document. No cloud, no telemetry.
-        </p>
-        {defaultPath && (
-          <p className="muted small">
-            Default location: <code>{defaultPath}</code>
-          </p>
-        )}
-        <div className="actions">
-          <button onClick={() => setStep(0)}>Back</button>
-          <button
-            className="primary"
-            onClick={onOpenLibrary}
-            disabled={!defaultPath}
-          >
-            <Icon name="library" /> Open default library
-          </button>
-        </div>
-        <Dots step={step} />
-      </div>
-    );
-  }
-
   return (
     <div className="onboarding">
       <div className="step-art">
-        <Icon name="tablet" size={56} />
+        <Icon name="library" size={56} />
       </div>
-      <h1>Pair your tablet</h1>
+      <h1>Open a library</h1>
       <p>
-        Find the SSH password on your tablet at{" "}
-        <strong>Settings → Help → Copyrights and licenses</strong> — it's at
-        the bottom of the page. We'll store it in your OS keychain so you
-        only enter it once.
+        Your library is a single folder on this machine that holds every
+        version of every document. No cloud, no telemetry.
       </p>
+      {defaultPath && (
+        <p className="muted small">
+          Default location: <code>{defaultPath}</code>
+        </p>
+      )}
       <div className="actions">
-        <button onClick={() => setStep(1)}>Back</button>
-        <button className="primary" onClick={onConnect}>
-          <Icon name="plug" /> Connect now
+        <button onClick={() => setStep(0)}>Back</button>
+        <button
+          className="primary"
+          onClick={onOpenLibrary}
+          disabled={!defaultPath}
+        >
+          <Icon name="library" /> Open default library
         </button>
       </div>
       <Dots step={step} />
@@ -130,7 +107,7 @@ export function Onboarding({
 function Dots({ step }: { step: number }) {
   return (
     <div className="dots">
-      {[0, 1, 2].map((i) => (
+      {[0, 1].map((i) => (
         <span key={i} className={`dot${i === step ? " active" : ""}`} />
       ))}
     </div>

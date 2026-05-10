@@ -1823,6 +1823,23 @@ input[type="search"]:focus {
   right: 12px;
   margin: 0;
 }
+.docs-grid .tile .tile-kebab {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  opacity: 0;
+  transition: opacity var(--motion-base) var(--ease);
+}
+.docs-grid .tile:hover .tile-kebab,
+.docs-grid .tile:focus-within .tile-kebab {
+  opacity: 1;
+}
+/* When the row-pill is also showing, push the kebab left so they
+ * don't overlap. The pill's `right: 12px` plus its padding lands
+ * at ~70px wide; clear that with comfortable margin. */
+.docs-grid .tile:has(.row-pill) .tile-kebab {
+  right: 88px;
+}
 .docs-grid .tile.leaving {
   animation: rowCollapse var(--motion-base) var(--ease) forwards;
   pointer-events: none;

@@ -12,6 +12,7 @@ const SHORTCUTS: Array<[string[], string]> = [
   [[META, "S"], "Sync with the tablet"],
   [[META, "I"], "Import a PDF or EPUB"],
   [[META, "⌫"], "Move selected to Archive"],
+  [["F2"], "Rename the selection"],
   [["Space"], "Quick Look the selection"],
   [["Enter"], "Open the selection"],
   [["↑", "↓"], "Move the selection"],

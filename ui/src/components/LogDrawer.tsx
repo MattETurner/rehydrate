@@ -33,7 +33,7 @@ export function LogDrawer({ onClose }: Props) {
     <div className="drawer" onClick={(e) => e.stopPropagation()}>
       <header>
         <div>
-          <h2>Operation log</h2>
+          <h2>Activity log</h2>
           {logDir && (
             <div className="muted small mono" title={logDir}>
               {logDir}

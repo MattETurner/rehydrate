@@ -12,7 +12,6 @@ type IconName =
   | "epub"
   | "trash"
   | "folder"
-  | "folderPlus"
   | "import"
   | "sync"
   | "plug"
@@ -30,8 +29,7 @@ type IconName =
   | "tablet"
   | "selectMode"
   | "checkbox"
-  | "checkboxChecked"
-  | "x";
+  | "checkboxChecked";
 
 interface Props extends SVGProps<SVGSVGElement> {
   name: IconName;
@@ -98,13 +96,6 @@ export function Icon({ name, size = 14, className, ...rest }: Props) {
       return (
         <svg {...common}>
           <path d="M2.5 5 A0.5 0.5 0 0 1 3 4.5 H6.5 L7.8 6 H13 A0.5 0.5 0 0 1 13.5 6.5 V12.5 A0.5 0.5 0 0 1 13 13 H3 A0.5 0.5 0 0 1 2.5 12.5 Z" />
-        </svg>
-      );
-    case "folderPlus":
-      return (
-        <svg {...common}>
-          <path d="M2.5 5 A0.5 0.5 0 0 1 3 4.5 H6.5 L7.8 6 H13 A0.5 0.5 0 0 1 13.5 6.5 V12.5 A0.5 0.5 0 0 1 13 13 H3 A0.5 0.5 0 0 1 2.5 12.5 Z" />
-          <path d="M8 8.5 V11 M6.75 9.75 H9.25" />
         </svg>
       );
     case "import":
@@ -234,12 +225,6 @@ export function Icon({ name, size = 14, className, ...rest }: Props) {
         <svg {...common}>
           <rect x="2.5" y="2.5" width="11" height="11" rx="2" fill="currentColor" stroke="none" />
           <path d="M5 8.5 L7.5 11 L11.5 6" stroke="white" strokeWidth="2" />
-        </svg>
-      );
-    case "x":
-      return (
-        <svg {...common}>
-          <path d="M4 4 L12 12 M12 4 L4 12" />
         </svg>
       );
   }
