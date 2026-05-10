@@ -64,19 +64,30 @@ impl<N: Readable> Bitreader<N> {
     }
 
     // https://en.wikipedia.org/wiki/Variable-length_quantity
+    //
+    // Bug-fix note: the operand must be widened to `u32` *before* shifting.
+    // Shifting a `u8` by ≥ 8 panics in debug builds and silently wraps the
+    // shift amount on release, which corrupted the decode for any varint
+    // that occupied more than one byte.
     pub fn read_varuint(&mut self) -> Result<u32, ParseError> {
-        let mut shift = 0;
-        let mut result = 0;
-        let mut i;
-        loop {
-            i = self.read_u8()?;
-            result |= ((i & 0x7F) << shift) as u32;
-            shift += 7;
-            if i & 0x80 == 0 {
-                break;
+        let mut shift: u32 = 0;
+        let mut result: u32 = 0;
+        // A u32 fits in at most 5 base-128 bytes; refuse longer streams to
+        // avoid silent overflow on a malformed/oversize input.
+        for _ in 0..5 {
+            let i = self.read_u8()?;
+            let chunk = (i & 0x7F) as u32;
+            // Final (5th) byte may only contribute the top 4 bits of u32.
+            if shift == 28 && (chunk >> 4) != 0 {
+                return Err(ParseError::invalid("varuint overflows u32"));
             }
+            result |= chunk << shift;
+            if i & 0x80 == 0 {
+                return Ok(result);
+            }
+            shift += 7;
         }
-        return Ok(result);
+        Err(ParseError::invalid("varuint exceeds 5 bytes"))
     }
 
     pub fn read_bool(&mut self) -> Result<bool, ParseError> {
@@ -151,9 +162,38 @@ impl<N: Readable> Bitreader<N> {
     }
 }
 
-// #[test]
-// fn test_read_uuid() {
-//     let a: u128 = 0x495ba59fc9432b5cb4553682f6948906;
-//     Bitreader::new(&a.to_le_bytes())
-// }
-//
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn br(bytes: &'static [u8]) -> Bitreader<&'static [u8]> {
+        Bitreader::new(bytes)
+    }
+
+    #[test]
+    fn varuint_single_byte() {
+        assert_eq!(br(&[0x00]).read_varuint().unwrap(), 0);
+        assert_eq!(br(&[0x7F]).read_varuint().unwrap(), 127);
+    }
+
+    #[test]
+    fn varuint_multi_byte_no_overflow() {
+        // 300 = 0xAC 0x02 in LEB128.
+        assert_eq!(br(&[0xAC, 0x02]).read_varuint().unwrap(), 300);
+        // u32::MAX encoded as 5 bytes: FF FF FF FF 0F.
+        assert_eq!(
+            br(&[0xFF, 0xFF, 0xFF, 0xFF, 0x0F]).read_varuint().unwrap(),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn varuint_rejects_overflow() {
+        // 5th byte's payload bits overflow u32 (top bits set above 0x0F).
+        assert!(br(&[0xFF, 0xFF, 0xFF, 0xFF, 0x10]).read_varuint().is_err());
+        // 6+ bytes worth of continuation also rejected.
+        assert!(br(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x01])
+            .read_varuint()
+            .is_err());
+    }
+}

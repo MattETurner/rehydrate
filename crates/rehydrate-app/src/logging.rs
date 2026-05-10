@@ -55,12 +55,25 @@ pub fn init() {
     } else {
         let _ = registry.try_init();
     }
+    // Trim any logs beyond the retention window. Done after init so any
+    // surfaced errors land in the freshly-attached subscriber.
+    prune_old_logs();
 }
 
+/// Maximum number of rotated log files we keep on disk. Anything older is
+/// best-effort deleted by `prune_old_logs`. The appender rotates daily, so
+/// this caps log retention at roughly a month.
+const LOG_RETENTION_FILES: usize = 30;
+
 /// Read up to `max_lines` most-recent lines across all rotated log files.
-/// Cheap for typical log sizes (a few MB); we don't bother with reverse
-/// streaming until logs grow into the tens of megabytes.
+///
+/// Reads files newest-first and stops as soon as enough lines have been
+/// collected, so the caller never has to materialise the entire log
+/// archive in memory just to show the last few hundred lines in the UI.
 pub fn read_tail(max_lines: usize) -> std::io::Result<Vec<String>> {
+    if max_lines == 0 {
+        return Ok(Vec::new());
+    }
     let Some(dir) = log_dir() else {
         return Ok(Vec::new());
     };
@@ -68,23 +81,62 @@ pub fn read_tail(max_lines: usize) -> std::io::Result<Vec<String>> {
         return Ok(Vec::new());
     };
 
-    // Sort entries by filename — daily rotation uses YYYY-MM-DD suffixes
-    // so lexicographic order is chronological.
+    // Sort entries by filename descending — daily rotation uses YYYY-MM-DD
+    // suffixes so reverse-lex order is reverse-chronological.
     let mut files: Vec<PathBuf> = rd
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.is_file())
         .collect();
     files.sort();
+    files.reverse();
 
-    let mut all: Vec<String> = Vec::new();
+    // Walk newest first; collect lines into per-file buckets so we can
+    // splice them back together in chronological order at the end.
+    let mut buckets: Vec<Vec<String>> = Vec::new();
+    let mut collected = 0usize;
     for path in files {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            for line in content.lines() {
-                all.push(line.to_string());
-            }
+        if collected >= max_lines {
+            break;
         }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<String> = content.lines().map(str::to_owned).collect();
+        let take_from = lines.len().saturating_sub(max_lines - collected);
+        let chunk: Vec<String> = lines[take_from..].to_vec();
+        collected += chunk.len();
+        buckets.push(chunk);
     }
-    let start = all.len().saturating_sub(max_lines);
-    Ok(all[start..].to_vec())
+
+    // `buckets` is newest→oldest; flatten in reverse so the final order is
+    // oldest→newest, matching what the UI expects to render.
+    let mut out: Vec<String> = Vec::with_capacity(collected);
+    for chunk in buckets.into_iter().rev() {
+        out.extend(chunk);
+    }
+    Ok(out)
+}
+
+/// Best-effort removal of older log files so the archive does not grow
+/// without bound. Failures are silent — log pruning is a maintenance
+/// nicety, not a correctness requirement.
+pub fn prune_old_logs() {
+    let Some(dir) = log_dir() else { return };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let mut files: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    files.sort();
+    if files.len() <= LOG_RETENTION_FILES {
+        return;
+    }
+    let drop_count = files.len() - LOG_RETENTION_FILES;
+    for path in files.into_iter().take(drop_count) {
+        let _ = std::fs::remove_file(&path);
+    }
 }

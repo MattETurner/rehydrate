@@ -460,7 +460,6 @@ pub async fn open_document(
         .iter()
         .find(|f| f.path.ends_with(".pdf") || f.path.ends_with(".epub"))
     {
-        let bytes = lib.read_blob(&body.sha256).map_err(err)?;
         // Audit fix H8: explicitly allow-list the cache extension to
         // {pdf, epub}. The previous `body.path.rsplit('.').next()`
         // accepted any tail — a manifest with `body.path = "x.command"`
@@ -481,7 +480,11 @@ pub async fn open_document(
             .get(..12)
             .unwrap_or(body.sha256.as_str());
         let p = cache_root.join(format!("{safe_name}-{prefix}.{ext}"));
+        // Read the blob lazily — for hot opens of a previously-cached
+        // PDF/EPUB this avoids loading the whole document into memory
+        // just to throw it away.
         if !p.exists() {
+            let bytes = lib.read_blob(&body.sha256).map_err(err)?;
             std::fs::write(&p, &bytes).map_err(err)?;
         }
         p

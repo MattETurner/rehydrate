@@ -41,6 +41,12 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // Wait briefly when another connection holds the write lock instead
+        // of failing immediately with SQLITE_BUSY. The intra-process Mutex
+        // keeps our own threads serial, but a second process opening the
+        // same library (e.g. CLI smoke check while the GUI is running)
+        // shares the database file and would otherwise hit hard busy errors.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let db = Self {
             conn: Mutex::new(conn),
         };

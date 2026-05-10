@@ -18,10 +18,10 @@ pub struct Cancel(Arc<AtomicBool>);
 
 impl Cancel {
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.0.store(true, Ordering::Relaxed);
     }
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.load(Ordering::Relaxed)
     }
 }
 

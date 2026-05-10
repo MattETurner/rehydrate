@@ -35,6 +35,19 @@ pub const DEFAULT_PORT: u16 = 22;
 pub const DEFAULT_USER: &str = "root";
 pub const XOCHITL_DIR: &str = "/home/root/.local/share/remarkable/xochitl";
 
+/// Hard cap on a single SFTP read. Real reMarkable documents top out at a
+/// few hundred megabytes for very large PDFs; anything past this is either
+/// an exotic edge case the user needs to resolve manually, or a malicious /
+/// corrupted device serving an oversized file. Without this cap the client
+/// would happily allocate gigabytes from a single bad read.
+const MAX_REMOTE_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Bound on directory recursion depth inside `fetch_subtree[_named]`.
+/// reMarkable's xochitl tree is essentially flat (one level under the
+/// document UUID); 16 leaves enormous headroom while killing any pathological
+/// loop that slipped past the symlink filter.
+const MAX_SUBTREE_DEPTH: usize = 16;
+
 #[derive(Debug, Clone)]
 pub struct SshConfig {
     pub host: String,
@@ -143,15 +156,11 @@ impl SshDevice {
     }
 
     async fn read_file(&self, sftp: &SftpSession, path: &str) -> DeviceResult<Vec<u8>> {
-        let mut f = sftp
+        let f = sftp
             .open(path)
             .await
             .map_err(|e| sftp_err("open", path, e))?;
-        let mut buf = Vec::new();
-        f.read_to_end(&mut buf)
-            .await
-            .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))?;
-        Ok(buf)
+        read_capped(f, path).await
     }
 
     /// Stage a file's bytes to `<path>.rehydrate-tmp`. Does NOT touch the
@@ -539,29 +548,7 @@ async fn fetch_subtree(
     uuid: &str,
     out: &mut Vec<RemoteFile>,
 ) -> DeviceResult<()> {
-    let mut stack: Vec<(String, PathBuf)> = vec![(device_dir.to_string(), PathBuf::from(uuid))];
-    while let Some((dev, rel)) = stack.pop() {
-        let entries = sftp
-            .read_dir(&dev)
-            .await
-            .map_err(|e| sftp_err("read_dir", &dev, e))?;
-        for entry in entries {
-            let name = entry.file_name();
-            let dev_child = format!("{dev}/{name}");
-            let rel_child = rel.join(&name);
-            if entry.file_type().is_dir() {
-                stack.push((dev_child, rel_child));
-            } else {
-                let bytes = read_path(sftp, &dev_child).await?;
-                out.push(RemoteFile {
-                    path: rel_child.to_string_lossy().replace('\\', "/"),
-                    bytes,
-                    mode: 0o644,
-                });
-            }
-        }
-    }
-    Ok(())
+    fetch_subtree_named(sftp, device_dir, uuid, out).await
 }
 
 async fn fetch_subtree_named(
@@ -570,18 +557,35 @@ async fn fetch_subtree_named(
     rel_root: &str,
     out: &mut Vec<RemoteFile>,
 ) -> DeviceResult<()> {
-    let mut stack: Vec<(String, PathBuf)> = vec![(device_dir.to_string(), PathBuf::from(rel_root))];
-    while let Some((dev, rel)) = stack.pop() {
+    // (device path, relative path, depth-from-root). Depth is bounded so a
+    // pathological tree — or a symlink that the SFTP server does not
+    // advertise as such — cannot trap us indefinitely.
+    let mut stack: Vec<(String, PathBuf, usize)> =
+        vec![(device_dir.to_string(), PathBuf::from(rel_root), 0)];
+    while let Some((dev, rel, depth)) = stack.pop() {
         let entries = sftp
             .read_dir(&dev)
             .await
             .map_err(|e| sftp_err("read_dir", &dev, e))?;
         for entry in entries {
             let name = entry.file_name();
+            // Skip symlinks: the device reports `xochitl` straight off the
+            // stock filesystem and should not contain symlinks under a
+            // document tree, so anything that does is either malicious
+            // (loop back to `..`) or accidental (some debug helper).
+            // Either way we can't safely follow it.
+            if entry.file_type().is_symlink() {
+                continue;
+            }
             let dev_child = format!("{dev}/{name}");
             let rel_child = rel.join(&name);
             if entry.file_type().is_dir() {
-                stack.push((dev_child, rel_child));
+                if depth + 1 > MAX_SUBTREE_DEPTH {
+                    return Err(DeviceError::Other(format!(
+                        "subtree depth exceeds {MAX_SUBTREE_DEPTH} at {dev_child}"
+                    )));
+                }
+                stack.push((dev_child, rel_child, depth + 1));
             } else {
                 let bytes = read_path(sftp, &dev_child).await?;
                 out.push(RemoteFile {
@@ -596,14 +600,32 @@ async fn fetch_subtree_named(
 }
 
 async fn read_path(sftp: &SftpSession, path: &str) -> DeviceResult<Vec<u8>> {
-    let mut f = sftp
+    let f = sftp
         .open(path)
         .await
         .map_err(|e| sftp_err("open", path, e))?;
+    read_capped(f, path).await
+}
+
+/// Read an SFTP file with a hard size limit. `take(MAX_REMOTE_FILE_BYTES + 1)`
+/// lets us distinguish "file fits within budget" from "file exceeds budget"
+/// without ever allocating beyond the cap.
+async fn read_capped<R>(reader: R, path: &str) -> DeviceResult<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
     let mut buf = Vec::new();
-    f.read_to_end(&mut buf)
+    let mut limited = reader.take(MAX_REMOTE_FILE_BYTES + 1);
+    limited
+        .read_to_end(&mut buf)
         .await
         .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))?;
+    if buf.len() as u64 > MAX_REMOTE_FILE_BYTES {
+        return Err(DeviceError::Other(format!(
+            "remote file {path} exceeds {} byte cap",
+            MAX_REMOTE_FILE_BYTES
+        )));
+    }
     Ok(buf)
 }
 
