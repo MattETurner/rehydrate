@@ -29,8 +29,26 @@ the build itself.
 cargo install tauri-cli --version "^2.0.0"
 ```
 
-Then `cargo tauri dev` runs the dev workflow with hot reload, and
-`cargo tauri build` produces platform installers.
+The UI bundle has to be built before `cargo tauri build` runs (the
+`frontendDist` in `crates/rehydrate-app/tauri.conf.json` points at
+`ui/dist/`, which `tauri build` reads but doesn't generate):
+
+```sh
+(cd ui && npm install && npm run build)
+cargo tauri build
+```
+
+`./build.sh` does this end-to-end. `cargo tauri dev` runs the dev
+workflow with hot reload (Vite serves the UI directly, no static
+bundle needed).
+
+Why no `beforeBuildCommand` in `tauri.conf.json`? In a Cargo
+workspace with `projectPath: crates/rehydrate-app`, `tauri-action`'s
+cwd handling silently desyncs relative paths in the build hook —
+`../../ui` resolves one directory too high on CI runners and `tauri
+build` then fails on every platform with `ENOENT package.json`.
+Pre-building the UI explicitly (in the workflow, in `build.sh`, or
+by hand) is more robust.
 
 ## What's left
 

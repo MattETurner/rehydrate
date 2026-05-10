@@ -4,8 +4,7 @@
   "version": "0.9.0",
   "identifier": "app.rehydrate.desktop",
   "build": {
-    "frontendDist": "../../ui/dist",
-    "beforeBuildCommand": "npm --prefix ../../ui run build"
+    "frontendDist": "../../ui/dist"
   },
   "app": {
     "windows": [

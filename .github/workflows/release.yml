@@ -95,6 +95,19 @@ jobs:
         working-directory: ui
         run: npm ci || npm install
 
+      # Build the UI bundle explicitly here. We used to lean on
+      # tauri.conf.json's `beforeBuildCommand` (`npm --prefix ../../ui
+      # run build`) but that relative path silently desyncs under
+      # `tauri-action` — the action's cwd-shuffling resolves
+      # `../../ui` to `$RUNNER_WORKSPACE/ui` (one dir above the
+      # checkout), not `$GITHUB_WORKSPACE/ui`. Doing it here keeps
+      # the path resolution explicit and removes a hidden source of
+      # CI breakage. `frontendDist` in tauri.conf.json points at the
+      # bundle this step produces, so `tauri build` finds it directly.
+      - name: Build UI
+        working-directory: ui
+        run: npm run build
+
       # Build + (when triggered by a tag) upload to a draft release at
       # `${{ github.ref_name }}`. The action creates the release on the
       # first runner that finishes and then uploads to it from the
