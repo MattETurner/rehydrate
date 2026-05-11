@@ -116,10 +116,62 @@ pub fn render_rm_to_png(rm_bytes: &[u8]) -> Result<Vec<u8>, RenderError> {
     };
 
     // 1. Supersampled render space.
-    let scale = RENDER_SCALE as f32;
     let canvas_w = RM_CANVAS_W * RENDER_SCALE;
     let canvas_h = RM_CANVAS_H * RENDER_SCALE;
     let mut img: RgbaImage = ImageBuffer::from_pixel(canvas_w, canvas_h, white());
+
+    // Compute the actual stroke bounding box and fit it into the
+    // supersampled canvas with a small padding, exactly like
+    // `notebook_pdf.rs` does for the PDF preview. The previous
+    // version of this function assumed the .rm coordinates lived
+    // inside the rM2 portrait canvas (1404×1872) and just multiplied
+    // by `RENDER_SCALE`, which silently clipped:
+    //   * landscape-orientation pages (x extends past 1404),
+    //   * reMarkable Pro pages (different native canvas),
+    //   * any v6 file whose authoring tool centres the origin
+    //     differently from rM2 stock firmware.
+    // The observed symptom was OCR transcribing only the right half
+    // of the page — left-half strokes had x coordinates that
+    // landed off the rendered canvas and were never drawn.
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for line in &lines {
+        if !is_visible_tool(line.tool()) {
+            continue;
+        }
+        for p in line.points() {
+            min_x = min_x.min(p.x());
+            max_x = max_x.max(p.x());
+            min_y = min_y.min(p.y());
+            max_y = max_y.max(p.y());
+        }
+    }
+    if !min_x.is_finite() {
+        // Blank page — encode the empty white canvas and return.
+        let resized = resize_to_long_edge(&img);
+        return encode_png(&resized);
+    }
+    // 2 % padding so strokes don't sit flush against the canvas
+    // edge — the VLM sometimes treats edge pixels as page margin
+    // and skips them.
+    let pad = ((max_x - min_x).max(max_y - min_y)) * 0.02;
+    min_x -= pad;
+    max_x += pad;
+    min_y -= pad;
+    max_y += pad;
+    let bbox_w = (max_x - min_x).max(1.0);
+    let bbox_h = (max_y - min_y).max(1.0);
+
+    // Aspect-preserving fit into the supersampled canvas. The
+    // canvas is fixed at the rM2 portrait aspect; landscape /
+    // wider-than-tall content gets letterboxed with white margins
+    // (preferable to stretching, which would confuse the OCR
+    // model on character glyphs).
+    let xf = fit_transform(canvas_w, canvas_h, min_x, min_y, bbox_w, bbox_h);
+    let fit = xf.fit;
+    let map_xy = |x: f32, y: f32| -> (f32, f32) { xf.map(x, y) };
 
     for line in &lines {
         if !is_visible_tool(line.tool()) {
@@ -134,34 +186,86 @@ pub fn render_rm_to_png(rm_bytes: &[u8]) -> Result<Vec<u8>, RenderError> {
         let colour = stroke_colour(tool);
         for w in pts.windows(2) {
             let (a, b) = (&w[0], &w[1]);
-            let pa = (a.x() * scale, a.y() * scale);
-            let pb = (b.x() * scale, b.y() * scale);
-            // pixel_width_for returns native-resolution px; scale to
-            // supersample space so strokes stay visually proportional.
-            let width_px = (pixel_width_for(tool, a, thickness) * scale).max(1.0);
+            let pa = map_xy(a.x(), a.y());
+            let pb = map_xy(b.x(), b.y());
+            // `pixel_width_for` returns native-resolution px; scale
+            // to the same fit factor so strokes keep their visual
+            // proportion to the rasterised canvas.
+            let width_px = (pixel_width_for(tool, a, thickness) * fit).max(1.0);
             stroke_segment(&mut img, pa, pb, width_px, colour);
         }
     }
 
     // 2. Resize so the long edge equals TARGET_LONG_EDGE,
-    // preserving the canvas aspect ratio. Lanczos3 is the
-    // highest-quality filter the `image` crate ships and is cheap
-    // on a ~1500-px image; Triangle would also work; Nearest would
-    // re-introduce the aliasing we paid the 2× supersample to
-    // remove. Always rendering the full canvas (no crop-to-ink)
-    // keeps the image shape stable at the rM 3:4 aspect, which
-    // sidesteps an upstream Qwen2.5-VL bug — see module docs.
-    let (cw, ch) = (canvas_w, canvas_h);
+    // preserving the canvas aspect ratio.
+    let resized = resize_to_long_edge(&img);
+    // 3. Encode PNG.
+    encode_png(&resized)
+}
+
+/// Lanczos3 downscale to `TARGET_LONG_EDGE` on the longest side,
+/// preserving the input's aspect ratio. Lanczos3 is the
+/// highest-quality filter the `image` crate ships and is cheap on a
+/// ~1500-px image; Triangle would also work; Nearest would
+/// re-introduce the aliasing we paid the 2× supersample to remove.
+/// Output shape is stable at the rM 3:4 portrait aspect, which is
+/// useful for VLMs that prefer fixed input dimensions.
+fn resize_to_long_edge(img: &RgbaImage) -> RgbaImage {
+    let (cw, ch) = img.dimensions();
     let long_edge = cw.max(ch);
     let ratio = TARGET_LONG_EDGE as f32 / long_edge as f32;
     let new_w = ((cw as f32 * ratio).round() as u32).max(1);
     let new_h = ((ch as f32 * ratio).round() as u32).max(1);
-    let resized = resize(&img, new_w, new_h, FilterType::Lanczos3);
+    resize(img, new_w, new_h, FilterType::Lanczos3)
+}
 
-    // 3. Encode PNG.
+fn encode_png(img: &RgbaImage) -> Result<Vec<u8>, RenderError> {
     let mut out = Vec::with_capacity(64 * 1024);
-    resized.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)?;
+    img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)?;
     Ok(out)
+}
+
+/// Affine source-to-canvas transform: subtract `(min_x, min_y)`,
+/// scale by `fit` (max possible while preserving aspect inside the
+/// target), then offset to centre the letterbox.
+#[derive(Debug, Clone, Copy)]
+struct FitTransform {
+    fit: f32,
+    offset_x: f32,
+    offset_y: f32,
+    min_x: f32,
+    min_y: f32,
+}
+
+impl FitTransform {
+    fn map(&self, x: f32, y: f32) -> (f32, f32) {
+        (
+            (x - self.min_x) * self.fit + self.offset_x,
+            (y - self.min_y) * self.fit + self.offset_y,
+        )
+    }
+}
+
+fn fit_transform(
+    canvas_w: u32,
+    canvas_h: u32,
+    min_x: f32,
+    min_y: f32,
+    bbox_w: f32,
+    bbox_h: f32,
+) -> FitTransform {
+    let scale_x = canvas_w as f32 / bbox_w;
+    let scale_y = canvas_h as f32 / bbox_h;
+    let fit = scale_x.min(scale_y);
+    let offset_x = (canvas_w as f32 - bbox_w * fit) * 0.5;
+    let offset_y = (canvas_h as f32 - bbox_h * fit) * 0.5;
+    FitTransform {
+        fit,
+        offset_x,
+        offset_y,
+        min_x,
+        min_y,
+    }
 }
 
 /// Crop the image to the bounding box of any pixel below the
@@ -353,5 +457,57 @@ mod tests {
         let (w, h) = cropped.dimensions();
         // saturating_sub clamps the start to 0; end is 0+5+1=6.
         assert_eq!((w, h), (6, 6));
+    }
+
+    #[test]
+    fn fit_transform_centres_portrait_bbox_in_portrait_canvas() {
+        // Native rM2 portrait bbox into the same-shape canvas: no
+        // letterbox, scale ratio ≈ 1.0, both axes filled.
+        let xf = fit_transform(2808, 3744, 0.0, 0.0, 1404.0, 1872.0);
+        assert!((xf.fit - 2.0).abs() < 1e-3);
+        assert!((xf.offset_x).abs() < 1e-3);
+        assert!((xf.offset_y).abs() < 1e-3);
+        let (px, py) = xf.map(1404.0, 1872.0);
+        assert!((px - 2808.0).abs() < 1.0);
+        assert!((py - 3744.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn fit_transform_brings_landscape_bbox_inside_canvas() {
+        // Regression: previously, strokes at x > RM_CANVAS_W (e.g.
+        // landscape orientation, rM Pro, or any wider canvas) were
+        // multiplied straight by `RENDER_SCALE`, landing them off
+        // the rasterisation buffer — half the page never got
+        // rendered and the OCR only saw the right half.
+        //
+        // The fit transform must map the full landscape bbox
+        // (1872 × 1404) into the portrait canvas (2808 × 3744)
+        // with letterbox top/bottom and *every* x within
+        // [0, canvas_w].
+        let xf = fit_transform(2808, 3744, 0.0, 0.0, 1872.0, 1404.0);
+        // Far-right of the source landscape page lands inside the
+        // canvas, not past it.
+        let (px, _) = xf.map(1872.0, 0.0);
+        assert!((0.0..=2808.0).contains(&px), "x out of canvas: {px}");
+        let (px0, _) = xf.map(0.0, 0.0);
+        assert!((0.0..2808.0).contains(&px0), "x0 out of canvas: {px0}");
+    }
+
+    #[test]
+    fn fit_transform_handles_offset_origin() {
+        // Some .rm authoring tools centre the origin or use a
+        // negative-x range. The fit transform must subtract the
+        // minimum before scaling, so negative-x strokes still land
+        // inside the canvas rather than getting clipped at 0.
+        let xf = fit_transform(2808, 3744, -500.0, -100.0, 2000.0, 1500.0);
+        let (px, py) = xf.map(-500.0, -100.0);
+        assert!(
+            (0.0..2808.0).contains(&px),
+            "negative-x stroke not mapped in: {px}"
+        );
+        assert!(
+            (0.0..3744.0).contains(&py),
+            "negative-y stroke not mapped in: {py}"
+        );
     }
 }
