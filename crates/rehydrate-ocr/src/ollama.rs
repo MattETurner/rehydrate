@@ -59,6 +59,13 @@ impl OllamaBackend {
     /// instructions more reliably than long ones, and the prompt is
     /// already part of the per-page payload so brevity also keeps
     /// the request small.
+    ///
+    /// The `/no_think` directive at the end is a Qwen3 family
+    /// convention: even when the request-level `"think": false`
+    /// flag is silently ignored (older Ollama daemons, or
+    /// third-party fine-tunes that don't honour it), the inline
+    /// directive convinces the model to skip its chain-of-thought
+    /// prefix. Harmless for models that don't recognise it.
     fn build_prompt(opts: &TranscribeOptions) -> String {
         let mut parts: Vec<String> = Vec::new();
         parts.push(
@@ -81,6 +88,7 @@ impl OllamaBackend {
             "Output ONLY the transcription. No preamble, no commentary, no surrounding quotes."
                 .to_string(),
         );
+        parts.push("/no_think".to_string());
         parts.join(" ")
     }
 
@@ -91,11 +99,23 @@ impl OllamaBackend {
         png_bytes: &[u8],
         prompt: &str,
     ) -> Result<String, OcrError> {
+        // `think: false` disables the Qwen3 / Qwen3.5 family's
+        // chain-of-thought trace. Without it the model is free to
+        // emit `<think>…</think>` blocks before the actual answer,
+        // which (a) wastes inference time — a 9B page that should
+        // take 30 s spends a minute "thinking" first — and (b)
+        // pollutes the transcript when the closing tag is missing
+        // and the wrapper text leaks through. The flag is honoured
+        // by Ollama 0.5+ for the Qwen3 family; older daemons
+        // silently ignore unknown fields, so it's safe to send
+        // unconditionally. As a second line of defence we strip
+        // any `<think>…</think>` block from the response below.
         let payload = json!({
             "model": self.model,
             "prompt": prompt,
             "images": [STANDARD.encode(png_bytes)],
             "stream": false,
+            "think": false,
             "options": { "temperature": 0.1 },
         });
         let url = format!("{}/api/generate", self.base_url);
@@ -107,13 +127,11 @@ impl OllamaBackend {
             200 => {
                 let v: serde_json::Value = serde_json::from_str(&resp.body)
                     .map_err(|e| OcrError::Backend(format!("malformed JSON from ollama: {e}")))?;
-                let text = v
+                let raw = v
                     .get("response")
                     .and_then(|s| s.as_str())
-                    .ok_or_else(|| OcrError::Backend("ollama response missing `response` field".into()))?
-                    .trim()
-                    .to_string();
-                Ok(text)
+                    .ok_or_else(|| OcrError::Backend("ollama response missing `response` field".into()))?;
+                Ok(strip_thinking(raw))
             }
             404 if resp.body.to_ascii_lowercase().contains("model") => {
                 Err(OcrError::ModelNotPulled(format!(
@@ -157,6 +175,35 @@ fn truncate(s: &str, max: usize) -> String {
         t.push('…');
         t
     }
+}
+
+/// Strip any `<think>…</think>` blocks the Qwen3 family emits when
+/// thinking-mode is on (or when the `think: false` request flag is
+/// ignored by an older daemon). Handles three real-world shapes:
+///
+/// * closed block: `<think>…</think>` followed by the answer →
+///   block removed, answer preserved;
+/// * unclosed block: model started thinking and ran out of tokens
+///   before closing the tag → drop everything from `<think>` on
+///   (better an empty transcript than a transcript that's just the
+///   reasoning trace);
+/// * answer-only: no thinking block → identity (trimmed).
+fn strip_thinking(raw: &str) -> String {
+    let mut s = raw.to_string();
+    while let Some(open) = s.find("<think>") {
+        match s[open..].find("</think>") {
+            Some(close_rel) => {
+                let close = open + close_rel + "</think>".len();
+                s.replace_range(open..close, "");
+            }
+            None => {
+                // Unclosed thinking block.
+                s.truncate(open);
+                break;
+            }
+        }
+    }
+    s.trim().to_string()
 }
 
 #[async_trait]
@@ -297,5 +344,40 @@ mod tests {
         let backend = OllamaBackend::new("http://localhost:11434", "qwen3.5:4b")
             .expect("localhost URL parses");
         assert_eq!(backend.name(), "ollama/qwen3.5:4b");
+    }
+
+    #[test]
+    fn strip_thinking_removes_closed_block() {
+        let r = strip_thinking("<think>let me read…</think>\nThe page says hello.");
+        assert_eq!(r, "The page says hello.");
+    }
+
+    #[test]
+    fn strip_thinking_removes_multiple_blocks() {
+        let r = strip_thinking(
+            "<think>step 1</think>line one\n<think>step 2</think>line two",
+        );
+        assert_eq!(r, "line one\nline two");
+    }
+
+    #[test]
+    fn strip_thinking_drops_unclosed_block_entirely() {
+        // The model ran out of tokens mid-thinking; better an empty
+        // transcript than dumping the reasoning trace as the
+        // user's "OCR result".
+        let r = strip_thinking("<think>still reasoning about the layout when");
+        assert_eq!(r, "");
+    }
+
+    #[test]
+    fn strip_thinking_is_identity_when_no_block() {
+        let r = strip_thinking("Plain transcript text.");
+        assert_eq!(r, "Plain transcript text.");
+    }
+
+    #[test]
+    fn strip_thinking_preserves_prefix_before_first_block() {
+        let r = strip_thinking("answer line<think>side note</think> tail");
+        assert_eq!(r, "answer line tail");
     }
 }
