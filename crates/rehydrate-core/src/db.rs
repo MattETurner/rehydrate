@@ -29,6 +29,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0004_folder_pending_push",
         include_str!("../migrations/0004_folder_pending_push.sql"),
     ),
+    (
+        "0005_folder_sort_index",
+        include_str!("../migrations/0005_folder_sort_index.sql"),
+    ),
 ];
 
 pub struct Db {

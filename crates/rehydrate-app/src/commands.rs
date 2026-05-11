@@ -347,6 +347,65 @@ pub async fn import_file(
         .map_err(err)
 }
 
+/// Import a file the user dragged onto the window. WebView security
+/// hides the real filesystem path of an OS-level drop, so the frontend
+/// streams the bytes over IPC; we stage them to a tempfile so the
+/// existing path-based `Library::import_file` can do its work
+/// unchanged. The `file_name` is used to derive the extension *and*
+/// the default visible-name (sans extension), mirroring the file
+/// picker path.
+///
+/// Same magic-byte sniff as `import_file`: a "*.pdf" that doesn't
+/// start with "%PDF-" is rejected before any blob is written.
+#[tauri::command]
+pub async fn import_dropped_file(
+    file_name: String,
+    bytes: Vec<u8>,
+    state: State<'_, AppState>,
+) -> Result<DocumentSummary, String> {
+    let lib = lib_arc(&state).await?;
+
+    let ext_lower = std::path::Path::new(&file_name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .ok_or_else(|| "file has no extension".to_string())?;
+    let kind = ImportKind::from_extension(&ext_lower).ok_or_else(|| {
+        format!("unsupported file type: .{ext_lower} — only PDF and EPUB are supported")
+    })?;
+
+    // Magic-byte sniff before we touch disk or the library.
+    let looks_pdf = bytes.starts_with(b"%PDF-");
+    let looks_epub = bytes.starts_with(b"PK\x03\x04");
+    let extension_kind_ok = match kind {
+        ImportKind::Pdf => looks_pdf,
+        ImportKind::Epub => looks_epub,
+    };
+    if !extension_kind_ok {
+        return Err(format!(
+            "{file_name} does not look like a {} file (header check failed)",
+            ext_lower.to_uppercase()
+        ));
+    }
+
+    let visible_name = std::path::Path::new(&file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+
+    // Stage bytes to a tempfile so we can reuse the path-based
+    // import. NamedTempFile auto-deletes on drop even if import_file
+    // panics — no orphans in /tmp on failure.
+    let mut tf = tempfile::NamedTempFile::new().map_err(err)?;
+    {
+        use std::io::Write;
+        tf.write_all(&bytes).map_err(err)?;
+        tf.flush().map_err(err)?;
+    }
+    lib.import_file(tf.path(), kind, &visible_name).map_err(err)
+}
+
 #[tauri::command]
 pub async fn garbage_collect(state: State<'_, AppState>) -> Result<GarbageCollectReport, String> {
     let lib = lib_arc(&state).await?;
@@ -584,6 +643,34 @@ pub async fn rename_folder(
     let lib = lib_arc(&state).await?;
     lib.rename_folder(&folder_id, &new_name).map_err(err)?;
     Ok(())
+}
+
+/// Create a new folder under `parentId` (None = root). The folder is
+/// flagged for push so the next sync uploads its `<uuid>.metadata`
+/// file to the tablet.
+#[tauri::command]
+pub async fn create_folder(
+    visible_name: String,
+    parent_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<rehydrate_core::FolderEntry, String> {
+    let lib = lib_arc(&state).await?;
+    lib.create_folder(&visible_name, parent_id.as_deref())
+        .map_err(err)
+}
+
+/// Move and/or reorder a folder in the sidebar. Local-only — folder
+/// order is not represented on the device.
+#[tauri::command]
+pub async fn reorder_folder(
+    folder_id: String,
+    new_parent: Option<String>,
+    new_sort_index: f64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let lib = lib_arc(&state).await?;
+    lib.reorder_folder(&folder_id, new_parent.as_deref(), new_sort_index)
+        .map_err(err)
 }
 
 /// Move a live document into a different folder (or to root if

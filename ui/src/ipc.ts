@@ -43,6 +43,14 @@ export const ipc = {
     invoke<void>("rename_document", { documentId, newName }),
   renameFolder: (folderId: string, newName: string) =>
     invoke<void>("rename_folder", { folderId, newName }),
+  createFolder: (visibleName: string, parentId: string | null) =>
+    invoke<FolderEntry>("create_folder", { visibleName, parentId }),
+  reorderFolder: (
+    folderId: string,
+    newParent: string | null,
+    newSortIndex: number,
+  ) =>
+    invoke<void>("reorder_folder", { folderId, newParent, newSortIndex }),
   archiveDocument: (documentId: string) =>
     invoke<void>("archive_document", { documentId }),
   unarchiveDocument: (documentId: string) =>
@@ -61,6 +69,17 @@ export const ipc = {
     invoke<ExportResult | null>("export_version", { versionId }),
   verifyLibrary: () => invoke<VerifyReport>("verify_library"),
   importFile: () => invoke<DocumentSummary | null>("import_file"),
+  importDroppedFile: (fileName: string, bytes: Uint8Array) =>
+    // Tauri 2's JSON IPC marshals a plain `number[]` straight into
+    // `Vec<u8>` on the Rust side. We pay a per-byte JSON serialisation
+    // cost (a few hundred ms for a 100 MB PDF) but avoid pulling in a
+    // base64 dependency on either side. If this ever shows up in a
+    // profile, switch to a `tauri::ipc::Channel<Vec<u8>>` for a true
+    // streaming path.
+    invoke<DocumentSummary>("import_dropped_file", {
+      fileName,
+      bytes: Array.from(bytes),
+    }),
   garbageCollect: () => invoke<GarbageCollectReport>("garbage_collect"),
   getRecentLogs: (maxLines?: number) =>
     invoke<LogTail>("get_recent_logs", { maxLines: maxLines ?? null }),

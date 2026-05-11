@@ -24,6 +24,8 @@ import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { Onboarding } from "./components/Onboarding";
 import { QuickLook } from "./components/QuickLook";
 import { RenameDialog } from "./components/RenameDialog";
+import { NamePrompt } from "./components/NamePrompt";
+import { ChooseFolderDialog } from "./components/ChooseFolderDialog";
 import { Thumbnail, invalidateThumbnail } from "./components/Thumbnail";
 import { DRAG_ICON_SVG, setCustomDragImage } from "./dragImage";
 import type {
@@ -78,6 +80,20 @@ export function App() {
     | { kind: "folder"; id: string; current: string }
     | null
   >(null);
+  // "+ New folder" / "New subfolder" prompt state. `parentId = null`
+  // means root; otherwise a folder id.
+  const [creatingFolderUnder, setCreatingFolderUnder] = useState<
+    { parentId: string | null } | null
+  >(null);
+  // "Move to folder…" picker state. Holds the doc ids the user wants
+  // to relocate; null means the dialog is closed.
+  const [movingDocs, setMovingDocs] = useState<string[] | null>(null);
+  // True while the user is dragging files from outside the app
+  // (Finder, Explorer, …) over the window. Drives the import overlay.
+  const [externalDrop, setExternalDrop] = useState(false);
+  // True while a drop is being processed so the overlay can show
+  // "Importing…" feedback instead of dismissing instantly.
+  const [importingDrop, setImportingDrop] = useState(false);
   const refreshing = useRef(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const toast = useToast();
@@ -669,6 +685,148 @@ export function App() {
     setRenaming({ kind: "folder", id: f.folder_id, current: f.visible_name });
   }
 
+  // ---- Folder create / move-document helpers ---------------------------
+  function startCreateFolder(parentId: string | null) {
+    setCreatingFolderUnder({ parentId });
+  }
+  async function performCreateFolder(name: string) {
+    if (!creatingFolderUnder) return;
+    const parent = creatingFolderUnder.parentId;
+    const created = await ipc.createFolder(name, parent);
+    // Auto-expand the new folder's parent so the result is visible.
+    if (parent) {
+      setExpanded((prev) => {
+        if (prev.has(parent)) return prev;
+        const next = new Set(prev);
+        next.add(parent);
+        return next;
+      });
+    }
+    await refreshLibrary();
+    setCreatingFolderUnder(null);
+    toast.show({
+      tone: "ok",
+      body: (
+        <span>
+          Created <strong>{created.visible_name}</strong>. The folder uploads to
+          the tablet on the next sync.
+        </span>
+      ),
+    });
+  }
+
+  function startMoveDocs(ids: string[]) {
+    if (ids.length === 0) return;
+    setMovingDocs(ids);
+  }
+  async function performMoveDocs(target: string | null) {
+    if (!movingDocs) return;
+    const ids = movingDocs;
+    setError(null);
+    try {
+      for (const id of ids) {
+        await ipc.moveDocument(id, target);
+      }
+      await refreshLibrary();
+      clearSelection();
+      const targetName =
+        target === null
+          ? "the library root"
+          : folders.find((f) => f.folder_id === target)?.visible_name ??
+            "another folder";
+      toast.show({
+        tone: "info",
+        body: `Moved ${ids.length} document${ids.length === 1 ? "" : "s"} to ${targetName}.`,
+      });
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setMovingDocs(null);
+    }
+  }
+
+  // ---- External file drop import (PDF / EPUB from Finder) -------------
+  // dragenter/leave on nested children fire repeatedly; tracking a
+  // counter on a ref keeps the overlay stable until the cursor truly
+  // leaves the window.
+  const externalDropCounter = useRef(0);
+  const isExternalFileDrag = (e: ReactDragEvent) =>
+    Array.from(e.dataTransfer.types).includes("Files");
+
+  async function handleExternalFileDrop(files: File[]) {
+    if (!libraryOpen) {
+      toast.show({
+        tone: "warn",
+        body: "Open a library first, then drop PDFs or EPUBs here to import.",
+      });
+      return;
+    }
+    const importable = files.filter((f) => {
+      const lower = f.name.toLowerCase();
+      return lower.endsWith(".pdf") || lower.endsWith(".epub");
+    });
+    if (importable.length === 0) {
+      toast.show({
+        tone: "warn",
+        body: "Only PDF and EPUB files can be imported.",
+      });
+      return;
+    }
+    setImportingDrop(true);
+    let imported = 0;
+    let failed = 0;
+    for (const file of importable) {
+      try {
+        const buf = await file.arrayBuffer();
+        await ipc.importDroppedFile(file.name, new Uint8Array(buf));
+        imported += 1;
+      } catch (e) {
+        failed += 1;
+        // Report each failure but keep going so a single bad file
+        // doesn't abort the whole drop.
+        toast.show({
+          tone: "err",
+          body: `Couldn't import ${file.name}: ${String(e)}`,
+        });
+      }
+    }
+    setImportingDrop(false);
+    if (imported > 0) {
+      await refreshLibrary();
+      toast.show({
+        tone: "ok",
+        body:
+          imported === 1
+            ? "Imported 1 file. It will sync to the tablet on the next sync."
+            : `Imported ${imported} files. They will sync on the next sync.`,
+      });
+    }
+    if (failed > 0 && imported === 0) {
+      setError(`Could not import ${failed} file${failed === 1 ? "" : "s"}.`);
+    }
+  }
+
+  // ---- Folder reorder (sidebar drag-and-drop) --------------------------
+  // Computes a sort_index that places `dragged` adjacent to `target`
+  // under `newParent`. `position = "above" | "below" | "into"` mirrors
+  // the drop indicator the user saw. For "into" we slot at the end of
+  // the target's children.
+  const reorderFolderTo = useCallback(
+    async (
+      draggedId: string,
+      newParent: string | null,
+      newSortIndex: number,
+    ) => {
+      try {
+        await ipc.reorderFolder(draggedId, newParent, newSortIndex);
+        await refreshLibrary();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [refreshLibrary],
+  );
+
   async function archiveOne(d: DocumentSummary) {
     const ok = await confirm({
       title: `Move "${d.visible_name}" to Archive?`,
@@ -1068,7 +1226,38 @@ export function App() {
 
   // ---- Render -----------------------------------------------------------
   return (
-    <div className="app">
+    <div
+      className="app"
+      onDragEnter={(e) => {
+        if (!isExternalFileDrag(e)) return;
+        e.preventDefault();
+        externalDropCounter.current += 1;
+        if (!externalDrop) setExternalDrop(true);
+      }}
+      onDragOver={(e) => {
+        if (!isExternalFileDrag(e)) return;
+        // Without preventDefault the browser refuses the drop and
+        // shows the "no-entry" cursor.
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(e) => {
+        if (!isExternalFileDrag(e)) return;
+        externalDropCounter.current = Math.max(
+          0,
+          externalDropCounter.current - 1,
+        );
+        if (externalDropCounter.current === 0) setExternalDrop(false);
+      }}
+      onDrop={(e) => {
+        if (!isExternalFileDrag(e)) return;
+        e.preventDefault();
+        externalDropCounter.current = 0;
+        setExternalDrop(false);
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length > 0) void handleExternalFileDrop(files);
+      }}
+    >
       <header className="toolbar" data-tauri-drag-region>
         <span className="brand">
           <img className="brand-mark" src="/logo.png" alt="" />
@@ -1198,19 +1387,46 @@ export function App() {
             </ul>
           </section>
 
-          {folders.length > 0 && documents && (
+          {libraryOpen && (
             <section>
-              <h3>Folders</h3>
-              <FolderTree
-                folders={folders}
-                documents={documents}
-                view={view}
-                setView={setView}
-                expanded={expanded}
-                setExpanded={setExpanded}
-                onDocumentDrop={handleDocumentDrop}
-                onRenameFolder={startRenameFolder}
-              />
+              <div className="sidebar-section-head">
+                <h3>Folders</h3>
+                <button
+                  className="icon ghost sidebar-add"
+                  aria-label="New folder"
+                  title="New folder at the root"
+                  onClick={() => startCreateFolder(null)}
+                >
+                  +
+                </button>
+              </div>
+              {folders.length > 0 && documents ? (
+                <FolderTree
+                  folders={folders}
+                  documents={documents}
+                  view={view}
+                  setView={setView}
+                  expanded={expanded}
+                  setExpanded={setExpanded}
+                  onDocumentDrop={handleDocumentDrop}
+                  onRenameFolder={startRenameFolder}
+                  onCreateSubfolder={(parentId) => startCreateFolder(parentId)}
+                  onReorderFolder={(draggedId, newParent, beforeId, afterId) => {
+                    const newSort = computeReorderSortIndex(
+                      folders,
+                      draggedId,
+                      newParent,
+                      beforeId,
+                      afterId,
+                    );
+                    return reorderFolderTo(draggedId, newParent, newSort);
+                  }}
+                />
+              ) : (
+                <p className="sidebar-empty muted">
+                  No folders yet — click <strong>+</strong> to create one.
+                </p>
+              )}
             </section>
           )}
 
@@ -1360,6 +1576,9 @@ export function App() {
                   </span>
                   <div className="spacer" />
                   <button onClick={clearSelection}>Clear</button>
+                  <button onClick={() => startMoveDocs([...selectedIds])}>
+                    <Icon name="folder" /> Move to folder…
+                  </button>
                   <button className="danger" onClick={bulkArchive}>
                     <Icon name="trash" /> Archive
                   </button>
@@ -1403,6 +1622,7 @@ export function App() {
                   onRename={startRenameDocument}
                   onArchive={archiveOne}
                   onShowHistory={setHistoryDoc}
+                  onMove={(d) => startMoveDocs([d.document_id])}
                   leavingIds={leavingIds}
                   emptyHint={emptyHintFor(view)}
                 />
@@ -1417,6 +1637,7 @@ export function App() {
                   onOpenInViewer={openInViewer}
                   onArchive={archiveOne}
                   onRename={startRenameDocument}
+                  onMove={(d) => startMoveDocs([d.document_id])}
                   leavingIds={leavingIds}
                   emptyHint={emptyHintFor(view)}
                 />
@@ -1483,6 +1704,42 @@ export function App() {
           onSubmit={performRename}
         />
       )}
+      {creatingFolderUnder && (
+        <NamePrompt
+          title={
+            creatingFolderUnder.parentId === null
+              ? "New folder"
+              : "New subfolder"
+          }
+          subtitle={
+            creatingFolderUnder.parentId === null
+              ? "The new folder uploads to the tablet on the next sync."
+              : `Inside ${
+                  folders.find(
+                    (f) => f.folder_id === creatingFolderUnder.parentId,
+                  )?.visible_name ?? "selected folder"
+                }. Uploads on the next sync.`
+          }
+          placeholder="Folder name"
+          submitLabel="Create"
+          submitBusyLabel="Creating…"
+          onCancel={() => setCreatingFolderUnder(null)}
+          onSubmit={performCreateFolder}
+        />
+      )}
+      {movingDocs && (
+        <ChooseFolderDialog
+          title={
+            movingDocs.length === 1
+              ? "Move document"
+              : `Move ${movingDocs.length} documents`
+          }
+          subtitle="Pick a destination. The change syncs to the tablet on the next sync."
+          folders={folders}
+          onCancel={() => setMovingDocs(null)}
+          onChoose={performMoveDocs}
+        />
+      )}
       {showCheatsheet && <Cheatsheet onClose={() => setShowCheatsheet(false)} />}
       {showPalette && (
         <CommandPalette
@@ -1506,6 +1763,23 @@ export function App() {
             />
           );
         })()}
+      {(externalDrop || importingDrop) && (
+        <div className="import-overlay" aria-hidden>
+          <div className="import-overlay-card">
+            <Icon name="library" size={36} />
+            <h2>
+              {importingDrop ? "Importing…" : "Drop to import"}
+            </h2>
+            <p>
+              {importingDrop
+                ? "Hashing and recording new versions in your library."
+                : libraryOpen
+                  ? "PDFs and EPUBs land in your library and sync to the tablet next sync."
+                  : "Open a library first, then drop PDFs or EPUBs here."}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1516,6 +1790,7 @@ export function App() {
 
 const DOC_DRAG_MIME = "application/x-rehydrate-doc";
 const DOC_DRAG_BATCH_MIME = "application/x-rehydrate-doc-batch";
+const FOLDER_DRAG_MIME = "application/x-rehydrate-folder";
 
 function setDocumentDragData(
   e: ReactDragEvent,
@@ -1540,6 +1815,94 @@ function readDocumentDragData(
 }
 function hasDocumentDragData(e: ReactDragEvent): boolean {
   return e.dataTransfer.types.includes(DOC_DRAG_MIME);
+}
+
+// HTML5 drag-and-drop puts the DataTransfer into "protected mode" during
+// `dragover`, so `getData(...)` returns "" until the user actually drops.
+// We need the dragged folder id during `dragover` (to size the drop zones,
+// to short-circuit invalid targets so the browser shows a "no entry"
+// cursor, and crucially to call `preventDefault()` only when the drop
+// would be valid). Stash the id in a module-local on `dragstart` and
+// clear it on `dragend` — same pattern several DnD libs use.
+let activeFolderDragId: string | null = null;
+
+function setFolderDragData(e: ReactDragEvent, folderId: string) {
+  e.dataTransfer.setData(FOLDER_DRAG_MIME, folderId);
+  e.dataTransfer.setData("text/plain", folderId);
+  e.dataTransfer.effectAllowed = "move";
+  activeFolderDragId = folderId;
+}
+function readFolderDragData(e: ReactDragEvent): string | null {
+  const id = e.dataTransfer.getData(FOLDER_DRAG_MIME);
+  return id || null;
+}
+function hasFolderDragData(e: ReactDragEvent): boolean {
+  return e.dataTransfer.types.includes(FOLDER_DRAG_MIME);
+}
+
+/// Returns the set of folder ids that include `rootId` and every
+/// folder transitively parented by it. Used to forbid moving a folder
+/// into its own subtree (which would create a cycle the backend
+/// would reject anyway, but we filter at the UI to avoid the round
+/// trip and an error toast).
+function descendantIds(folders: FolderEntry[], rootId: string): Set<string> {
+  const childrenOf = new Map<string, string[]>();
+  for (const f of folders) {
+    if (!f.parent) continue;
+    const list = childrenOf.get(f.parent) ?? [];
+    list.push(f.folder_id);
+    childrenOf.set(f.parent, list);
+  }
+  const out = new Set<string>([rootId]);
+  const stack = [rootId];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    for (const child of childrenOf.get(cur) ?? []) {
+      if (!out.has(child)) {
+        out.add(child);
+        stack.push(child);
+      }
+    }
+  }
+  return out;
+}
+
+/// Compute the sort_index needed to slot `dragged` adjacent to
+/// `target` (or at end of `parent`'s children for `into`) inside the
+/// existing folder list. Uses midpoints of float keys so we don't have
+/// to renumber siblings on every drag.
+function computeReorderSortIndex(
+  folders: FolderEntry[],
+  draggedId: string,
+  newParent: string | null,
+  beforeId: string | null,
+  afterId: string | null,
+): number {
+  // Snapshot siblings under newParent, excluding the dragged folder
+  // itself (it'll move to its new home; treating it as a sibling here
+  // would skew the midpoint calculation).
+  const siblings = folders
+    .filter(
+      (f) =>
+        (f.parent ?? null) === newParent && f.folder_id !== draggedId,
+    )
+    .slice()
+    .sort((a, b) => {
+      const cmp = (a.sort_index ?? 0) - (b.sort_index ?? 0);
+      if (cmp !== 0) return cmp;
+      return a.visible_name.localeCompare(b.visible_name);
+    });
+  const before = beforeId
+    ? siblings.find((f) => f.folder_id === beforeId)
+    : null;
+  const after = afterId
+    ? siblings.find((f) => f.folder_id === afterId)
+    : null;
+  if (before && after) return (before.sort_index + after.sort_index) / 2;
+  if (before) return before.sort_index + 1;
+  if (after) return after.sort_index - 1;
+  // Empty parent: anchor at 0.
+  return 0;
 }
 
 // =====================================================================
@@ -1854,12 +2217,23 @@ function buildFolderTree(folders: FolderEntry[], docs: DocumentSummary[]): Folde
     else roots.push(node);
   }
   const sortRec = (nodes: FolderTreeNode[]) => {
-    nodes.sort((a, b) => a.folder.visible_name.localeCompare(b.folder.visible_name));
+    nodes.sort((a, b) => {
+      const cmp = (a.folder.sort_index ?? 0) - (b.folder.sort_index ?? 0);
+      if (cmp !== 0) return cmp;
+      return a.folder.visible_name.localeCompare(b.folder.visible_name);
+    });
     for (const n of nodes) sortRec(n.children);
   };
   sortRec(roots);
   return roots;
 }
+
+type FolderReorder = (
+  draggedId: string,
+  newParent: string | null,
+  beforeId: string | null,
+  afterId: string | null,
+) => Promise<void> | void;
 
 function FolderTree({
   folders,
@@ -1870,6 +2244,8 @@ function FolderTree({
   setExpanded,
   onDocumentDrop,
   onRenameFolder,
+  onCreateSubfolder,
+  onReorderFolder,
 }: {
   folders: FolderEntry[];
   documents: DocumentSummary[];
@@ -1879,6 +2255,8 @@ function FolderTree({
   setExpanded: (s: Set<string>) => void;
   onDocumentDrop: (documentId: string, target: string | null | "archive", batch?: string[]) => void;
   onRenameFolder: (f: FolderEntry) => void;
+  onCreateSubfolder: (parentId: string) => void;
+  onReorderFolder: FolderReorder;
 }) {
   const roots = buildFolderTree(folders, documents);
   const toggle = (id: string) => {
@@ -1889,7 +2267,7 @@ function FolderTree({
   };
   return (
     <ul>
-      {roots.map((node) => (
+      {roots.map((node, idx) => (
         <FolderRow
           key={node.folder.folder_id}
           node={node}
@@ -1900,6 +2278,12 @@ function FolderTree({
           toggle={toggle}
           onDocumentDrop={onDocumentDrop}
           onRenameFolder={onRenameFolder}
+          onCreateSubfolder={onCreateSubfolder}
+          onReorderFolder={onReorderFolder}
+          allFolders={folders}
+          siblings={roots.map((n) => n.folder.folder_id)}
+          siblingIndex={idx}
+          parentId={null}
         />
       ))}
     </ul>
@@ -1915,6 +2299,12 @@ function FolderRow({
   toggle,
   onDocumentDrop,
   onRenameFolder,
+  onCreateSubfolder,
+  onReorderFolder,
+  allFolders,
+  siblings,
+  siblingIndex,
+  parentId,
 }: {
   node: FolderTreeNode;
   depth: number;
@@ -1924,56 +2314,151 @@ function FolderRow({
   toggle: (id: string) => void;
   onDocumentDrop: (documentId: string, target: string | null | "archive", batch?: string[]) => void;
   onRenameFolder: (f: FolderEntry) => void;
+  onCreateSubfolder: (parentId: string) => void;
+  onReorderFolder: FolderReorder;
+  allFolders: FolderEntry[];
+  /** Ordered ids of this row's siblings under `parentId`, including
+   *  this row. Used to pick neighbour ids for sort-index midpoints. */
+  siblings: string[];
+  siblingIndex: number;
+  parentId: string | null;
 }) {
   const v: View = { kind: "folder", id: node.folder.folder_id };
   const isActive = viewKey(view) === viewKey(v);
   const hasChildren = node.children.length > 0;
   const isOpen = expanded.has(node.folder.folder_id);
   const [dragOver, setDragOver] = useState(false);
+  // For folder-on-folder drag we track which third of the row the
+  // pointer is in: top → drop above, middle → drop into (reparent),
+  // bottom → drop below. `null` while no compatible drag is hovering.
+  const [folderDropZone, setFolderDropZone] = useState<
+    "above" | "into" | "below" | null
+  >(null);
   // Spring-loaded folder: hover during a drag for >600ms auto-expands.
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cls = [
     "folder-row",
     isActive ? "active" : "",
     dragOver ? "drop-target" : "",
+    folderDropZone ? `folder-drop-${folderDropZone}` : "",
   ]
     .filter(Boolean)
     .join(" ");
+
+  const handleDragOver = (e: ReactDragEvent) => {
+    if (hasFolderDragData(e)) {
+      // `dataTransfer.getData(...)` is empty during dragover, so we
+      // read the dragged id from the module-local stash. Forbid drop
+      // when the dragged folder *is* this row (no-op move) or when
+      // this row lives inside the dragged folder's subtree (would
+      // create a cycle).
+      const draggedId = activeFolderDragId;
+      if (!draggedId) return;
+      const subtree = descendantIds(allFolders, draggedId);
+      if (subtree.has(node.folder.folder_id)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const h = rect.height;
+      // 25% top → above, 25% bottom → below, middle → into.
+      const zone: "above" | "into" | "below" =
+        y < h * 0.25 ? "above" : y > h * 0.75 ? "below" : "into";
+      // Auto-expand a non-empty target after hovering "into" for
+      // 600ms so the user can drill deeper without manually toggling.
+      if (zone === "into" && hasChildren && !isOpen && !hoverTimer.current) {
+        hoverTimer.current = setTimeout(() => {
+          toggle(node.folder.folder_id);
+          hoverTimer.current = null;
+        }, 600);
+      }
+      if (folderDropZone !== zone) setFolderDropZone(zone);
+      return;
+    }
+    if (!hasDocumentDragData(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (!dragOver) {
+      setDragOver(true);
+      if (hasChildren && !isOpen && !hoverTimer.current) {
+        hoverTimer.current = setTimeout(() => {
+          toggle(node.folder.folder_id);
+          hoverTimer.current = null;
+        }, 600);
+      }
+    }
+  };
+  const clearDropState = () => {
+    setDragOver(false);
+    setFolderDropZone(null);
+    if (hoverTimer.current) {
+      clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+  };
+
   return (
     <>
       <li
         className={cls}
         data-depth={depth}
+        draggable
+        onDragStart={(e) => {
+          // Stop the parent <li> from also picking the drag up if any.
+          e.stopPropagation();
+          setFolderDragData(e, node.folder.folder_id);
+        }}
+        onDragEnd={() => {
+          // Always clear the module-local stash so a follow-up drag
+          // doesn't see the previous folder id.
+          activeFolderDragId = null;
+        }}
         onClick={() => setView(v)}
         style={{ paddingLeft: 22 + depth * 14 }}
         title={`${node.docCount} document${node.docCount === 1 ? "" : "s"}`}
-        onDragOver={(e) => {
-          if (!hasDocumentDragData(e)) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
-          if (!dragOver) {
-            setDragOver(true);
-            if (hasChildren && !isOpen && !hoverTimer.current) {
-              hoverTimer.current = setTimeout(() => {
-                toggle(node.folder.folder_id);
-                hoverTimer.current = null;
-              }, 600);
-            }
-          }
-        }}
-        onDragLeave={() => {
-          setDragOver(false);
-          if (hoverTimer.current) {
-            clearTimeout(hoverTimer.current);
-            hoverTimer.current = null;
-          }
-        }}
+        onDragOver={handleDragOver}
+        onDragLeave={clearDropState}
         onDrop={(e) => {
-          setDragOver(false);
-          if (hoverTimer.current) {
-            clearTimeout(hoverTimer.current);
-            hoverTimer.current = null;
+          // Folder reorder takes priority — its MIME is more specific.
+          const folderId = readFolderDragData(e) ?? activeFolderDragId;
+          // Reject self-drops and drops that would push the folder
+          // into its own subtree (cycle).
+          const subtree = folderId
+            ? descendantIds(allFolders, folderId)
+            : null;
+          if (
+            folderId &&
+            subtree &&
+            !subtree.has(node.folder.folder_id)
+          ) {
+            const zone = folderDropZone ?? "into";
+            clearDropState();
+            activeFolderDragId = null;
+            e.preventDefault();
+            e.stopPropagation();
+            if (zone === "into") {
+              // Reparent into this folder; drop at the end of its
+              // children list (no neighbour ids).
+              void onReorderFolder(folderId, node.folder.folder_id, null, null);
+            } else {
+              // Reorder among siblings of this row.
+              const beforeId =
+                zone === "below"
+                  ? node.folder.folder_id
+                  : siblingIndex > 0
+                    ? siblings[siblingIndex - 1]
+                    : null;
+              const afterId =
+                zone === "above"
+                  ? node.folder.folder_id
+                  : siblingIndex < siblings.length - 1
+                    ? siblings[siblingIndex + 1]
+                    : null;
+              void onReorderFolder(folderId, parentId, beforeId, afterId);
+            }
+            return;
           }
+          clearDropState();
           const data = readDocumentDragData(e);
           if (!data) return;
           e.preventDefault();
@@ -2012,6 +2497,11 @@ function FolderRow({
             }
             items={[
               {
+                label: "New subfolder…",
+                icon: <Icon name="folder" />,
+                onClick: () => onCreateSubfolder(node.folder.folder_id),
+              },
+              {
                 label: "Rename…",
                 icon: <Icon name="folder" />,
                 onClick: () => onRenameFolder(node.folder),
@@ -2022,7 +2512,7 @@ function FolderRow({
       </li>
       {hasChildren &&
         isOpen &&
-        node.children.map((child) => (
+        node.children.map((child, idx) => (
           <FolderRow
             key={child.folder.folder_id}
             node={child}
@@ -2033,6 +2523,12 @@ function FolderRow({
             toggle={toggle}
             onDocumentDrop={onDocumentDrop}
             onRenameFolder={onRenameFolder}
+            onCreateSubfolder={onCreateSubfolder}
+            onReorderFolder={onReorderFolder}
+            allFolders={allFolders}
+            siblings={node.children.map((c) => c.folder.folder_id)}
+            siblingIndex={idx}
+            parentId={node.folder.folder_id}
           />
         ))}
     </>
@@ -2082,6 +2578,7 @@ function DocumentList({
   onOpenInViewer,
   onArchive,
   onRename,
+  onMove,
   leavingIds,
   emptyHint,
 }: {
@@ -2097,6 +2594,7 @@ function DocumentList({
   onOpenInViewer: (d: DocumentSummary) => void;
   onArchive: (d: DocumentSummary) => void;
   onRename: (d: DocumentSummary) => void;
+  onMove: (d: DocumentSummary) => void;
   leavingIds: Set<string>;
   emptyHint: { title: string; body: string };
 }) {
@@ -2202,6 +2700,11 @@ function DocumentList({
                       onClick: () => onRename(d),
                     },
                     {
+                      label: "Move to folder…",
+                      icon: <Icon name="folder" />,
+                      onClick: () => onMove(d),
+                    },
+                    {
                       label: "Show history",
                       icon: <Icon name="history" />,
                       onClick: () => onOpen(d),
@@ -2242,6 +2745,7 @@ function DocumentGrid({
   onRename,
   onArchive,
   onShowHistory,
+  onMove,
   leavingIds,
   emptyHint,
 }: {
@@ -2257,6 +2761,7 @@ function DocumentGrid({
   onRename: (d: DocumentSummary) => void;
   onArchive: (d: DocumentSummary) => void;
   onShowHistory: (d: DocumentSummary) => void;
+  onMove: (d: DocumentSummary) => void;
   leavingIds: Set<string>;
   emptyHint: { title: string; body: string };
 }) {
@@ -2361,6 +2866,11 @@ function DocumentGrid({
                     label: "Rename…",
                     icon: <Icon name="folder" />,
                     onClick: () => onRename(d),
+                  },
+                  {
+                    label: "Move to folder…",
+                    icon: <Icon name="folder" />,
+                    onClick: () => onMove(d),
                   },
                   {
                     label: "Show history",

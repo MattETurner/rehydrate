@@ -15,6 +15,9 @@ export interface FolderEntry {
   folder_id: string;
   parent: string | null;
   visible_name: string;
+  /** Local-only ordering hint within the parent's children. Lower
+   *  comes first; ties break alphabetically. Not synced to the device. */
+  sort_index: number;
 }
 
 export type ArchiveReason = "local" | "device";

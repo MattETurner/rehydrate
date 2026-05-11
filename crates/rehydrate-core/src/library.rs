@@ -84,6 +84,11 @@ pub struct FolderEntry {
     pub folder_id: String,
     pub parent: Option<String>,
     pub visible_name: String,
+    /// Local-only ordering hint within the parent's children. Lower
+    /// values come first; ties break alphabetically. Never sent to the
+    /// device — folders on the reMarkable don't have an explicit order.
+    #[serde(default)]
+    pub sort_index: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1603,11 +1608,16 @@ impl Library {
         Ok(())
     }
 
-    /// Return all folders mirrored from the device.
+    /// Return all folders known to the library. Sort order is the
+    /// local-only `sort_index`, with `visible_name` as the tie-breaker
+    /// so newly-pulled folders that all share `sort_index = 0` still
+    /// land alphabetically.
     pub fn list_folders(&self) -> Result<Vec<FolderEntry>> {
         let conn = self.db.lock();
-        let mut stmt = conn
-            .prepare("SELECT folder_id, parent, visible_name FROM folders ORDER BY visible_name")?;
+        let mut stmt = conn.prepare(
+            "SELECT folder_id, parent, visible_name, sort_index FROM folders \
+             ORDER BY sort_index ASC, visible_name ASC",
+        )?;
         let rows: Vec<FolderEntry> = stmt
             .query_map([], |r| {
                 let parent: Option<String> = r.get::<_, Option<String>>(1)?;
@@ -1615,6 +1625,7 @@ impl Library {
                     folder_id: r.get(0)?,
                     parent: parent.filter(|s| !s.is_empty()),
                     visible_name: r.get(2)?,
+                    sort_index: r.get(3)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1623,7 +1634,9 @@ impl Library {
 
     /// Mirror a folder from the device into the library's folder index.
     /// Resets `pending_push` to 0 because we just got authoritative
-    /// state from the tablet.
+    /// state from the tablet. Preserves the local `sort_index` if the
+    /// row already exists — folder order is local-only, so a re-pull
+    /// of an unchanged folder must not reset the user's reorderings.
     pub fn upsert_folder(
         &self,
         folder_id: &str,
@@ -1631,16 +1644,176 @@ impl Library {
         visible_name: &str,
         metadata_json: &str,
     ) -> Result<()> {
-        self.db.lock().execute(
-            "INSERT INTO folders(folder_id, parent, visible_name, metadata_json, pending_push) \
-             VALUES (?1, ?2, ?3, ?4, 0) \
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        // Pick a fresh sort_index for newly-seen folders so they slot
+        // at the end of the sibling list rather than colliding at 0
+        // and getting alphabetised on top of older rows.
+        let next_sort: f64 = tx.query_row(
+            "SELECT COALESCE(MAX(sort_index), 0.0) + 1.0 FROM folders WHERE COALESCE(parent,'') = COALESCE(?1,'')",
+            params![parent],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO folders(folder_id, parent, visible_name, metadata_json, pending_push, sort_index) \
+             VALUES (?1, ?2, ?3, ?4, 0, ?5) \
              ON CONFLICT(folder_id) DO UPDATE SET \
                  parent = excluded.parent, \
                  visible_name = excluded.visible_name, \
                  metadata_json = excluded.metadata_json, \
                  pending_push = 0",
-            params![folder_id, parent, visible_name, metadata_json],
+            params![folder_id, parent, visible_name, metadata_json, next_sort],
         )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Create a brand-new local folder and queue it for push. The
+    /// folder's `<uuid>.metadata` is uploaded on the next sync, where
+    /// xochitl picks it up as a `CollectionType` entry. Returns the
+    /// row that the UI can splice into its folder list without a
+    /// full reload.
+    pub fn create_folder(
+        &self,
+        visible_name: &str,
+        parent: Option<&str>,
+    ) -> Result<FolderEntry> {
+        let trimmed = visible_name.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(Error::InvalidArgument(
+                "folder name must not be empty".into(),
+            ));
+        }
+        let folder_id = uuid::Uuid::new_v4().to_string();
+        let last_modified_ms = OffsetDateTime::now_utc().unix_timestamp() * 1000;
+        // Mirror the schema xochitl writes for folders. `parent` is "" at
+        // root, never a JSON null, because the device side reads it as a
+        // string. `synced: false` and the `*modified` flags signal the
+        // tablet to refresh its index after the file lands.
+        let metadata = serde_json::json!({
+            "visibleName": trimmed,
+            "type": "CollectionType",
+            "parent": parent.unwrap_or(""),
+            "lastModified": last_modified_ms.to_string(),
+            "lastOpened": "",
+            "version": 1,
+            "pinned": false,
+            "synced": false,
+            "modified": true,
+            "deleted": false,
+            "metadatamodified": true,
+        });
+        let metadata_json = serde_json::to_string(&metadata)?;
+
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        // Reject inserts under a non-existent parent — the UI shouldn't
+        // ever ask for this, but failing fast keeps orphans out of the
+        // tree.
+        if let Some(p) = parent {
+            let exists: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM folders WHERE folder_id = ?1",
+                params![p],
+                |r| r.get(0),
+            )?;
+            if exists == 0 {
+                return Err(Error::NotFound(format!("folder {p}")));
+            }
+        }
+        // Slot at the end of the sibling list.
+        let next_sort: f64 = tx.query_row(
+            "SELECT COALESCE(MAX(sort_index), 0.0) + 1.0 FROM folders WHERE COALESCE(parent,'') = COALESCE(?1,'')",
+            params![parent],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO folders(folder_id, parent, visible_name, metadata_json, pending_push, sort_index) \
+             VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+            params![folder_id, parent, trimmed, metadata_json, next_sort],
+        )?;
+        tx.commit()?;
+
+        Ok(FolderEntry {
+            folder_id,
+            parent: parent.map(str::to_string),
+            visible_name: trimmed,
+            sort_index: next_sort,
+        })
+    }
+
+    /// Reparent and/or reorder a folder. `new_parent = None` means
+    /// "move to root". `new_sort_index` is the float key used for the
+    /// local-only sidebar ordering — callers compute it as the midpoint
+    /// of two adjacent siblings to avoid renumbering on every drag.
+    ///
+    /// Rejects moving a folder into itself or any of its descendants —
+    /// such a move would create a cycle that `list_folders` cannot
+    /// untangle and the sidebar tree-builder would silently drop.
+    pub fn reorder_folder(
+        &self,
+        folder_id: &str,
+        new_parent: Option<&str>,
+        new_sort_index: f64,
+    ) -> Result<()> {
+        if !new_sort_index.is_finite() {
+            return Err(Error::InvalidArgument(
+                "sort_index must be finite".into(),
+            ));
+        }
+        if new_parent == Some(folder_id) {
+            return Err(Error::InvalidArgument(
+                "cannot move a folder into itself".into(),
+            ));
+        }
+
+        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+
+        // Confirm the row exists.
+        let exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM folders WHERE folder_id = ?1",
+            params![folder_id],
+            |r| r.get(0),
+        )?;
+        if exists == 0 {
+            return Err(Error::NotFound(format!("folder {folder_id}")));
+        }
+
+        // Cycle check: walk up from `new_parent` toward the root; if
+        // we ever hit `folder_id` the move would create a loop. Capped
+        // at the current folder count to avoid spinning forever on a
+        // pre-existing cycle (defence in depth).
+        if let Some(mut cur) = new_parent.map(str::to_string) {
+            let folder_count: i64 =
+                tx.query_row("SELECT COUNT(*) FROM folders", [], |r| r.get(0))?;
+            for _ in 0..folder_count.max(1) {
+                if cur == folder_id {
+                    return Err(Error::InvalidArgument(
+                        "cannot move a folder into one of its descendants".into(),
+                    ));
+                }
+                let parent: Option<String> = tx
+                    .query_row(
+                        "SELECT parent FROM folders WHERE folder_id = ?1",
+                        params![&cur],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                match parent {
+                    Some(p) if !p.is_empty() => cur = p,
+                    _ => break,
+                }
+            }
+        }
+
+        tx.execute(
+            "UPDATE folders SET parent = ?1, sort_index = ?2 WHERE folder_id = ?3",
+            params![new_parent, new_sort_index, folder_id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2291,6 +2464,108 @@ mod tests {
         lib.move_document("doc-1", None).unwrap();
         let docs = lib.list_documents().unwrap();
         assert_eq!(docs[0].parent, None);
+    }
+
+    #[test]
+    fn create_folder_writes_pending_push_row_with_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+
+        let parent = lib.create_folder("Inbox", None).unwrap();
+        let child = lib
+            .create_folder("Drafts", Some(&parent.folder_id))
+            .unwrap();
+
+        // Listing surfaces both folders, child links to parent.
+        let folders = lib.list_folders().unwrap();
+        assert_eq!(folders.len(), 2);
+        let listed_parent = folders
+            .iter()
+            .find(|f| f.folder_id == parent.folder_id)
+            .unwrap();
+        assert_eq!(listed_parent.parent, None);
+        assert_eq!(listed_parent.visible_name, "Inbox");
+        let listed_child = folders
+            .iter()
+            .find(|f| f.folder_id == child.folder_id)
+            .unwrap();
+        assert_eq!(listed_child.parent.as_deref(), Some(parent.folder_id.as_str()));
+
+        // Both rows are pending push so the next sync uploads their
+        // metadata files to the device.
+        let pending = lib.list_pending_folder_pushes().unwrap();
+        assert_eq!(pending.len(), 2);
+        for (_, json) in pending {
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(v.get("type").and_then(|x| x.as_str()), Some("CollectionType"));
+            assert_eq!(v.get("synced").and_then(|x| x.as_bool()), Some(false));
+        }
+    }
+
+    #[test]
+    fn create_folder_rejects_empty_name_and_unknown_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        assert!(lib.create_folder("   ", None).is_err());
+        assert!(lib.create_folder("orphan", Some("does-not-exist")).is_err());
+    }
+
+    #[test]
+    fn reorder_folder_updates_sort_index_and_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let a = lib.create_folder("A", None).unwrap();
+        let b = lib.create_folder("B", None).unwrap();
+        let c = lib.create_folder("C", None).unwrap();
+
+        // Move A between B and C: midpoint of their sort indices.
+        let mid = (b.sort_index + c.sort_index) / 2.0;
+        lib.reorder_folder(&a.folder_id, None, mid).unwrap();
+        let folders = lib.list_folders().unwrap();
+        let order: Vec<_> = folders.iter().map(|f| f.visible_name.as_str()).collect();
+        assert_eq!(order, vec!["B", "A", "C"]);
+
+        // Reparent A under B.
+        lib.reorder_folder(&a.folder_id, Some(&b.folder_id), 0.0)
+            .unwrap();
+        let folders = lib.list_folders().unwrap();
+        let a_row = folders.iter().find(|f| f.folder_id == a.folder_id).unwrap();
+        assert_eq!(a_row.parent.as_deref(), Some(b.folder_id.as_str()));
+    }
+
+    #[test]
+    fn reorder_folder_rejects_self_or_descendant_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let a = lib.create_folder("A", None).unwrap();
+        let b = lib
+            .create_folder("B", Some(&a.folder_id))
+            .unwrap();
+
+        // Self → reject.
+        assert!(lib
+            .reorder_folder(&a.folder_id, Some(&a.folder_id), 0.0)
+            .is_err());
+        // Into descendant → reject.
+        assert!(lib
+            .reorder_folder(&a.folder_id, Some(&b.folder_id), 0.0)
+            .is_err());
+    }
+
+    #[test]
+    fn upsert_folder_preserves_local_sort_index_on_repull() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        // Pretend the device just sent us a folder.
+        lib.upsert_folder("dev-1", None, "Pulled", "{}").unwrap();
+        // User reorders it locally.
+        lib.reorder_folder("dev-1", None, 999.5).unwrap();
+        // Device sends the same folder again (e.g. another sync).
+        lib.upsert_folder("dev-1", None, "Pulled", "{\"v\":2}").unwrap();
+        let folders = lib.list_folders().unwrap();
+        let row = folders.iter().find(|f| f.folder_id == "dev-1").unwrap();
+        // Local order is preserved; metadata is refreshed.
+        assert!((row.sort_index - 999.5).abs() < f64::EPSILON);
     }
 
     #[test]
