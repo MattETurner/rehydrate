@@ -25,6 +25,12 @@ pub enum ProgressEvent {
         document_id: String,
         reason: String,
     },
+    /// Non-fatal warning the UI should surface (e.g. a push wrote
+    /// all files successfully but the tablet's xochitl restart
+    /// failed, so the user must reboot to see the changes).
+    Warning {
+        message: String,
+    },
     Done {
         recorded: usize,
         unchanged: usize,

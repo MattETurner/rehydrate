@@ -584,6 +584,19 @@ input[type="search"]:focus {
   border-radius: 0 3px 3px 0;
   background: var(--accent);
 }
+/* Destructive drop target (Archive): danger-tinted highlight so the
+ * user can tell at a glance that they're about to remove the doc
+ * from the library, not just move it. */
+.sidebar li.drop-target.drop-target-danger {
+  background: var(--danger-bg, var(--err-bg));
+  color: var(--danger, var(--err));
+}
+.sidebar li.drop-target.drop-target-danger::before {
+  background: var(--danger, var(--err));
+}
+.sidebar li.drop-target.drop-target-danger .icon-svg {
+  color: var(--danger, var(--err));
+}
 .sidebar-count {
   margin-left: auto;
   color: var(--muted);
@@ -1113,6 +1126,25 @@ input[type="search"]:focus {
 }
 .folder-picker-row.active .icon-svg {
   color: var(--accent);
+}
+.folder-picker-row.new-folder {
+  color: var(--muted);
+  font-style: italic;
+}
+.folder-picker-row.creating {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px var(--space-3);
+}
+.folder-picker-row.creating input {
+  flex: 1;
+  padding: 4px var(--space-2);
+  font-size: var(--text-sm);
+}
+.folder-picker-row.creating button {
+  padding: 4px var(--space-2);
+  font-size: var(--text-xs);
 }
 .choose-folder-modal .actions {
   margin-top: var(--space-2);
@@ -1758,6 +1790,44 @@ input[type="search"]:focus {
 }
 .success-card .body span {
   color: var(--muted);
+}
+
+.warning-card {
+  margin: var(--space-4) var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  animation: scaleIn var(--motion-base) var(--ease);
+}
+.warning-card .icon-svg {
+  width: 22px;
+  height: 22px;
+  color: var(--warn);
+  flex: none;
+  margin-top: 2px;
+}
+.warning-card .body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.warning-card .body strong {
+  font-size: var(--text-md);
+  color: var(--text);
+}
+.warning-card .body ul {
+  margin: 0;
+  padding-left: var(--space-3);
+  color: var(--muted);
+  line-height: 1.5;
+}
+.warning-card .body li + li {
+  margin-top: var(--space-1);
 }
 
 /* =====================================================================

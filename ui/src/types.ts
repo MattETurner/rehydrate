@@ -171,5 +171,6 @@ export type ProgressEvent =
   | { kind: "file_fetched"; document_id: string; file: string; bytes: number; deduped: boolean }
   | { kind: "document_completed"; document_id: string; unchanged: boolean }
   | { kind: "document_skipped"; document_id: string; reason: string }
+  | { kind: "warning"; message: string }
   | { kind: "done"; recorded: number; unchanged: number; skipped: number }
   | { kind: "cancelled" };

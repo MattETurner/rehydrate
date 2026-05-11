@@ -7,7 +7,12 @@ import {
   type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
-import { ipc, onDeviceReachable } from "./ipc";
+import {
+  ipc,
+  onDeviceReachable,
+  onKeyringWarning,
+  onLegacyFormatWarning,
+} from "./ipc";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LogDrawer } from "./components/LogDrawer";
 import { PasswordDialog } from "./components/PasswordDialog";
@@ -162,6 +167,38 @@ export function App() {
       if (unlisten) unlisten();
     };
   }, []);
+
+  // ---- Keyring warnings ------------------------------------------------
+  // Emitted when we couldn't persist the device password (most often
+  // a Linux box without secret-service running). Surface as a toast
+  // so the user knows future connects will re-ask for the password.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onKeyringWarning((msg) => {
+      toast.show({ tone: "warn", body: msg, duration: 9000 });
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [toast]);
+
+  // ---- Legacy notebook format warning ----------------------------------
+  // Emitted when an older v3/v5 .rm file falls back to the thumbnail
+  // preview path. The viewer still opens; we just want the user to
+  // understand why the result looks fuzzy.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onLegacyFormatWarning((msg) => {
+      toast.show({ tone: "info", body: msg, duration: 7000 });
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [toast]);
 
   // ---- Refresh ---------------------------------------------------------
   const refreshLibrary = useCallback(async () => {
@@ -1738,6 +1775,12 @@ export function App() {
           folders={folders}
           onCancel={() => setMovingDocs(null)}
           onChoose={performMoveDocs}
+          onFolderCreated={() => {
+            // Pull the freshly-created folder into the parent's
+            // state so the picker shows it as a selectable target
+            // for "Move here".
+            void refreshLibrary();
+          }}
         />
       )}
       {showCheatsheet && <Cheatsheet onClose={() => setShowCheatsheet(false)} />}
@@ -2150,9 +2193,15 @@ function SidebarItem({
 }) {
   const [dragOver, setDragOver] = useState(false);
   const droppable = dropTarget !== undefined && !!onDocumentDrop;
+  // Tint the drop highlight differently for Archive vs folders — a
+  // doc landing in Archive is destructive (it leaves the library
+  // listing), so we use the danger palette to make the difference
+  // unmistakable while the user is mid-drag.
+  const isArchiveTarget = dropTarget === "archive";
   const cls = [
     viewKey(view) === viewKey(v) ? "active" : "",
     dragOver ? "drop-target" : "",
+    dragOver && isArchiveTarget ? "drop-target-danger" : "",
   ]
     .filter(Boolean)
     .join(" ");

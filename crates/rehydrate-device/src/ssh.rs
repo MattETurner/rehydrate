@@ -455,22 +455,20 @@ impl Device for SshDevice {
 
         drop(inner);
 
-        // xochitl caches the document index in memory; restart so it
-        // picks up the new files. Brief (~3s) UI interruption.
-        //
-        // Audit fix M1: surface the restart failure at warn level
-        // instead of silently dropping it. A successful upload + a
-        // failed restart looks like "push succeeded" to the user, but
-        // the tablet keeps showing the old document index until the
-        // user manually reboots — exactly the kind of failure the
-        // reMarkable's offline-first design promises to avoid.
-        if let Err(e) = self.exec("systemctl restart xochitl").await {
-            tracing::warn!(
-                error = %e,
-                "xochitl restart failed after push; tablet may show stale state until next reboot",
-            );
-        }
+        // Per-document restart was removed: a multi-document push
+        // would otherwise restart xochitl N times, blanking the
+        // tablet UI for ~3s each. The push engine batches a single
+        // `refresh_document_index` call after all docs land.
         Ok(())
+    }
+
+    async fn refresh_document_index(&self) -> DeviceResult<()> {
+        // The tablet caches the document index in memory; this
+        // restart is what makes freshly-pushed files visible on the
+        // tablet's UI. ~3s interruption. If it fails we return Err so
+        // the push engine can emit a warning event — the files
+        // themselves are already safely on the device.
+        self.exec("systemctl restart xochitl").await.map(|_| ())
     }
 
     async fn fetch_document_tree(&self, uuid: &str) -> DeviceResult<Vec<RemoteFile>> {

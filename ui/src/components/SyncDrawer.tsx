@@ -49,6 +49,10 @@ export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
   const [phase, setPhase] = useState<"plan" | "pull" | "push" | "done">("plan");
   const [report, setReport] = useState<TwoWayReport | null>(null);
   const [progress, setProgress] = useState<Record<string, DocProgress>>({});
+  // Non-fatal warnings the engine emits (e.g. push uploaded everything
+  // but the tablet's xochitl restart failed). Surfaced as a card below
+  // the success state — the sync still counts as completed.
+  const [warnings, setWarnings] = useState<string[]>([]);
   const startedAtRef = useRef<number | null>(null);
 
   // Mirror the local `running` flag up to the parent so the toolbar
@@ -133,6 +137,8 @@ export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
     setRunning(true);
     setProgress({});
     setReport(null);
+    setWarnings([]);
+    setPlanError(null);
     setPhase("pull");
     startedAtRef.current = Date.now();
 
@@ -178,6 +184,14 @@ export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
               bytes: 0,
               reason: ev.reason,
             };
+            break;
+          case "warning":
+            // Warnings are session-level (not per-doc), so collect
+            // them outside the doc-keyed progress map. Effect below
+            // pulls them into `warnings` after `setProgress` returns.
+            queueMicrotask(() =>
+              setWarnings((prev) => [...prev, ev.message]),
+            );
             break;
         }
         return next;
@@ -226,7 +240,27 @@ export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
       {planError && (
         <div className="error">
           <Icon name="warn" />
-          {planError}
+          <span style={{ flex: 1 }}>{planError}</span>
+          <button onClick={start} disabled={running}>
+            <Icon name="sync" /> Retry
+          </button>
+        </div>
+      )}
+      {warnings.length > 0 && (
+        <div className="warning-card">
+          <Icon name="warn" />
+          <div className="body">
+            <strong>
+              Sync completed with {warnings.length === 1
+                ? "a warning"
+                : `${warnings.length} warnings`}
+            </strong>
+            <ul>
+              {warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 

@@ -201,6 +201,30 @@ pub async fn execute_push(
         }
     }
 
+    // Refresh the tablet's document index once for the whole push
+    // session. Per-document restarts would blank the UI for several
+    // seconds each. A failure here means the files are safely on
+    // the device but the tablet UI may keep showing the old state
+    // until the user reboots — surface a warning event so the UI
+    // can tell the user, but don't fail the sync (the next push
+    // will retry the refresh).
+    if pushed > 0 && !cancel.is_cancelled() {
+        if let Err(e) = device.refresh_document_index().await {
+            tracing::warn!(error = %e, "post-push index refresh failed");
+            if let Some(p) = &progress {
+                let _ = p
+                    .send(ProgressEvent::Warning {
+                        message: format!(
+                            "Files uploaded successfully, but the tablet's document index \
+                             didn't refresh. Reboot the tablet, or it will pick up the \
+                             changes on the next sync. ({e})"
+                        ),
+                    })
+                    .await;
+            }
+        }
+    }
+
     if let Some(p) = &progress {
         let _ = p
             .send(ProgressEvent::Done {
@@ -258,11 +282,30 @@ async fn push_one(
         .put_document_tree(&item.document.document_id, &files)
         .await?;
 
-    library.update_last_seen_manifest(
-        &item.document.document_id,
-        item.document.current_manifest.as_str(),
-    )?;
-    Ok(())
+    // Files are now on the device. We MUST advance last_seen_manifest
+    // or the next push will treat this doc as outbound again and
+    // re-upload — overwriting any device-side edit the user makes in
+    // the interim. Transient SQLite errors (busy, locked) get a few
+    // retries with backoff so we don't lose the device-side state
+    // because of momentary contention. If every retry fails the
+    // error propagates: the caller logs it and the next push will
+    // re-run this branch, which is safe because both the device
+    // write and the DB update are idempotent.
+    let doc_id = &item.document.document_id;
+    let manifest_hex = item.document.current_manifest.as_str();
+    let mut last_err = None;
+    for attempt in 0..5u32 {
+        match library.update_last_seen_manifest(doc_id, manifest_hex) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                // Exponential-ish backoff: 25, 50, 100, 200, 400 ms.
+                let delay_ms = 25u64 << attempt;
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+    Err(last_err.expect("loop ran at least once").into())
 }
 
 #[cfg(test)]

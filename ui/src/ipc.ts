@@ -118,3 +118,17 @@ export function onSyncPhase(
 ): Promise<UnlistenFn> {
   return listen<"pull" | "push">("sync:phase", (e) => cb(e.payload));
 }
+
+export function onKeyringWarning(
+  cb: (message: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("keyring:warning", (e) => cb(e.payload));
+}
+
+export function onLegacyFormatWarning(
+  cb: (message: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("document:legacy-format-warning", (e) =>
+    cb(e.payload),
+  );
+}

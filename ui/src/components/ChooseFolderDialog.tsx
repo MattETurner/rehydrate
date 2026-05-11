@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Icon } from "./Icon";
+import { ipc } from "../ipc";
 import type { FolderEntry } from "../types";
 
 interface Props {
@@ -12,6 +13,11 @@ interface Props {
   excludedIds?: string[];
   onCancel: () => void;
   onChoose: (folderId: string | null) => Promise<void>;
+  /** Called after the user creates a new folder inline, so the parent
+   *  can refresh its folder list. The new folder's id is also pre-
+   *  selected as the destination so the user can immediately click
+   *  "Move here". */
+  onFolderCreated?: (folder: FolderEntry) => void;
 }
 
 interface Node {
@@ -55,10 +61,17 @@ export function ChooseFolderDialog({
   excludedIds = [],
   onCancel,
   onChoose,
+  onFolderCreated,
 }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Inline "+ New folder" affordance state. `creating` toggles an
+  // input row at the top of the picker; `creatingUnder` records the
+  // parent so the user can create a subfolder while their selection
+  // is on, e.g., "Receipts" → "Receipts/2026".
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
   const excluded = useMemo(() => new Set(excludedIds), [excludedIds]);
   const roots = useMemo(() => buildTree(folders, excluded), [folders, excluded]);
 
@@ -69,6 +82,27 @@ export function ChooseFolderDialog({
       await onChoose(selected);
     } catch (err) {
       setError(String(err));
+      setBusy(false);
+    }
+  }
+
+  async function createInline() {
+    const name = newName.trim();
+    if (!name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Selected row at create-time becomes the parent — pick a
+      // folder first, then "+ New folder" creates a subfolder
+      // there. With no selection we create at the root.
+      const created = await ipc.createFolder(name, selected);
+      onFolderCreated?.(created);
+      setSelected(created.folder_id);
+      setCreating(false);
+      setNewName("");
+    } catch (err) {
+      setError(String(err));
+    } finally {
       setBusy(false);
     }
   }
@@ -93,6 +127,67 @@ export function ChooseFolderDialog({
             <Icon name="library" />
             <span>Library root</span>
           </li>
+          {creating ? (
+            <li className="folder-picker-row creating">
+              <Icon name="folder" />
+              <input
+                type="text"
+                autoFocus
+                placeholder={
+                  selected === null
+                    ? "New folder at root"
+                    : "New subfolder name"
+                }
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void createInline();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setCreating(false);
+                    setNewName("");
+                  }
+                }}
+                disabled={busy}
+              />
+              <button
+                type="button"
+                disabled={busy || !newName.trim()}
+                onClick={createInline}
+              >
+                Create
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setCreating(false);
+                  setNewName("");
+                }}
+              >
+                Cancel
+              </button>
+            </li>
+          ) : (
+            <li
+              className="folder-picker-row new-folder"
+              onClick={() => setCreating(true)}
+              title={
+                selected === null
+                  ? "Create a new folder at the root"
+                  : "Create a subfolder under the selected folder"
+              }
+            >
+              <Icon name="folder" />
+              <span>
+                {selected === null
+                  ? "+ New folder…"
+                  : "+ New subfolder here…"}
+              </span>
+            </li>
+          )}
           {roots.map((node) => (
             <FolderPickerRow
               key={node.folder.folder_id}
