@@ -50,6 +50,15 @@ impl<N> CrdtSequence<N> {
     pub fn push(&mut self, item: CrdtSequenceItem<N>) -> Option<CrdtSequenceItem<N>> {
         self.items.insert(item.item_id.clone(), item)
     }
+
+    /// Iterate over the items. CRDT order is technically determined by
+    /// the `left_id`/`right_id` linked list, but renderers that only
+    /// need a "good enough" reading order can sort by `item_id`
+    /// (which monotonically advances for linearly-typed text). The
+    /// caller chooses.
+    pub fn iter(&self) -> impl Iterator<Item = &CrdtSequenceItem<N>> {
+        self.items.values()
+    }
 }
 
 impl<N> Default for CrdtSequence<N> {

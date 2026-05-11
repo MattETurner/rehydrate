@@ -98,43 +98,109 @@ impl Manifest {
     /// otherwise validate; this is the choke point.
     pub fn validate_paths(&self) -> Result<()> {
         for f in &self.files {
-            let p = &f.path;
-            if p.is_empty() {
-                return Err(crate::Error::Corrupt {
-                    path: "<manifest>".into(),
-                    reason: "empty file path".into(),
-                });
-            }
-            if p.contains('\0') || p.contains('\\') {
-                return Err(crate::Error::Corrupt {
-                    path: "<manifest>".into(),
-                    reason: format!("file path contains forbidden char: {p:?}"),
-                });
-            }
-            if p.starts_with('/') || p.starts_with('~') {
-                return Err(crate::Error::Corrupt {
-                    path: "<manifest>".into(),
-                    reason: format!("absolute file path not allowed: {p:?}"),
-                });
-            }
-            // Windows drive letter check (e.g. "C:\\..." or "C:/...").
-            if p.len() >= 2 && p.as_bytes().get(1) == Some(&b':') {
-                return Err(crate::Error::Corrupt {
-                    path: "<manifest>".into(),
-                    reason: format!("drive-prefixed path not allowed: {p:?}"),
-                });
-            }
-            for component in p.split('/') {
-                if component == ".." {
-                    return Err(crate::Error::Corrupt {
-                        path: "<manifest>".into(),
-                        reason: format!("parent-directory traversal in path: {p:?}"),
-                    });
-                }
-            }
+            validate_one_path(&f.path)?;
         }
         Ok(())
     }
+}
+
+/// Validate a single posix-style relative path drawn from a manifest.
+/// The reMarkable side emits well-behaved paths, but the device is
+/// untrusted from our perspective so this is the choke point that
+/// stops a malicious manifest from producing a path the host OS
+/// interprets in unexpected ways. Rules:
+///
+/// * non-empty
+/// * no NUL or backslash bytes
+/// * no control chars (`0x00–0x1F`, `0x7F`) anywhere
+/// * not absolute, not `~`-prefixed
+/// * no Windows drive letter / NTFS alternate stream (any `:` byte)
+/// * no `..` components
+/// * no component that is a Windows reserved device name
+///   (`CON`, `PRN`, `AUX`, `NUL`, `COM1..COM9`, `LPT1..LPT9`,
+///   including with extensions like `CON.txt`)
+/// * no component with a trailing dot or trailing space
+///   (Windows silently strips those, leading to silent corruption)
+fn validate_one_path(p: &str) -> Result<()> {
+    if p.is_empty() {
+        return Err(crate::Error::Corrupt {
+            path: "<manifest>".into(),
+            reason: "empty file path".into(),
+        });
+    }
+    if p.contains('\\') {
+        return Err(crate::Error::Corrupt {
+            path: "<manifest>".into(),
+            reason: format!("backslash not allowed in path: {p:?}"),
+        });
+    }
+    if p.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
+        return Err(crate::Error::Corrupt {
+            path: "<manifest>".into(),
+            reason: format!("control character in path: {p:?}"),
+        });
+    }
+    if p.starts_with('/') || p.starts_with('~') {
+        return Err(crate::Error::Corrupt {
+            path: "<manifest>".into(),
+            reason: format!("absolute file path not allowed: {p:?}"),
+        });
+    }
+    // Any `:` is suspect on Windows (drive letter `C:/...`, NTFS
+    // alternate data stream `file.txt:hidden`). Manifest paths from
+    // a posix device should never contain one.
+    if p.contains(':') {
+        return Err(crate::Error::Corrupt {
+            path: "<manifest>".into(),
+            reason: format!("colon not allowed in path: {p:?}"),
+        });
+    }
+    for component in p.split('/') {
+        if component == ".." {
+            return Err(crate::Error::Corrupt {
+                path: "<manifest>".into(),
+                reason: format!("parent-directory traversal in path: {p:?}"),
+            });
+        }
+        if is_windows_reserved_component(component) {
+            return Err(crate::Error::Corrupt {
+                path: "<manifest>".into(),
+                reason: format!("Windows-reserved name in path: {p:?}"),
+            });
+        }
+        // Windows silently trims a trailing dot or space from the
+        // final segment of every file write, so "foo." and "foo "
+        // both end up writing to "foo". That's silent collision-fuel
+        // for a malicious manifest. Reject up-front; legitimate
+        // reMarkable filenames never have trailing dots/spaces.
+        if let Some(last) = component.chars().last() {
+            if last == '.' || last == ' ' {
+                return Err(crate::Error::Corrupt {
+                    path: "<manifest>".into(),
+                    reason: format!("trailing dot or space in path component: {p:?}"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// True when `component` is a Windows reserved device name, with or
+/// without an extension. Comparison is case-insensitive because
+/// Windows reserves these regardless of casing.
+fn is_windows_reserved_component(component: &str) -> bool {
+    // Split off an optional extension — `CON.txt` is just as
+    // reserved as `CON` on Windows.
+    let stem = component.split('.').next().unwrap_or(component);
+    let upper = stem.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL"
+            | "COM0" | "COM1" | "COM2" | "COM3" | "COM4"
+            | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
+            | "LPT0" | "LPT1" | "LPT2" | "LPT3" | "LPT4"
+            | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+    )
 }
 
 /// Recursively reorder a `serde_json::Value` so that all maps have keys in
@@ -265,5 +331,89 @@ mod tests {
         assert_eq!(parsed, m);
         // Re-canonicalizing the parsed manifest yields the same bytes.
         assert_eq!(parsed.canonical_json().unwrap(), bytes);
+    }
+
+    fn manifest_with_path(path: &str) -> Manifest {
+        Manifest {
+            schema: MANIFEST_SCHEMA,
+            document_id: "u".into(),
+            doc_type: "Notebook".into(),
+            visible_name: "X".into(),
+            parent: None,
+            metadata: Value::Null,
+            content_meta: Value::Null,
+            files: vec![ManifestFile {
+                path: path.into(),
+                sha256: h(b"x"),
+                size: 1,
+                mode: 0o644,
+                derived: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn validate_paths_rejects_control_chars() {
+        for bad in ["foo\nbar", "foo\rbar", "foo\x01bar", "foo\x7fbar"] {
+            let m = manifest_with_path(bad);
+            assert!(
+                m.validate_paths().is_err(),
+                "expected reject for {:?}",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn validate_paths_rejects_windows_reserved_names() {
+        // Bare reserved names AND reserved-with-extension both blocked.
+        for bad in [
+            "CON", "PRN", "AUX", "NUL", "COM1", "LPT9", "con", "Com3",
+            "CON.metadata", "lpt1.txt", "nested/CON",
+        ] {
+            assert!(
+                manifest_with_path(bad).validate_paths().is_err(),
+                "expected reject for {:?}",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn validate_paths_rejects_ntfs_streams_and_drive_letters() {
+        for bad in ["file:stream", "C:/foo", "C:\\foo", "x:y"] {
+            assert!(
+                manifest_with_path(bad).validate_paths().is_err(),
+                "expected reject for {:?}",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn validate_paths_rejects_trailing_dot_or_space() {
+        for bad in ["foo.", "bar ", "nested/foo.", "nested/bar "] {
+            assert!(
+                manifest_with_path(bad).validate_paths().is_err(),
+                "expected reject for {:?}",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn validate_paths_accepts_legitimate_remarkable_paths() {
+        // A handful of real-world-shaped paths the device emits.
+        for ok in [
+            "abcd-1234.metadata",
+            "abcd-1234.content",
+            "abcd-1234/page-1.rm",
+            "abcd-1234.thumbnails/0.jpg",
+            "ocr/transcript.md",
+        ] {
+            manifest_with_path(ok)
+                .validate_paths()
+                .unwrap_or_else(|e| panic!("legit path {:?} rejected: {:?}", ok, e));
+        }
     }
 }

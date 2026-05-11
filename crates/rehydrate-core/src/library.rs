@@ -1950,6 +1950,20 @@ impl Library {
         // pull writes file blobs before calling record_version, so there's
         // a brief window where a freshly-written blob is on disk but no
         // version refers to it. The `grace` window covers that.
+        //
+        // Clock-skew note: this uses `SystemTime::now()` and the blob's
+        // filesystem mtime, both wall-clock values. If the system clock
+        // jumps backward (NTP correction, DST oddities, manual change)
+        // between the blob write and the GC scan, `duration_since`
+        // returns `Err` and we treat the blob as old enough to delete.
+        // To keep that benign we additionally check the reverse
+        // direction — if the blob's mtime is in the *future* relative
+        // to `now` it's almost certainly a clock skew and we keep the
+        // blob. The remaining failure mode (clock jumps forward
+        // *during* the same GC run) would falsely delete a blob younger
+        // than `grace`; documenting rather than fixing because the
+        // mitigation would require a separate monotonic write-time
+        // store that's overkill for a desktop app on a stable clock.
         let now = std::time::SystemTime::now();
 
         walk_blobs(&blobs_dir, &mut |path, hash_str| {
@@ -1963,8 +1977,17 @@ impl Library {
             };
             // Skip recently-modified blobs (potential in-flight write).
             if let Ok(modified) = meta.modified() {
-                if let Ok(age) = now.duration_since(modified) {
-                    if age < grace {
+                match now.duration_since(modified) {
+                    Ok(age) if age < grace => return,
+                    Ok(_) => {} // old enough; fall through to delete.
+                    Err(_) => {
+                        // Blob mtime is in the future relative to `now`
+                        // — assume clock skew and keep it. Logging at
+                        // debug because this is informational.
+                        tracing::debug!(
+                            "gc: blob {} mtime is in the future; keeping (clock skew?)",
+                            hash_str
+                        );
                         return;
                     }
                 }

@@ -21,16 +21,20 @@
 //! ~0.39 alpha applied through an ExtGState; rendered before pens so it
 //! sits underneath the ink, matching the device.
 
+use std::collections::{HashMap, HashSet};
+
 use image::ImageReader;
 use printpdf::{
-    Color, ExtendedGraphicsState, ExtendedGraphicsStateId, Line as PdfLine, LineCapStyle,
-    LineDashPattern, LineJoinStyle, LinePoint, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Point,
-    Pt, RawImage, Rgb, XObjectTransform,
+    BuiltinFont, Color, ExtendedGraphicsState, ExtendedGraphicsStateId, Line as PdfLine,
+    LineCapStyle, LineDashPattern, LineJoinStyle, LinePoint, Mm, Op, PdfDocument, PdfFontHandle,
+    PdfPage, PdfSaveOptions, Point, Pt, RawImage, Rgb, TextItem as PdfTextItem, XObjectTransform,
 };
 use rm_parser::shared::{pen_color::PenColor, tool::Tool};
 use rm_parser::v6::block::Block;
+use rm_parser::v6::crdt::CrdtId;
 use rm_parser::v6::scene_item::line::Line;
 use rm_parser::v6::scene_item::point::Point as RmPoint;
+use rm_parser::v6::scene_item::text::{Text, TextItem as RmTextItem};
 use rm_parser::RemarkableFile;
 
 const PAGE_W_MM: f32 = 210.0;
@@ -78,28 +82,104 @@ pub fn build_pdf_from_rm_files(title: &str, pages: &[Vec<u8>]) -> Result<Vec<u8>
         .save(&PdfSaveOptions::default(), &mut warnings))
 }
 
+/// Collect the renderable items from a parsed v6 file.
+///
+/// Filtering applied here, before any geometry math:
+///
+/// * `CrdtSequenceItem::deleted_length > 0` items are skipped — those
+///   are CRDT tombstones for erased strokes / deleted text. Without
+///   this filter, an eraser stroke on the tablet still shows up in
+///   the rendered PDF.
+/// * Items whose parent `TreeNode` (i.e. layer / group) has
+///   `visible.value == false` are skipped — hiding a layer on the
+///   device should hide it in the export too.
+fn collect_v6_renderables(blocks: &[Block]) -> (Vec<&Line>, Vec<&Text>) {
+    // First pass: build a `parent_id -> is_visible` map from
+    // `TreeNode` blocks. A missing entry means we never saw a
+    // visibility declaration for that group, so we err on the side
+    // of rendering (matches the device default).
+    let mut visibility: HashMap<CrdtId, bool> = HashMap::new();
+    for b in blocks {
+        if let Block::TreeNode(tn) = b {
+            visibility.insert(tn.group.node_id, tn.group.visible.value);
+        }
+    }
+    // Transitive visibility: a child group inherits "hidden" from
+    // any ancestor group. SceneGroupItem blocks place a group under
+    // a parent (the parent_id); walk those edges and mark a group
+    // hidden if any ancestor is hidden.
+    let mut group_parent: HashMap<CrdtId, CrdtId> = HashMap::new();
+    for b in blocks {
+        if let Block::SceneGroupItem(sgi) = b {
+            if let Some(child) = sgi.item.value {
+                group_parent.insert(child, sgi.parent_id);
+            }
+        }
+    }
+    let is_visible = |mut id: CrdtId| -> bool {
+        // Cap the walk at the total number of groups so a malformed
+        // file with a cycle can't trap us here.
+        let mut seen: HashSet<CrdtId> = HashSet::new();
+        for _ in 0..visibility.len().max(1) {
+            if !seen.insert(id) {
+                return true;
+            }
+            if visibility.get(&id) == Some(&false) {
+                return false;
+            }
+            match group_parent.get(&id) {
+                Some(p) => id = *p,
+                None => return true,
+            }
+        }
+        true
+    };
+
+    let mut lines: Vec<&Line> = Vec::new();
+    let mut texts: Vec<&Text> = Vec::new();
+    for b in blocks {
+        match b {
+            Block::SceneLineItem(item) => {
+                if item.item.deleted_length != 0 {
+                    continue;
+                }
+                if !is_visible(item.parent_id) {
+                    continue;
+                }
+                if let Some(line) = item.item.value.as_ref() {
+                    lines.push(line);
+                }
+            }
+            Block::SceneTextItem(item) => {
+                if item.item.deleted_length != 0 {
+                    continue;
+                }
+                if !is_visible(item.parent_id) {
+                    continue;
+                }
+                if let Some(text) = item.item.value.as_ref() {
+                    texts.push(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    (lines, texts)
+}
+
 fn render_rm_to_ops(
     rm: &RemarkableFile,
     opaque_gs: &ExtendedGraphicsStateId,
     highlighter_gs: &ExtendedGraphicsStateId,
 ) -> Result<Vec<Op>, String> {
-    let lines: Vec<&Line> = match rm {
-        RemarkableFile::V6 { blocks, .. } => blocks
-            .iter()
-            .filter_map(|b| {
-                if let Block::SceneLineItem(item) = b {
-                    item.item.value.as_ref()
-                } else {
-                    None
-                }
-            })
-            .collect(),
+    let (lines, texts) = match rm {
+        RemarkableFile::V6 { blocks, .. } => collect_v6_renderables(blocks),
         RemarkableFile::Other { .. } => {
             return Err("unsupported .rm version (only v6 strokes are rendered today)".into());
         }
     };
 
-    if lines.is_empty() {
+    if lines.is_empty() && texts.is_empty() {
         return Ok(vec![]);
     }
 
@@ -123,6 +203,22 @@ fn render_rm_to_ops(
             min_y = min_y.min(p.y());
             max_y = max_y.max(p.y());
         }
+    }
+    // Also fold typed-text blocks into the bbox so a notebook that
+    // contains only text doesn't collapse to a zero-area canvas
+    // (and a mixed-content page widens the bbox correctly so the
+    // text isn't clipped at the right edge).
+    for text in &texts {
+        let tx = text.x as f32;
+        let ty = text.y as f32;
+        let tw = text.width.max(0.0);
+        min_x = min_x.min(tx);
+        max_x = max_x.max(tx + tw);
+        min_y = min_y.min(ty);
+        // Reserve ~60 tablet-px of height per text block as a rough
+        // line-height estimate. Better than collapsing the bbox to
+        // a single point and then clipping the visible text.
+        max_y = max_y.max(ty + 60.0);
     }
     if !min_x.is_finite() {
         return Ok(vec![]);
@@ -290,6 +386,81 @@ fn render_rm_to_ops(
             chunk_size,
             &mut last_width_pt,
         );
+    }
+
+    // Typed-text pass. Runs after strokes so it sits on top of ink
+    // (matches the tablet's z-order). We use the built-in Helvetica
+    // — it ships embedded in every PDF reader, so no font subsetting
+    // / licensing footwork. Style information from the device (BOLD,
+    // HEADING, BULLET) is not yet honoured; for v1.0 we emit the
+    // text content at the recorded position so it isn't silently
+    // dropped, and call richer styling a follow-up.
+    if !texts.is_empty() {
+        let font = PdfFontHandle::Builtin(BuiltinFont::Helvetica);
+        // Tablet "default" typed text is ~32 device-px tall. Scaled
+        // through the bbox fit (same scale_mm_per_px the strokes
+        // use) it maps to a reasonable on-page size.
+        let font_size_pt = (32.0 * scale_mm_per_px * PT_PER_INCH / MM_PER_INCH).clamp(6.0, 36.0);
+        ops.push(Op::StartTextSection);
+        ops.push(Op::SetFont {
+            font: font.clone(),
+            size: Pt(font_size_pt),
+        });
+        // Default to black ink for typed text; reMarkable typed
+        // text doesn't carry a per-block colour the way strokes do.
+        ops.push(Op::SetFillColor {
+            col: Color::Rgb(Rgb {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                icc_profile: None,
+            }),
+        });
+        for text in &texts {
+            // Reconstruct the visible text in CRDT insertion order.
+            // `item_id` advances monotonically as the user types, so
+            // sorting by it is a "good enough" reading order for
+            // linearly-authored text; CRDT linked-list traversal
+            // is overkill for v1.0.
+            let mut items: Vec<_> = text.items.iter().collect();
+            items.sort_by_key(|i| (i.item_id.part1, i.item_id.part2));
+            let mut buf = String::new();
+            for item in items {
+                if item.deleted_length != 0 {
+                    continue;
+                }
+                if let RmTextItem::Text(s) = &item.value {
+                    buf.push_str(s);
+                }
+            }
+            let trimmed = buf.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Position the text at its recorded anchor (top-left of
+            // the text block). PDF baseline anchors text from the
+            // bottom of the glyph, so add the font cap-height back
+            // so the visual top aligns with the recorded y.
+            let anchor = map_xy(text.x as f32, text.y as f32);
+            let baseline = Point {
+                x: anchor.x,
+                y: Pt(anchor.y.0 - font_size_pt * 0.8),
+            };
+            ops.push(Op::SetTextCursor { pos: baseline });
+            // Split on newline-equivalents so multi-line typed text
+            // visually wraps. printpdf treats `\n` as part of the
+            // string verbatim, so we emit explicit line breaks.
+            let lines_of_text: Vec<&str> = trimmed.split('\n').collect();
+            for (i, line_str) in lines_of_text.iter().enumerate() {
+                if i > 0 {
+                    ops.push(Op::AddLineBreak);
+                }
+                ops.push(Op::ShowText {
+                    items: vec![PdfTextItem::Text(line_str.to_string())],
+                });
+            }
+        }
+        ops.push(Op::EndTextSection);
     }
 
     Ok(ops)

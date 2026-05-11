@@ -357,6 +357,14 @@ pub async fn import_file(
 ///
 /// Same magic-byte sniff as `import_file`: a "*.pdf" that doesn't
 /// start with "%PDF-" is rejected before any blob is written.
+/// Hard cap on `import_dropped_file`. Real PDFs and EPUBs top out at
+/// a few hundred MB even for textbook-sized documents; anything past
+/// this is either a misclick or a malicious / corrupted file the
+/// user shouldn't be ingesting. The bytes traverse a JSON-encoded
+/// IPC channel so without this cap a 10 GB drag could OOM both the
+/// renderer (encoding side) and the Rust side (decoding side).
+const MAX_IMPORT_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
 #[tauri::command]
 pub async fn import_dropped_file(
     file_name: String,
@@ -364,6 +372,13 @@ pub async fn import_dropped_file(
     state: State<'_, AppState>,
 ) -> Result<DocumentSummary, String> {
     let lib = lib_arc(&state).await?;
+
+    if (bytes.len() as u64) > MAX_IMPORT_FILE_BYTES {
+        return Err(format!(
+            "{file_name} is too large to import (limit is {} MiB)",
+            MAX_IMPORT_FILE_BYTES / 1024 / 1024
+        ));
+    }
 
     let ext_lower = std::path::Path::new(&file_name)
         .extension()
@@ -530,15 +545,17 @@ pub async fn open_document(
         } else {
             "epub"
         };
-        // Sha256Hex deserialization is now strict (audit H4) so the
-        // hash is always 64 chars; .get(..12) defends against any
-        // future relaxation.
-        let prefix = body
-            .sha256
-            .as_str()
-            .get(..12)
-            .unwrap_or(body.sha256.as_str());
-        let p = cache_root.join(format!("{safe_name}-{prefix}.{ext}"));
+        // Cache key uses the document_id and the full content hash.
+        // Earlier versions truncated the hash to 12 hex chars, which
+        // gave each cache slot only ~48 bits of separation — well
+        // inside birthday-collision range for a library a malicious
+        // device could populate. Including the doc_id pins the cache
+        // to *this* document so a second doc whose body hash collided
+        // could not steal the slot.
+        let p = cache_root.join(format!(
+            "{safe_name}-{document_id}-{}.{ext}",
+            body.sha256.as_str()
+        ));
         // Read the blob lazily — for hot opens of a previously-cached
         // PDF/EPUB this avoids loading the whole document into memory
         // just to throw it away.
@@ -554,14 +571,16 @@ pub async fn open_document(
         //      preview, used only if a page has no parseable ink data).
         // Cache key includes a layout version suffix so bumping the
         // assembly logic invalidates stale previews automatically.
-        const PREVIEW_LAYOUT_VERSION: &str = "ink-v15";
-        // Defensive `.get(..12)` so we can never panic on a hex-string
-        // that for some reason is shorter than expected (audit H4 made
-        // this impossible at the type level, but the slice was a UI
-        // panic vector before that fix).
-        let manifest_hex = doc.current_manifest.as_str();
-        let prefix = manifest_hex.get(..12).unwrap_or(manifest_hex);
-        let p = cache_root.join(format!("{safe_name}-{prefix}-{PREVIEW_LAYOUT_VERSION}.pdf"));
+        // Bump this when the renderer changes shape (filtering,
+        // layout, font metrics, …) so stale notebook previews
+        // invalidate automatically.
+        const PREVIEW_LAYOUT_VERSION: &str = "ink-v16";
+        // Full manifest hash + document_id in the key — see the
+        // PDF/EPUB branch above for why we no longer truncate.
+        let p = cache_root.join(format!(
+            "{safe_name}-{document_id}-{}-{PREVIEW_LAYOUT_VERSION}.pdf",
+            doc.current_manifest.as_str()
+        ));
         if !p.exists() {
             let mut rm_pages: Vec<_> = manifest
                 .files
@@ -584,10 +603,21 @@ pub async fn open_document(
                         // .rm parse failed (older v3/v5 format we don't
                         // render, or corrupt page) — fall through to the
                         // thumbnail fallback so the user still sees
-                        // something.
+                        // something. Emit a warning so the UI can
+                        // tell the user *why* the preview is fuzzy
+                        // instead of vector-sharp.
                         tracing::warn!(
                             "ink rendering failed for {}: {e}; falling back to thumbnails",
                             doc.document_id
+                        );
+                        let _ = app.emit(
+                            "document:legacy-format-warning",
+                            format!(
+                                "\"{}\" uses an older notebook format. The preview falls \
+                                 back to lower-resolution thumbnails. Sync the tablet to \
+                                 upgrade the notebook to the current format.",
+                                doc.visible_name
+                            ),
                         );
                         thumbnail_fallback_pdf(&lib, &manifest, &doc.visible_name)
                     },
@@ -846,10 +876,74 @@ fn sanitize(name: &str) -> String {
             out.push('-');
         }
     }
-    if out.is_empty() {
-        "Untitled".into()
+    // Strip leading/trailing dots, dashes, and underscores. Windows
+    // silently drops trailing dots and spaces on write, so a doc
+    // literally named "..." would otherwise become an empty filename
+    // (or worse, collide with a parent-directory shortcut). We also
+    // strip dashes/underscores because the space→`-` rewrite above
+    // turns runs of trailing whitespace into runs of dashes.
+    let trimmed = out.trim_matches(|c: char| c == '.' || c == '-' || c == '_');
+    if trimmed.is_empty() {
+        return "Untitled".into();
+    }
+    // Reserved-name check looks at the bare stem (everything before
+    // the first `.`) case-insensitively — Windows reserves these
+    // regardless of extension or casing.
+    let stem = trimmed.split('.').next().unwrap_or(trimmed);
+    let reserved = matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON" | "PRN" | "AUX" | "NUL"
+            | "COM0" | "COM1" | "COM2" | "COM3" | "COM4"
+            | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
+            | "LPT0" | "LPT1" | "LPT2" | "LPT3" | "LPT4"
+            | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+    );
+    if reserved {
+        // Prefix-rescue a reserved name so the on-disk filename is
+        // legal on Windows but still recognisable to the user. A
+        // doc the user titled "CON" exports as "doc-CON-…".
+        format!("doc-{trimmed}")
     } else {
-        out
+        trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize;
+
+    #[test]
+    fn strips_special_chars_and_normalises_spaces() {
+        assert_eq!(sanitize("Hello World"), "Hello-World");
+        assert_eq!(sanitize("a/b\\c?d*e:f"), "abcdef");
+    }
+
+    #[test]
+    fn empty_after_strip_falls_back_to_untitled() {
+        assert_eq!(sanitize(""), "Untitled");
+        assert_eq!(sanitize("???"), "Untitled");
+        assert_eq!(sanitize(".."), "Untitled");
+        assert_eq!(sanitize("   "), "Untitled");
+    }
+
+    #[test]
+    fn trailing_dot_or_space_is_dropped() {
+        // Windows would otherwise silently truncate to "foo".
+        assert_eq!(sanitize("foo."), "foo");
+        assert_eq!(sanitize("foo "), "foo");
+        assert_eq!(sanitize(".foo."), "foo");
+    }
+
+    #[test]
+    fn windows_reserved_names_are_prefixed() {
+        // Without the rescue, exporting a doc named "CON" would
+        // produce "CON-v…" — a path Windows refuses to create.
+        assert_eq!(sanitize("CON"), "doc-CON");
+        assert_eq!(sanitize("nul"), "doc-nul");
+        assert_eq!(sanitize("LPT1"), "doc-LPT1");
+        // Non-reserved names with the same prefix are untouched.
+        assert_eq!(sanitize("Console"), "Console");
+        assert_eq!(sanitize("Connor"), "Connor");
     }
 }
 
@@ -889,6 +983,7 @@ pub async fn forget_device_password() -> Result<(), String> {
 #[tauri::command]
 pub async fn connect_device(
     password: Option<String>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<DeviceInfo, String> {
     let cfg = SshConfig::default();
@@ -915,12 +1010,27 @@ pub async fn connect_device(
     let info = dev.ping().await.map_err(err)?;
 
     // Connection succeeded — only NOW persist a freshly-typed password.
+    // If the OS keyring is unavailable (most often on minimal Linux
+    // installs without `secret-service` / `gnome-keyring` running),
+    // both `Entry::new` and `set_password` can fail. We surface the
+    // failure as a `keyring:warning` event so the UI can tell the
+    // user "we couldn't save your password, you'll need to type it
+    // again next time" — silently logging makes the user wonder why
+    // their password isn't being remembered.
     if freshly_typed {
         use secrecy::ExposeSecret;
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER) {
-            if let Err(e) = entry.set_password(secret.expose_secret()) {
-                tracing::warn!("could not persist device password to keychain: {e}");
-            }
+        let outcome = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER)
+            .and_then(|e| e.set_password(secret.expose_secret()));
+        if let Err(e) = outcome {
+            tracing::warn!("could not persist device password to keychain: {e}");
+            let _ = app.emit(
+                "keyring:warning",
+                format!(
+                    "Couldn't save the tablet password to the system keychain ({e}). \
+                     You'll be asked again next time. On Linux this usually means \
+                     `gnome-keyring` / `secret-service` isn't installed or running."
+                ),
+            );
         }
     }
 
