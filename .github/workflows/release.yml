@@ -1,18 +1,22 @@
 name: Release
 
-# Builds platform installers for every `v*` tag and attaches them to a
+# Builds macOS installers for every `v*` tag and attaches them to a
 # draft GitHub Release. Manually publishing the draft makes the build
 # public — gives a chance to spot-check the artefacts before shipping.
 #
 # Outputs per tag:
 #   - macOS (Intel):         reHydrate_<ver>_x64.dmg, .app.tar.gz
 #   - macOS (Apple Silicon): reHydrate_<ver>_aarch64.dmg, .app.tar.gz
-#   - Linux:                 reHydrate_<ver>_amd64.AppImage, .deb
-#   - Windows:               reHydrate_<ver>_x64_en-US.msi
 #
 # Tag the release with `git tag v0.1.0 && git push --tags` to start a
 # build. Use `workflow_dispatch` for dry-runs that produce GitHub
 # workflow artefacts but no Release entry.
+#
+# Runs on a self-hosted macOS runner registered on the maintainer's
+# machine — GitHub-hosted macOS minutes are billed at 10× Linux, so we
+# build locally to keep costs at zero. Linux/Windows targets were
+# dropped for the same reason; reintroduce them by adding matrix
+# entries pointing at GitHub-hosted runners (or more self-hosted hosts).
 
 on:
   push:
@@ -29,7 +33,7 @@ env:
 jobs:
   build:
     name: ${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
+    runs-on: [self-hosted, macOS]
     strategy:
       fail-fast: false
       matrix:
@@ -40,42 +44,16 @@ jobs:
           # renderer can call any Tauri command, so a shipped inspector
           # would bypass every security boundary.
           - label: macOS (Intel)
-            os: macos-latest
             target: x86_64-apple-darwin
             rust_targets: x86_64-apple-darwin
             tauri_args: --target x86_64-apple-darwin --bundles app,dmg -- --no-default-features
           - label: macOS (Apple Silicon)
-            os: macos-latest
             target: aarch64-apple-darwin
             rust_targets: aarch64-apple-darwin
             tauri_args: --target aarch64-apple-darwin --bundles app,dmg -- --no-default-features
-          - label: Linux
-            os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            rust_targets: x86_64-unknown-linux-gnu
-            tauri_args: --target x86_64-unknown-linux-gnu --bundles appimage,deb -- --no-default-features
-          - label: Windows
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            rust_targets: x86_64-pc-windows-msvc
-            tauri_args: --target x86_64-pc-windows-msvc --bundles msi -- --no-default-features
 
     steps:
       - uses: actions/checkout@v4
-
-      # Tauri's Linux backend pulls in WebKit + GTK; the appimagetool
-      # bundler also needs librsvg and patchelf. These names match the
-      # CI workflow.
-      - name: Install Linux deps
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -136,20 +114,15 @@ jobs:
             **Downloads**
             - macOS (Apple Silicon): `reHydrate_*_aarch64.dmg`
             - macOS (Intel):         `reHydrate_*_x64.dmg`
-            - Linux:                 `reHydrate_*_amd64.AppImage` or `.deb`
-            - Windows:               `reHydrate_*_x64_en-US.msi`
 
             macOS builds are unsigned — first launch needs a right-click → Open
-            to bypass Gatekeeper. Windows builds are unsigned for the same reason.
+            to bypass Gatekeeper.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.tauri_args }}
 
       # On manual runs (no release to attach to), surface the bundles
-      # as workflow artefacts so they can still be downloaded. Each
-      # runner only produces files for its own platform; the unused
-      # globs below resolve to nothing and `if-no-files-found: ignore`
-      # keeps the step silent about that.
+      # as workflow artefacts so they can still be downloaded.
       - name: Upload workflow artefacts (manual runs only)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@v4
@@ -157,8 +130,5 @@ jobs:
           name: rehydrate-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
-            target/${{ matrix.target }}/release/bundle/deb/*.deb
-            target/${{ matrix.target }}/release/bundle/msi/*.msi
           if-no-files-found: ignore
           retention-days: 14
