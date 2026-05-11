@@ -29,7 +29,10 @@ type IconName =
   | "tablet"
   | "selectMode"
   | "checkbox"
-  | "checkboxChecked";
+  | "checkboxChecked"
+  | "settings"
+  | "x"
+  | "wand";
 
 interface Props extends SVGProps<SVGSVGElement> {
   name: IconName;
@@ -225,6 +228,28 @@ export function Icon({ name, size = 14, className, ...rest }: Props) {
         <svg {...common}>
           <rect x="2.5" y="2.5" width="11" height="11" rx="2" fill="currentColor" stroke="none" />
           <path d="M5 8.5 L7.5 11 L11.5 6" stroke="white" strokeWidth="2" />
+        </svg>
+      );
+    case "settings":
+      // Simple gear: 8 teeth + central hole.
+      return (
+        <svg {...common}>
+          <circle cx="8" cy="8" r="2.5" />
+          <path d="M8 1 V3 M8 13 V15 M1 8 H3 M13 8 H15 M3.2 3.2 L4.6 4.6 M11.4 11.4 L12.8 12.8 M3.2 12.8 L4.6 11.4 M11.4 4.6 L12.8 3.2" />
+        </svg>
+      );
+    case "x":
+      return (
+        <svg {...common}>
+          <path d="M4 4 L12 12 M12 4 L4 12" />
+        </svg>
+      );
+    case "wand":
+      // Magic-wand glyph used for the "Convert to text" OCR action.
+      return (
+        <svg {...common}>
+          <path d="M3 13 L11 5" />
+          <path d="M10 3 L12 5 L14 3 M11 5 L13 7 M9 1 L11 3" />
         </svg>
       );
   }

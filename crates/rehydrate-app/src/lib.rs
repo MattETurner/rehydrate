@@ -5,6 +5,7 @@ mod commands;
 mod config;
 mod logging;
 mod notebook_pdf;
+mod ocr_commands;
 mod state;
 
 pub use state::AppState;
@@ -68,6 +69,25 @@ pub fn run() {
             commands::push_execute,
             commands::sync_two_way,
             commands::restore_version,
+            // OCR + CMS — Phase 1.0 OCR uses an Ollama daemon the
+            // user runs themselves; the Settings modal lets them
+            // pick base URL + model.
+            ocr_commands::ocr_status,
+            ocr_commands::transcribe_document,
+            ocr_commands::get_transcript,
+            ocr_commands::export_transcript,
+            ocr_commands::get_ollama_config,
+            ocr_commands::save_ollama_config,
+            ocr_commands::ping_ollama,
+            ocr_commands::list_curated_ollama_models,
+            ocr_commands::default_ollama_model,
+            ocr_commands::publish_transcript,
+            ocr_commands::publish_credential_status,
+            ocr_commands::ping_publish_target,
+            ocr_commands::set_ghost_credentials,
+            ocr_commands::forget_ghost_credentials,
+            ocr_commands::set_wordpress_credentials,
+            ocr_commands::forget_wordpress_credentials,
         ])
         .run(tauri::generate_context!())
         .expect("error while running rehydrate");

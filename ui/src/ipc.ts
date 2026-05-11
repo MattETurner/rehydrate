@@ -2,24 +2,37 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ArchivedDocument,
+  CuratedOllamaModel,
   DeviceInfo,
   DeviceState,
   DocumentSummary,
+  ExportFormat,
   ExportResult,
   FolderEntry,
   GarbageCollectReport,
+  GhostCredentials,
   LibrarySummary,
   LogTail,
+  OcrProgressEvent,
+  OcrStatusReport,
+  OllamaConfig,
   PickedLibraryDirectory,
+  PingReport,
   ProgressEvent,
+  PublishCredentialStatus,
+  PublishKind,
+  PublishResult,
   PullPlan,
   PushPlan,
   PushReport,
   RecentLibraryEntry,
   SyncReport,
+  TranscriptDocument,
+  TranscriptSummary,
   TwoWayReport,
   VerifyReport,
   VersionEntry,
+  WordpressCredentials,
 } from "./types";
 
 export const ipc = {
@@ -99,7 +112,52 @@ export const ipc = {
   syncTwoWay: () => invoke<TwoWayReport>("sync_two_way"),
   restoreVersion: (versionId: number) =>
     invoke<number>("restore_version", { versionId }),
+
+  // ---- OCR / Ollama ---------------------------------------------------
+  ocrStatus: () => invoke<OcrStatusReport>("ocr_status"),
+  transcribeDocument: (documentId: string, language: string | null) =>
+    invoke<TranscriptSummary>("transcribe_document", {
+      documentId,
+      language,
+    }),
+  getTranscript: (versionId: number) =>
+    invoke<TranscriptDocument | null>("get_transcript", { versionId }),
+  exportTranscript: (versionId: number, format: ExportFormat) =>
+    invoke<{ path: string } | null>("export_transcript", {
+      versionId,
+      format,
+    }),
+  getOllamaConfig: () => invoke<OllamaConfig>("get_ollama_config"),
+  saveOllamaConfig: (cfg: OllamaConfig) =>
+    invoke<void>("save_ollama_config", { cfg }),
+  pingOllama: (baseUrl: string) =>
+    invoke<PingReport>("ping_ollama", { baseUrl }),
+  listCuratedOllamaModels: () =>
+    invoke<CuratedOllamaModel[]>("list_curated_ollama_models"),
+  defaultOllamaModel: () => invoke<string>("default_ollama_model"),
+
+  // ---- CMS publish ----------------------------------------------------
+  publishTranscript: (versionId: number, target: PublishKind) =>
+    invoke<PublishResult>("publish_transcript", { versionId, target }),
+  publishCredentialStatus: () =>
+    invoke<PublishCredentialStatus>("publish_credential_status"),
+  pingPublishTarget: (target: PublishKind) =>
+    invoke<void>("ping_publish_target", { target }),
+  setGhostCredentials: (creds: GhostCredentials) =>
+    invoke<void>("set_ghost_credentials", { creds }),
+  forgetGhostCredentials: () => invoke<void>("forget_ghost_credentials"),
+  setWordpressCredentials: (creds: WordpressCredentials) =>
+    invoke<void>("set_wordpress_credentials", { creds }),
+  forgetWordpressCredentials: () =>
+    invoke<void>("forget_wordpress_credentials"),
 };
+
+/** Subscribe to OCR-progress events emitted from the Rust side. */
+export function onOcrProgress(
+  cb: (ev: OcrProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<OcrProgressEvent>("ocr:progress", (e) => cb(e.payload));
+}
 
 export function onDeviceReachable(
   cb: (reachable: boolean) => void,

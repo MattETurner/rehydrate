@@ -12,6 +12,7 @@ import {
   onDeviceReachable,
   onKeyringWarning,
   onLegacyFormatWarning,
+  onOcrProgress,
 } from "./ipc";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LogDrawer } from "./components/LogDrawer";
@@ -25,6 +26,9 @@ import { Skeleton } from "./components/Skeleton";
 import { useToast } from "./components/Toast";
 import { useConfirm } from "./components/Confirm";
 import { Cheatsheet } from "./components/Cheatsheet";
+import { SettingsModal, parseOllamaUnconfigured } from "./components/SettingsModal";
+import { TranscriptDrawer } from "./components/TranscriptDrawer";
+import { OcrJobChip, type OcrJob } from "./components/OcrJobChip";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { Onboarding } from "./components/Onboarding";
 import { QuickLook } from "./components/QuickLook";
@@ -99,6 +103,22 @@ export function App() {
   // True while a drop is being processed so the overlay can show
   // "Importing…" feedback instead of dismissing instantly.
   const [importingDrop, setImportingDrop] = useState(false);
+  // Settings modal state. `null` = closed; otherwise picks which tab
+  // to mount with and an optional banner shown above the form (used
+  // when the modal is auto-opened to explain why).
+  const [settings, setSettings] = useState<
+    | { tab: "ollama" | "publishing"; banner: string | null }
+    | null
+  >(null);
+  // The document the user wants to view a transcript for. Mounted
+  // as a side-drawer; backed by `ipc.getTranscript`.
+  const [transcriptDoc, setTranscriptDoc] = useState<DocumentSummary | null>(
+    null,
+  );
+  // OCR job state — used by `OcrJobChip` to show "transcribing page
+  // X of Y" feedback for a long-running background transcription.
+  const [ocrJob, setOcrJob] = useState<OcrJob | null>(null);
+  const [ocrJobElapsed, setOcrJobElapsed] = useState(0);
   const refreshing = useRef(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const toast = useToast();
@@ -199,6 +219,50 @@ export function App() {
       if (unlisten) unlisten();
     };
   }, [toast]);
+
+  // ---- Background OCR progress ----------------------------------------
+  // Single global listener for `ocr:progress`. Updates the App-level
+  // `ocrJob` whenever a job is in flight. Stays mounted for the App's
+  // lifetime so the chip keeps updating no matter which dialog/drawer
+  // the user has open.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onOcrProgress((ev) => {
+      setOcrJob((cur) => {
+        if (!cur || cur.phase !== "running") return cur;
+        if (ev.kind === "page_done") {
+          return {
+            ...cur,
+            pagesDone: ev.page_index + 1,
+            charCount: cur.charCount + ev.chars,
+          };
+        }
+        if (ev.kind === "page_failed") {
+          // Don't abort the chip — the run continues with the rest
+          // of the pages. Just record the failure for the toast at
+          // the end (the chip itself stays in "running" until the
+          // IPC promise settles).
+          return cur;
+        }
+        return cur;
+      });
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Tick the elapsed-time counter while a job is running.
+  useEffect(() => {
+    if (!ocrJob || ocrJob.phase !== "running") return;
+    const tick = () =>
+      setOcrJobElapsed((Date.now() - ocrJob.startedAt) / 1000);
+    tick();
+    const id = window.setInterval(tick, 500);
+    return () => window.clearInterval(id);
+  }, [ocrJob]);
 
   // ---- Refresh ---------------------------------------------------------
   const refreshLibrary = useCallback(async () => {
@@ -864,6 +928,96 @@ export function App() {
     [refreshLibrary],
   );
 
+  // ---- OCR background job ---------------------------------------------
+  // Kicks off `transcribe_document`, tracks the run in the App-level
+  // chip, and surfaces the result via toast. On the Ollama-pivot,
+  // the most common first-time failure is "Ollama isn't running" —
+  // we detect the tagged error and route the user to Settings →
+  // Ollama instead of spamming them with a raw error string.
+  const startOcrJob = useCallback(
+    (doc: DocumentSummary, language?: string) => {
+      setOcrJob((cur) => {
+        if (cur && cur.phase === "running") {
+          toast.show({
+            tone: "warn",
+            body: `Already transcribing "${cur.visibleName}" — wait for that to finish first.`,
+          });
+          return cur;
+        }
+        return {
+          documentId: doc.document_id,
+          visibleName: doc.visible_name,
+          phase: "running",
+          pagesDone: 0,
+          charCount: 0,
+          startedAt: Date.now(),
+        };
+      });
+
+      void (async () => {
+        try {
+          const summary = await ipc.transcribeDocument(
+            doc.document_id,
+            language ?? null,
+          );
+          setOcrJob((cur) =>
+            cur && cur.documentId === doc.document_id
+              ? {
+                  ...cur,
+                  phase: "done",
+                  pagesDone: summary.page_count,
+                  charCount: summary.char_count,
+                  totalPages: summary.page_count,
+                }
+              : cur,
+          );
+          await refreshLibrary();
+          toast.show({
+            tone: "ok",
+            duration: 8000,
+            body: (
+              <>
+                Transcribed <strong>{doc.visible_name}</strong> —{" "}
+                {summary.page_count}{" "}
+                {summary.page_count === 1 ? "page" : "pages"},{" "}
+                {summary.char_count.toLocaleString()} characters.
+              </>
+            ),
+            action: {
+              label: "View",
+              onClick: () => setTranscriptDoc(doc),
+            },
+          });
+          setOcrJob(null);
+        } catch (e) {
+          // Tagged "Ollama unconfigured" → route into Settings.
+          const unconfigured = parseOllamaUnconfigured(e);
+          if (unconfigured) {
+            setOcrJob(null);
+            setSettings({ tab: "ollama", banner: unconfigured.message });
+            return;
+          }
+          setOcrJob((cur) =>
+            cur && cur.documentId === doc.document_id
+              ? { ...cur, phase: "error", error: String(e) }
+              : cur,
+          );
+          toast.show({
+            tone: "err",
+            duration: 0,
+            body: (
+              <>
+                OCR failed for <strong>{doc.visible_name}</strong>: {String(e)}
+              </>
+            ),
+          });
+          setOcrJob(null);
+        }
+      })();
+    },
+    [refreshLibrary, toast],
+  );
+
   async function archiveOne(d: DocumentSummary) {
     const ok = await confirm({
       title: `Move "${d.visible_name}" to Archive?`,
@@ -1332,6 +1486,14 @@ export function App() {
             </button>
           </>
         )}
+        <button
+          className="icon ghost"
+          aria-label="Settings"
+          title="Settings — Ollama (OCR) and Publishing"
+          onClick={() => setSettings({ tab: "ollama", banner: null })}
+        >
+          <Icon name="settings" />
+        </button>
         <Menu
           trigger={
             <button className="icon ghost" aria-label="More actions">
@@ -1352,10 +1514,15 @@ export function App() {
               disabled: !libraryOpen,
             },
             {
+              label: "Settings…",
+              icon: <Icon name="settings" />,
+              onClick: () => setSettings({ tab: "ollama", banner: null }),
+              separatorBefore: true,
+            },
+            {
               label: "Activity log",
               icon: <Icon name="info" />,
               onClick: () => setShowLogs(true),
-              separatorBefore: true,
             },
             {
               label: "Keyboard shortcuts",
@@ -1660,6 +1827,8 @@ export function App() {
                   onArchive={archiveOne}
                   onShowHistory={setHistoryDoc}
                   onMove={(d) => startMoveDocs([d.document_id])}
+                  onTranscribe={(d) => startOcrJob(d)}
+                  onViewTranscript={setTranscriptDoc}
                   leavingIds={leavingIds}
                   emptyHint={emptyHintFor(view)}
                 />
@@ -1675,6 +1844,8 @@ export function App() {
                   onArchive={archiveOne}
                   onRename={startRenameDocument}
                   onMove={(d) => startMoveDocs([d.document_id])}
+                  onTranscribe={(d) => startOcrJob(d)}
+                  onViewTranscript={setTranscriptDoc}
                   leavingIds={leavingIds}
                   emptyHint={emptyHintFor(view)}
                 />
@@ -1781,6 +1952,31 @@ export function App() {
             // for "Move here".
             void refreshLibrary();
           }}
+        />
+      )}
+      {settings && (
+        <SettingsModal
+          initialTab={settings.tab}
+          banner={settings.banner}
+          onClose={() => setSettings(null)}
+          notify={(tone, body) => toast.show({ tone, body })}
+        />
+      )}
+      {transcriptDoc && (
+        <TranscriptDrawer
+          document={transcriptDoc}
+          onClose={() => setTranscriptDoc(null)}
+          notify={(tone, body) => toast.show({ tone, body })}
+          onOpenSettings={(tab, banner) =>
+            setSettings({ tab, banner: banner ?? null })
+          }
+        />
+      )}
+      {ocrJob && (
+        <OcrJobChip
+          job={ocrJob}
+          elapsedSeconds={ocrJobElapsed}
+          onDismiss={() => setOcrJob(null)}
         />
       )}
       {showCheatsheet && <Cheatsheet onClose={() => setShowCheatsheet(false)} />}
@@ -2628,6 +2824,8 @@ function DocumentList({
   onArchive,
   onRename,
   onMove,
+  onTranscribe,
+  onViewTranscript,
   leavingIds,
   emptyHint,
 }: {
@@ -2644,6 +2842,8 @@ function DocumentList({
   onArchive: (d: DocumentSummary) => void;
   onRename: (d: DocumentSummary) => void;
   onMove: (d: DocumentSummary) => void;
+  onTranscribe: (d: DocumentSummary) => void;
+  onViewTranscript: (d: DocumentSummary) => void;
   leavingIds: Set<string>;
   emptyHint: { title: string; body: string };
 }) {
@@ -2754,6 +2954,17 @@ function DocumentList({
                       onClick: () => onMove(d),
                     },
                     {
+                      label: "Convert to text…",
+                      icon: <Icon name="wand" />,
+                      onClick: () => onTranscribe(d),
+                      separatorBefore: true,
+                    },
+                    {
+                      label: "View transcript",
+                      icon: <Icon name="info" />,
+                      onClick: () => onViewTranscript(d),
+                    },
+                    {
                       label: "Show history",
                       icon: <Icon name="history" />,
                       onClick: () => onOpen(d),
@@ -2795,6 +3006,8 @@ function DocumentGrid({
   onArchive,
   onShowHistory,
   onMove,
+  onTranscribe,
+  onViewTranscript,
   leavingIds,
   emptyHint,
 }: {
@@ -2811,6 +3024,8 @@ function DocumentGrid({
   onArchive: (d: DocumentSummary) => void;
   onShowHistory: (d: DocumentSummary) => void;
   onMove: (d: DocumentSummary) => void;
+  onTranscribe: (d: DocumentSummary) => void;
+  onViewTranscript: (d: DocumentSummary) => void;
   leavingIds: Set<string>;
   emptyHint: { title: string; body: string };
 }) {
@@ -2920,6 +3135,17 @@ function DocumentGrid({
                     label: "Move to folder…",
                     icon: <Icon name="folder" />,
                     onClick: () => onMove(d),
+                  },
+                  {
+                    label: "Convert to text…",
+                    icon: <Icon name="wand" />,
+                    onClick: () => onTranscribe(d),
+                    separatorBefore: true,
+                  },
+                  {
+                    label: "View transcript",
+                    icon: <Icon name="info" />,
+                    onClick: () => onViewTranscript(d),
                   },
                   {
                     label: "Show history",

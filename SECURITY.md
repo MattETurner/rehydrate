@@ -18,16 +18,35 @@ the trade-offs without reading every commit message.
 
 ## Network surface
 
-- **No HTTP / HTTPS egress.** Enforced by an integration test
-  (`tests-integration/tests/no_egress.rs`) that fails CI if any business crate
-  imports a HTTP client.
-- The only network code path is **SSH/SFTP to the tablet** via `russh` + `russh-sftp`,
-  initiated by user action (Connect / Sync). The default endpoint is
-  `10.11.99.1:22` — the tablet's USB-ethernet address.
-- The Tauri webview's CSP forbids `connect-src` outside `'self'` and Tauri's
-  own IPC bridge.
-- The renderer **does not load remote URLs**. Images come from local blobs
-  (`data:`/`blob:` URLs) only.
+reHydrate has **three** sanctioned network paths, each initiated by an
+explicit user action:
+
+1. **SSH/SFTP to the tablet** via `russh` + `russh-sftp`. Default
+   endpoint `10.11.99.1:22` (the tablet's USB-ethernet address).
+   Triggered by **Connect** / **Sync**.
+2. **HTTP to a user-provided Ollama daemon** for OCR. Default
+   endpoint `http://localhost:11434`; the user can point this at a
+   different host in the Settings modal. Triggered by **Convert to
+   text…** and by the Settings tab's **Test connection** button.
+3. **HTTPS to a user-provided Ghost or WordPress site** for transcript
+   publishing. Triggered by **Publish to Ghost / WordPress** in the
+   Transcript drawer.
+
+Every business-logic crate that isn't on this list (`rehydrate-core`,
+`rehydrate-device`, `rehydrate-sync`) is asserted free of HTTP
+clients by `tests-integration/tests/no_egress.rs` — failing CI is
+the wall against accidental egress. The two sanctioned-egress crates
+(`rehydrate-ocr`, `rehydrate-publish`) each route their requests
+through a host-pinned `RestrictedAgent` (assertion:
+`sanctioned_egress_crates_pin_to_one_host`) that:
+
+- pins to the host of the configured base URL,
+- refuses redirects (no `Location:` rewrite to a third party), and
+- enforces a hard timeout per request.
+
+The Tauri webview's CSP keeps `connect-src` to `'self'` and Tauri's
+own IPC bridge. The renderer never loads remote URLs — images come
+from local blobs (`data:`/`blob:` URLs) only.
 
 ## SSH host-key verification
 
@@ -41,6 +60,45 @@ host-key pinning anyway.
 If you're running reHydrate against any SSH endpoint that isn't a tablet
 you physically own, **don't use v1.0 yet**. A future release will add
 optional host-key pinning for users who want it.
+
+## Ollama (OCR backend)
+
+reHydrate does not bundle an OCR model — it sends rendered notebook
+pages to an Ollama daemon the user runs themselves (default
+`http://localhost:11434`). What you should know:
+
+- **Local-loopback by default.** The default URL never leaves the
+  machine. If you change it to a LAN address, you are explicitly
+  opting into transcripts traversing your network.
+- **No authentication.** Ollama's `/api/generate` is unauthenticated;
+  anyone with network access to the daemon can use it. Keep the
+  daemon firewalled to your trusted network if you expose it past
+  localhost.
+- **Host-pin + no redirects.** `crates/rehydrate-ocr/src/http.rs`
+  wraps `ureq` in a `RestrictedAgent` that refuses any request to
+  a host other than the one parsed from the configured base URL,
+  and disables HTTP redirects entirely — so a malicious DNS reply
+  or compromised proxy can't quietly send your transcripts elsewhere.
+- **No assumed trust in Ollama itself.** A compromised local Ollama
+  could return crafted output that's later rendered as Markdown
+  inside the app. Transcript Markdown is rendered as plain text in
+  the drawer (no HTML interpretation) and converted to HTML *only*
+  when the user clicks Publish; even there it goes to the
+  user-configured CMS endpoint, not back into reHydrate's UI.
+
+## Publishing (Ghost / WordPress)
+
+The publish path uses the same host-pinned `RestrictedAgent` pattern
+(see `crates/rehydrate-publish/src/http.rs`):
+
+- Ghost: Admin API with a JWT signed locally per request.
+- WordPress: REST API with Basic auth using an Application Password
+  (WP 5.6+).
+
+Credentials are JSON-encoded into the OS keyring; reHydrate never
+writes them to a plaintext config file. The publish action only
+fires when the user clicks the Publish button in the Transcript
+drawer — there is no background-publish.
 
 ## Credentials
 

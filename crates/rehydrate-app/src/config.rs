@@ -21,6 +21,33 @@ pub struct AppConfig {
     /// folder each time.
     #[serde(default)]
     pub recent_libraries: Vec<RecentLibrary>,
+    /// Connection settings for the user's Ollama daemon. `#[serde(default)]`
+    /// covers configs written before this field existed — pre-1.0 users
+    /// get the localhost defaults on first launch after upgrading.
+    #[serde(default)]
+    pub ollama: OllamaConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaConfig {
+    /// Base URL of the Ollama daemon. Default points at the official
+    /// local-loopback port; user may override to a remote host they
+    /// run themselves (e.g. a GPU box on their LAN).
+    pub base_url: String,
+    /// The model tag passed to `/api/generate`. The curated UI
+    /// dropdown surfaces `qwen2.5vl:3b` and `qwen2.5vl:7b`, plus a
+    /// "Custom…" free-text option for anything else the user has
+    /// `ollama pull`ed.
+    pub model: String,
+}
+
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self {
+            base_url: "http://localhost:11434".to_string(),
+            model: "qwen2.5vl:3b".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

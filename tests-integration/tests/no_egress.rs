@@ -63,12 +63,13 @@ fn no_http_capability_plugins_loaded() {
 
 #[test]
 fn rehydrate_business_crates_have_no_http_clients() {
-    // Every Rust crate in the workspace must stay free of
-    // general-purpose HTTP clients. The OCR + publish crates that
-    // previously had a sanctioned ureq exception have been removed
-    // — there is no JS-callable command in the app that issues
-    // outbound HTTP at all now. SSH to the tablet over USB is the
-    // only network transport we ship.
+    // The business-logic crates listed below must stay free of
+    // general-purpose HTTP clients. `rehydrate-ocr` (Ollama) and
+    // `rehydrate-publish` (Ghost / WordPress) are *sanctioned*
+    // egress paths and are deliberately omitted from this list —
+    // both route every request through a host-pinned
+    // `RestrictedAgent` (asserted separately by
+    // `sanctioned_egress_crates_pin_to_one_host`).
     use std::process::Command;
     let crates = ["rehydrate-core", "rehydrate-device", "rehydrate-sync"];
     let workspace_root = workspace_root_path();
@@ -100,6 +101,43 @@ fn rehydrate_business_crates_have_no_http_clients() {
                  clients so the privacy story holds even outside the Tauri shell."
             );
         }
+    }
+}
+
+#[test]
+fn sanctioned_egress_crates_pin_to_one_host() {
+    // The two crates that legitimately make outbound HTTP requests
+    // (`rehydrate-ocr` for Ollama, `rehydrate-publish` for
+    // Ghost/WordPress) must both expose a `RestrictedAgent` that
+    // pins each request to the host the user explicitly configured.
+    // A future refactor that bypasses the wrapper — e.g. by
+    // calling `ureq::Agent::new()` directly — would defeat the
+    // privacy story, so this positive-control assertion locks the
+    // invariant in CI.
+    let root = workspace_root_path();
+    for path in [
+        root.join("crates/rehydrate-ocr/src/http.rs"),
+        root.join("crates/rehydrate-publish/src/http.rs"),
+    ] {
+        let body = fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "expected sanctioned-egress wrapper at {} ({e})",
+                path.display()
+            )
+        });
+        assert!(
+            body.contains("pub struct RestrictedAgent"),
+            "{} must define `pub struct RestrictedAgent`: the wrapper is the \
+             only sanctioned way to obtain a ureq agent inside the crate.",
+            path.display()
+        );
+        assert!(
+            body.contains("host_of("),
+            "{} must use `host_of(...)` to compare request hosts against the \
+             pinned base — bypassing it would let a redirect or malicious \
+             config exfiltrate to a different host.",
+            path.display()
+        );
     }
 }
 
