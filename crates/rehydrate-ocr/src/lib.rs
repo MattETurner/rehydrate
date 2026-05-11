@@ -22,9 +22,12 @@ pub use page_render::render_rm_to_png;
 pub use progress::OcrProgressEvent;
 
 /// Default Ollama model identifier surfaced to the IPC layer and
-/// pre-selected in the Settings modal's model dropdown. 3B is the
-/// smaller of the two curated Qwen2.5-VL builds and fits comfortably
-/// on an 8 GB GPU / Apple-Silicon unified-memory budget.
+/// pre-selected in the Settings modal's model dropdown. Qwen3-VL is
+/// the current vision-language family on Ollama (released late
+/// 2025): the 4B build at ~3.3 GB fits comfortably on 8 GB GPUs and
+/// Apple-Silicon unified-memory budgets, and the upstream notes
+/// call out improved handwriting recognition (now 32 languages, up
+/// from 10) over the previous Qwen2.5-VL line.
 pub fn default_model_id() -> &'static str {
-    "qwen2.5vl:3b"
+    "qwen3-vl:4b"
 }

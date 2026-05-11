@@ -45,12 +45,15 @@ the v0.9.x line accumulated and to land enough of the
   artefact attached to the document's current version. The
   Settings modal's *Ollama* tab lets the user point at a local or
   remote Ollama (default `http://localhost:11434`) and pick from
-  the curated `qwen2.5vl:3b` (default, fast) / `qwen2.5vl:7b`
-  (higher quality) options, or supply a custom model tag. Test
-  Connection probes `/api/tags` and reports which models are
-  pulled. Background progress is shown in a floating chip; the
-  result lands in the Transcript drawer with Save-as-`.txt` /
-  Save-as-`.md` actions.
+  the curated `qwen3-vl:4b` (default, fast) / `qwen3-vl:8b`
+  (higher quality) options, or supply a custom model tag. Qwen3-VL
+  is the current vision-language family on Ollama (released late
+  2025); upstream calls out improved handwriting recognition —
+  now 32 languages, up from 10 — relative to the previous
+  Qwen2.5-VL line. Test Connection probes `/api/tags` and reports
+  which models are pulled. Background progress is shown in a
+  floating chip; the result lands in the Transcript drawer with
+  Save-as-`.txt` / Save-as-`.md` actions.
 - **Publish transcripts as drafts to Ghost or WordPress.** The
   Transcript drawer's "Publish to Ghost" / "Publish to WordPress"
   buttons convert the Markdown transcript to HTML and POST it

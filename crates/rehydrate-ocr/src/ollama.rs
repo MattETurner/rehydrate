@@ -26,7 +26,7 @@ use crate::http::{AgentError, RestrictedAgent};
 use crate::progress::OcrProgressEvent;
 
 /// Hard per-page read timeout for `/api/generate`. CPU-only inference
-/// of a single notebook page through `qwen2.5vl:7b` can take a couple
+/// of a single notebook page through `qwen3-vl:8b` can take a couple
 /// of minutes on a laptop; give the user a wide budget rather than
 /// dropping a slow-but-progressing run.
 const GENERATE_TIMEOUT: Duration = Duration::from_secs(600);
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn constructor_rejects_unparseable_url() {
-        match OllamaBackend::new("not a url", "qwen2.5vl:3b") {
+        match OllamaBackend::new("not a url", "qwen3-vl:4b") {
             Err(OcrError::Unreachable(_)) => {}
             Err(other) => panic!("expected Unreachable, got {other}"),
             Ok(_) => panic!("expected error from unparseable URL"),
@@ -294,8 +294,8 @@ mod tests {
 
     #[test]
     fn constructor_accepts_localhost_default() {
-        let backend = OllamaBackend::new("http://localhost:11434", "qwen2.5vl:3b")
+        let backend = OllamaBackend::new("http://localhost:11434", "qwen3-vl:4b")
             .expect("localhost URL parses");
-        assert_eq!(backend.name(), "ollama/qwen2.5vl:3b");
+        assert_eq!(backend.name(), "ollama/qwen3-vl:4b");
     }
 }

@@ -45,7 +45,11 @@ impl Default for OllamaConfig {
     fn default() -> Self {
         Self {
             base_url: "http://localhost:11434".to_string(),
-            model: "qwen2.5vl:3b".to_string(),
+            // Kept in sync with `rehydrate_ocr::default_model_id()`.
+            // Qwen3-VL is the current vision-language family on
+            // Ollama (released late 2025); 4B is the small-fast
+            // tier that fits 8 GB GPUs / Apple Silicon.
+            model: "qwen3-vl:4b".to_string(),
         }
     }
 }

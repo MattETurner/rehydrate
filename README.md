@@ -99,8 +99,8 @@ brew install ollama          # macOS
 # curl -fsSL https://ollama.com/install.sh | sh    # Linux
 
 # Pull a vision-language model. Pick one:
-ollama pull qwen2.5vl:3b     # default — ~6 GB, runs on 8 GB GPUs / M-series
-ollama pull qwen2.5vl:7b     # sharper at cursive — ~12 GB VRAM recommended
+ollama pull qwen3-vl:4b      # default — ~3.3 GB, runs on 8 GB GPUs / M-series
+ollama pull qwen3-vl:8b      # sharper at cursive — ~6 GB, fits most discrete GPUs
 
 # Start the daemon (background service on macOS; `ollama serve` elsewhere).
 ```
