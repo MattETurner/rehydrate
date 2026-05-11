@@ -39,6 +39,32 @@ the v0.9.x line accumulated and to land enough of the
 - **Toast warnings** for keyring write failures (Linux without
   secret-service) and legacy-format notebook fallbacks (v3 / v5
   `.rm` files that fall back to thumbnail previews).
+- **OCR via a user-provided Ollama daemon.** "Convert to text…" on
+  any document renders every `.rm` page to PNG, ships it to
+  Ollama's `/api/generate`, and stores the transcript as a derived
+  artefact attached to the document's current version. The
+  Settings modal's *Ollama* tab lets the user point at a local or
+  remote Ollama (default `http://localhost:11434`) and pick from
+  the curated `qwen2.5vl:3b` (default, fast) / `qwen2.5vl:7b`
+  (higher quality) options, or supply a custom model tag. Test
+  Connection probes `/api/tags` and reports which models are
+  pulled. Background progress is shown in a floating chip; the
+  result lands in the Transcript drawer with Save-as-`.txt` /
+  Save-as-`.md` actions.
+- **Publish transcripts as drafts to Ghost or WordPress.** The
+  Transcript drawer's "Publish to Ghost" / "Publish to WordPress"
+  buttons convert the Markdown transcript to HTML and POST it
+  to the configured CMS as a draft. Credentials live in the OS
+  keychain; the *Publishing* tab in Settings handles entry, test
+  connection, and forget. Every request routes through a
+  host-pinned `RestrictedAgent` with redirects disabled, so a
+  hijacked CMS endpoint can't redirect transcript content
+  anywhere else.
+- **Tabbed Settings modal.** New gear icon in the toolbar (and
+  "Settings…" entry in the menu) opens a single modal with two
+  tabs: Ollama (OCR) and Publishing. Failed OCR / publish actions
+  auto-open the relevant tab with an explanatory banner instead
+  of dead-ending the user on a raw error toast.
 - `LICENSE-MIT` and `LICENSE-APACHE` at the repo root and a new
   `SECURITY.md` documenting the v1.0 threat model.
 

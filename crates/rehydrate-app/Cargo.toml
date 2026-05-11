@@ -21,6 +21,11 @@ tauri-build = { version = "2", features = [] }
 rehydrate-core = { path = "../rehydrate-core" }
 rehydrate-device = { path = "../rehydrate-device", features = ["ssh"] }
 rehydrate-sync = { path = "../rehydrate-sync" }
+rehydrate-ocr = { path = "../rehydrate-ocr" }
+rehydrate-publish = { path = "../rehydrate-publish" }
+# Pulled in to convert OCR transcript Markdown into HTML for
+# Ghost/WordPress drafts in `ocr_commands::publish_transcript`.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 anyhow = { workspace = true }
 directories = { workspace = true }

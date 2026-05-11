@@ -174,3 +174,92 @@ export type ProgressEvent =
   | { kind: "warning"; message: string }
   | { kind: "done"; recorded: number; unchanged: number; skipped: number }
   | { kind: "cancelled" };
+
+// =====================================================================
+// OCR + CMS
+// =====================================================================
+
+export interface OllamaConfig {
+  base_url: string;
+  model: string;
+}
+
+export interface CuratedOllamaModel {
+  id: string;
+  label: string;
+  vram_hint: string;
+}
+
+export interface PingReport {
+  ok: boolean;
+  error: string | null;
+  models: string[];
+}
+
+export type OcrStatusReport =
+  | {
+      kind: "unreachable";
+      base_url: string;
+      model: string;
+      error: string;
+    }
+  | {
+      kind: "model_missing";
+      base_url: string;
+      model: string;
+      available: string[];
+    }
+  | {
+      kind: "ready";
+      base_url: string;
+      model: string;
+    };
+
+/** OCR progress events streamed from the Ollama backend. */
+export type OcrProgressEvent =
+  | { kind: "page_started"; page_index: number }
+  | { kind: "page_done"; page_index: number; chars: number }
+  | { kind: "page_failed"; page_index: number; message: string }
+  | { kind: "done"; pages_done: number; total_chars: number };
+
+export interface TranscriptSummary {
+  document_id: string;
+  version_id: number;
+  page_count: number;
+  char_count: number;
+  model: string;
+}
+
+export interface TranscriptDocument {
+  document_id: string;
+  version_id: number;
+  markdown: string;
+  model: string | null;
+  created_at: string | null;
+  language: string | null;
+}
+
+export type ExportFormat = "txt" | "markdown";
+export type PublishKind = "ghost" | "wordpress";
+
+export interface PublishResult {
+  post_id: string;
+  edit_url: string;
+  target: PublishKind;
+}
+
+export interface PublishCredentialStatus {
+  ghost: boolean;
+  wordpress: boolean;
+}
+
+export interface GhostCredentials {
+  base_url: string;
+  admin_api_key: string;
+}
+
+export interface WordpressCredentials {
+  base_url: string;
+  username: string;
+  application_password: string;
+}

@@ -1196,6 +1196,171 @@ input[type="search"]:focus {
   line-height: 1.5;
 }
 
+/* Wider modal used by the Settings panel — the credential forms and
+ * the Ollama tab benefit from more horizontal room than the default
+ * 460 px. */
+.modal.modal-wide {
+  width: 620px;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+.modal-header h2 {
+  margin: 0;
+}
+
+/* SettingsModal: tabs + sections. */
+.settings-tabs {
+  display: flex;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-3);
+}
+.settings-tabs button {
+  background: transparent;
+  border: 0;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: -1px;
+  color: var(--muted);
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.settings-tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.settings-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+  color: var(--accent);
+  font-size: var(--text-sm);
+}
+.settings-section {
+  display: grid;
+  gap: var(--space-3);
+}
+.settings-section h3 {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-md);
+}
+.settings-section label {
+  display: grid;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.settings-section input[type="text"],
+.settings-section input[type="url"],
+.settings-section input[type="password"],
+.settings-section select {
+  padding: 6px var(--space-2);
+  font-size: var(--text-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+}
+.settings-section .actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.settings-ping {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+.settings-ping.ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.settings-ping.err {
+  background: var(--err-bg);
+  color: var(--err);
+}
+
+/* Background OCR job chip — small floating pill in the bottom-right.
+ * Renders only while a transcription is in progress; clicking ×
+ * hides the chip (job keeps running). */
+.ocr-chip {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 80;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 4px var(--space-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  box-shadow: var(--shadow-pop);
+  min-width: 260px;
+  max-width: 360px;
+}
+.ocr-chip-bar {
+  grid-column: 1 / -1;
+  height: 3px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ocr-chip-bar .indeterminate {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width var(--motion-base) var(--ease);
+}
+.ocr-chip-text {
+  display: grid;
+  gap: 2px;
+}
+.ocr-chip-close {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+/* Transcript drawer body — render the markdown verbatim in a
+ * monospace block, with comfortable wrap behaviour. */
+.transcript-body {
+  white-space: pre-wrap;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--text-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
 .drawer-backdrop {
   align-items: stretch;
   justify-content: flex-end;

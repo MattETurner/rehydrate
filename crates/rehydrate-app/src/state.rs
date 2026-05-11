@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rehydrate_core::Library;
 use rehydrate_device::ssh::SshDevice;
@@ -21,7 +22,26 @@ pub struct AppState {
     pub device: Mutex<Option<Arc<SshDevice>>>,
     pub device_info: RwLock<Option<DeviceInfo>>,
     pub device_reachable: RwLock<bool>,
+    /// Cached result of the most recent Ollama reachability probe.
+    /// `transcribe_document` consults this before making a real
+    /// request; cache TTL is `OLLAMA_PING_TTL` (30 s) so we don't
+    /// re-probe on every OCR action while the user is mid-batch.
+    pub last_ollama_ping: RwLock<Option<OllamaPing>>,
 }
+
+#[derive(Debug, Clone)]
+pub struct OllamaPing {
+    pub at: Instant,
+    pub base_url: String,
+    pub ok: bool,
+}
+
+/// How long a successful `ping_ollama` result is trusted before a
+/// new probe is needed. Short enough that the user starting Ollama
+/// after a failed transcribe isn't stuck waiting for the cache to
+/// expire; long enough that batched OCR over many docs reuses one
+/// probe.
+pub const OLLAMA_PING_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl AppState {
     pub fn new() -> Self {
@@ -31,6 +51,7 @@ impl AppState {
             device: Mutex::new(None),
             device_info: RwLock::new(None),
             device_reachable: RwLock::new(false),
+            last_ollama_ping: RwLock::new(None),
         }
     }
 }
@@ -54,3 +75,9 @@ pub fn default_library_dir() -> Option<PathBuf> {
 
 pub const KEYRING_SERVICE: &str = "reHydrate";
 pub const KEYRING_DEVICE_USER: &str = "remarkable-usb-password";
+/// Keychain slot for Ghost admin API credentials. JSON-encoded
+/// `rehydrate_publish::GhostCredentials`.
+pub const KEYRING_GHOST_CREDS: &str = "ghost-admin-credentials";
+/// Keychain slot for WordPress credentials. JSON-encoded
+/// `rehydrate_publish::WordpressCredentials`.
+pub const KEYRING_WORDPRESS_CREDS: &str = "wordpress-application-password";

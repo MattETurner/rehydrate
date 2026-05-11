@@ -24,6 +24,14 @@ right-click dance on first launch. Working features:
   search.
 - Multi-library support: switch between per-tablet libraries from the
   toolbar without restarting.
+- **Notebook OCR via Ollama.** Convert a handwritten notebook to text
+  with a vision-language model running on your own machine (or a
+  GPU box on your LAN). No cloud OCR; no transcripts leave your
+  network unless you explicitly publish them.
+- **Publish transcripts to Ghost or WordPress** as drafts. The
+  credential entry, host-pinned HTTP client, and explicit user
+  trigger mean transcripts never reach anywhere you didn't
+  configure.
 
 Architecture notes are in `remarkable-sync-implementation-plan.md`;
 release notes are in `CHANGELOG.md`; threat model and security
@@ -73,6 +81,54 @@ release feed, or check the [Releases][releases] page periodically.
 Security fixes will be called out in the release notes.
 
 [releases]: https://github.com/dm807cam/rehydrate/releases
+
+## Optical character recognition
+
+reHydrate doesn't ship an OCR model — it talks to an [Ollama][ollama]
+daemon you run yourself. That keeps the bundle small, lets you swap
+models without an app update, and means every byte of your handwriting
+stays on hardware you control.
+
+[ollama]: https://ollama.com/download
+
+**Setup, in a fresh terminal:**
+
+```sh
+# Install Ollama (or grab the installer from ollama.com/download).
+brew install ollama          # macOS
+# curl -fsSL https://ollama.com/install.sh | sh    # Linux
+
+# Pull a vision-language model. Pick one:
+ollama pull qwen2.5vl:3b     # default — ~6 GB, runs on 8 GB GPUs / M-series
+ollama pull qwen2.5vl:7b     # sharper at cursive — ~12 GB VRAM recommended
+
+# Start the daemon (background service on macOS; `ollama serve` elsewhere).
+```
+
+Then open reHydrate, click the gear icon → **Settings → Ollama**,
+hit **Test connection**, and Save. From there, "Convert to text…"
+in any document's three-dot menu starts a transcription. Progress is
+shown in a floating chip; results land in the Transcript drawer with
+Save-as-`.txt` / Save-as-`.md` and **Publish** actions.
+
+Pointing reHydrate at a different host (`http://192.168.1.10:11434`,
+etc.) is supported — useful if you keep a small machine on your LAN
+just for inference. Every request is host-pinned and refuses
+redirects (see `SECURITY.md`).
+
+## Publishing transcripts
+
+Transcripts can be POSTed directly into Ghost or WordPress as drafts:
+
+- **Ghost**: Settings → Integrations → Custom integration; copy the
+  Admin API key (the `<id>:<hex>` form) and the site URL into
+  reHydrate's *Settings → Publishing* tab.
+- **WordPress**: Users → Profile → Application Passwords (WP 5.6+);
+  copy the password, paste alongside the site URL and your
+  username.
+
+Credentials live in your OS keychain. reHydrate only contacts the
+host you entered — never anywhere else.
 
 ## Stack
 
