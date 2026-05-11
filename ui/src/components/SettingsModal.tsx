@@ -281,16 +281,26 @@ function OllamaTab({
             <>
               <Icon name="check" />
               <span>
-                Connected. {ping.models.length} model
-                {ping.models.length === 1 ? "" : "s"} pulled.
-                {modelPulled === false && (
+                {ping.models.length === 0 ? (
                   <>
-                    {" "}
-                    <strong>
-                      `{effectiveModel}` isn't one of them — run{" "}
-                      <code>ollama pull {effectiveModel}</code> in a
-                      terminal first.
-                    </strong>
+                    Connected — but no models are pulled. Run{" "}
+                    <code>ollama pull {effectiveModel}</code> in a
+                    terminal first.
+                  </>
+                ) : (
+                  <>
+                    Connected. {ping.models.length} model
+                    {ping.models.length === 1 ? "" : "s"} pulled.
+                    {modelPulled === false && (
+                      <>
+                        {" "}
+                        <strong>
+                          `{effectiveModel}` isn't one of them — run{" "}
+                          <code>ollama pull {effectiveModel}</code> in a
+                          terminal first.
+                        </strong>
+                      </>
+                    )}
                   </>
                 )}
               </span>

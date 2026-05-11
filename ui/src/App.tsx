@@ -1049,111 +1049,133 @@ export function App() {
   //   shouldn't strand 49 others); a final summary toast reports
   //   total transcribed.
   //
-  // `sweepRunningRef` is the cancellation flag readable inside the
-  // async loop's closure — React state doesn't update synchronously
-  // for this, so the loop would otherwise see stale values.
-  const sweepRunningRef = useRef(false);
+  // Token-based cancellation. Each sweep captures an incrementing
+  // integer at entry; the loop and the finalizer check that the
+  // token is still current before touching state. A new sweep
+  // (library switch) bumps the token, which silently invalidates
+  // any in-flight sweep — no two sweeps ever race for `ocrJob` /
+  // `autoOcrSweep` state. A `useRef` boolean would have left a
+  // window where the new sweep flips the flag back to true after
+  // the previous sweep had already short-circuited.
+  const sweepTokenRef = useRef(0);
   const startAutoOcrSweep = useCallback(async () => {
-    if (sweepRunningRef.current) return;
-    sweepRunningRef.current = true;
-    try {
-      const cfg = await ipc.getOllamaConfig();
-      if (!cfg.auto_ocr_on_startup) return;
-      // Pre-flight ping. Silent on failure — daemon not running
-      // at launch is a normal-life state, not a thing to nag about.
-      const probe = await ipc.pingOllama(cfg.base_url);
-      if (!probe.ok) {
-        // eslint-disable-next-line no-console
-        console.info(
-          `Auto-OCR sweep skipped: Ollama not reachable at ${cfg.base_url}`,
-        );
-        return;
-      }
-      const raw = await ipc.listDocumentsNeedingOcr();
-      if (raw.length === 0) return;
-      const candidates = raw.map((c) => ({
-        documentId: c.document_id,
-        visibleName: c.visible_name,
-      }));
-      setAutoOcrSweep({
-        queue: candidates,
-        totalAtStart: candidates.length,
-        done: 0,
+    const myToken = ++sweepTokenRef.current;
+    const stillOurs = () => sweepTokenRef.current === myToken;
+
+    const cfg = await ipc.getOllamaConfig();
+    if (!cfg.auto_ocr_on_startup) return;
+    // Pre-flight ping. Silent on failure — daemon not running
+    // at launch is a normal-life state, not a thing to nag about.
+    const probe = await ipc.pingOllama(cfg.base_url);
+    if (!stillOurs()) return;
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.info(
+        `Auto-OCR sweep skipped: Ollama not reachable at ${cfg.base_url}`,
+      );
+      return;
+    }
+    const raw = await ipc.listDocumentsNeedingOcr();
+    if (!stillOurs()) return;
+    if (raw.length === 0) return;
+    const candidates = raw.map((c) => ({
+      documentId: c.document_id,
+      visibleName: c.visible_name,
+    }));
+    setAutoOcrSweep({
+      queue: candidates,
+      totalAtStart: candidates.length,
+      done: 0,
+    });
+    let transcribed = 0;
+    let skipped = 0;
+    let abortedMidSweep = false;
+    for (let i = 0; i < candidates.length; i++) {
+      if (!stillOurs()) return;
+      const c = candidates[i];
+      setOcrJob({
+        documentId: c.documentId,
+        visibleName: c.visibleName,
+        phase: "running",
+        pagesDone: 0,
+        charCount: 0,
+        startedAt: Date.now(),
       });
-      let transcribed = 0;
-      let skipped = 0;
-      for (let i = 0; i < candidates.length; i++) {
-        if (!sweepRunningRef.current) break;
-        const c = candidates[i];
-        setOcrJob({
-          documentId: c.documentId,
-          visibleName: c.visibleName,
-          phase: "running",
-          pagesDone: 0,
-          charCount: 0,
-          startedAt: Date.now(),
-        });
-        try {
-          await ipc.transcribeDocument(c.documentId, null);
-          transcribed += 1;
-        } catch (e) {
-          // Ollama went away mid-sweep (the daemon was killed, the
-          // network dropped, …) — stop. Other errors are per-doc
-          // and we keep going.
-          const unconfigured = parseOllamaUnconfigured(e);
-          if (unconfigured) {
-            // eslint-disable-next-line no-console
-            console.info(
-              `Auto-OCR sweep aborted mid-pass: ${unconfigured.message}`,
-            );
-            break;
-          }
+      try {
+        await ipc.transcribeDocument(c.documentId, null);
+        transcribed += 1;
+      } catch (e) {
+        if (!stillOurs()) return;
+        const unconfigured = parseOllamaUnconfigured(e);
+        if (unconfigured) {
+          // Ollama went away mid-sweep — stop quietly.
           // eslint-disable-next-line no-console
-          console.warn(`Auto-OCR skipped ${c.visibleName}: ${e}`);
-          skipped += 1;
+          console.info(
+            `Auto-OCR sweep aborted mid-pass: ${unconfigured.message}`,
+          );
+          abortedMidSweep = true;
+          break;
         }
-        setAutoOcrSweep((prev) =>
-          prev
-            ? {
-                ...prev,
-                done: prev.done + 1,
-                queue: prev.queue.slice(1),
-              }
-            : null,
-        );
+        // Per-doc failure (render error, etc.) — skip and continue.
+        // Note: we deliberately don't log the visible name here so
+        // a future logging dump can't leak document titles. The id
+        // is enough to locate the doc in the library.
+        // eslint-disable-next-line no-console
+        console.warn(`Auto-OCR skipped doc ${c.documentId}: ${e}`);
+        skipped += 1;
       }
-      setOcrJob(null);
-      setAutoOcrSweep(null);
-      if (transcribed > 0 || skipped > 0) {
-        await refreshLibrary();
-        toast.show({
-          tone: "ok",
-          duration: 8000,
-          body:
-            skipped === 0
-              ? `Auto-OCR finished — transcribed ${transcribed} notebook${transcribed === 1 ? "" : "s"}.`
-              : `Auto-OCR finished — transcribed ${transcribed}, skipped ${skipped}.`,
-        });
-      }
-    } finally {
-      sweepRunningRef.current = false;
+      if (!stillOurs()) return;
+      setAutoOcrSweep((prev) =>
+        prev
+          ? {
+              ...prev,
+              done: prev.done + 1,
+              queue: prev.queue.slice(1),
+            }
+          : null,
+      );
+    }
+    // We're done. Only commit final state if our token is still
+    // current — otherwise a fresh sweep is mid-flight and owns
+    // these fields.
+    if (!stillOurs()) return;
+    setOcrJob(null);
+    setAutoOcrSweep(null);
+    if (transcribed > 0 || skipped > 0) {
+      await refreshLibrary();
+      toast.show({
+        tone: "ok",
+        duration: 8000,
+        body:
+          skipped === 0
+            ? `Auto-OCR finished — transcribed ${transcribed} notebook${transcribed === 1 ? "" : "s"}.`
+            : `Auto-OCR finished — transcribed ${transcribed}, skipped ${skipped}.`,
+      });
+    } else if (abortedMidSweep) {
+      // The sweep broke on the first doc because Ollama went
+      // unreachable. The user enabled auto-OCR but is seeing the
+      // app do nothing; surface a soft warning so they can fix it.
+      toast.show({
+        tone: "warn",
+        duration: 9000,
+        body: "Auto-OCR couldn't reach Ollama. Open Settings → Ollama to test the connection.",
+      });
     }
   }, [refreshLibrary, toast]);
 
   // Cancel-on-dismiss for the chip: when a sweep is active, the
   // chip's × button stops the queue *and* hides the chip.
+  // Bumping the token is the universal "invalidate any sweep" lever.
   const dismissOcrChip = useCallback(() => {
-    if (sweepRunningRef.current) {
-      sweepRunningRef.current = false;
-    }
+    sweepTokenRef.current += 1;
     setOcrJob(null);
     setAutoOcrSweep(null);
   }, []);
 
-  // Fire the sweep when the library is open. The ref guard inside
-  // `startAutoOcrSweep` prevents re-entry; `libraryPath` as a dep
-  // gives us one sweep per library-open transition (so library
-  // switching also kicks off the new library's sweep).
+  // Fire the sweep when the library is open. `libraryPath` as a dep
+  // gives us one sweep per library-open transition; the token
+  // mechanism inside `startAutoOcrSweep` cleanly invalidates a
+  // prior sweep that's still running for the previous library.
   useEffect(() => {
     if (!libraryOpen) return;
     if (autoOcrInitialised.current === libraryPath) return;

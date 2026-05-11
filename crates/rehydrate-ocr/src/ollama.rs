@@ -133,13 +133,19 @@ impl OllamaBackend {
                     .ok_or_else(|| OcrError::Backend("ollama response missing `response` field".into()))?;
                 Ok(strip_thinking(raw))
             }
-            404 if resp.body.to_ascii_lowercase().contains("model") => {
-                Err(OcrError::ModelNotPulled(format!(
-                    "ollama doesn't have `{}` pulled — run `ollama pull {}` (or pick a different \
-                     model in Settings)",
-                    self.model, self.model
-                )))
-            }
+            // A 404 from `/api/generate` is overwhelmingly "model not
+            // pulled" — Ollama always serves the endpoint itself, so
+            // there's no realistic "route not found" miss here. The
+            // previous heuristic of grepping the body for "model"
+            // matched too narrowly (missed daemons that responded
+            // with "manifest not found" wording) and risked silent
+            // misclassification when wording shifted between
+            // versions.
+            404 => Err(OcrError::ModelNotPulled(format!(
+                "ollama doesn't have `{}` pulled — run `ollama pull {}` (or pick a different \
+                 model in Settings)",
+                self.model, self.model
+            ))),
             500..=599 => Err(OcrError::Backend(format!(
                 "ollama returned HTTP {}: {}",
                 resp.status,
@@ -189,9 +195,15 @@ fn truncate(s: &str, max: usize) -> String {
 ///   reasoning trace);
 /// * answer-only: no thinking block → identity (trimmed).
 fn strip_thinking(raw: &str) -> String {
+    // Some Qwen3-family fine-tunes emit `<Think>` / `<THINK>` /
+    // `<think >` instead of the canonical lowercase tag, so the
+    // match is case-insensitive on a lowercased shadow string while
+    // we splice on the original to keep byte offsets aligned.
     let mut s = raw.to_string();
-    while let Some(open) = s.find("<think>") {
-        match s[open..].find("</think>") {
+    loop {
+        let lower = s.to_ascii_lowercase();
+        let Some(open) = lower.find("<think>") else { break };
+        match lower[open..].find("</think>") {
             Some(close_rel) => {
                 let close = open + close_rel + "</think>".len();
                 s.replace_range(open..close, "");
@@ -230,10 +242,13 @@ impl OcrBackend for OllamaBackend {
             }
             // The blocking ureq call would otherwise stall the
             // tokio runtime; offload to the blocking pool so other
-            // app work (UI events, sync) keeps flowing.
+            // app work (UI events, sync) keeps flowing. Cloning
+            // `self.agent` (now `Clone` — see `http.rs`) preserves
+            // ureq's connection pool across pages, so a 50-page
+            // notebook reuses one TCP connection to Ollama instead
+            // of rebuilding it per request.
             let backend = OllamaBackend {
-                agent: RestrictedAgent::for_base_with_timeout(&self.base_url, GENERATE_TIMEOUT)
-                    .map_err(|e| OcrError::Unreachable(format!("{e}")))?,
+                agent: self.agent.clone(),
                 base_url: self.base_url.clone(),
                 model: self.model.clone(),
                 name: self.name.clone(),

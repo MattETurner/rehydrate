@@ -92,16 +92,7 @@ pub async fn get_ollama_config() -> Result<OllamaConfigDto, String> {
 
 #[tauri::command]
 pub async fn save_ollama_config(cfg: OllamaConfigDto) -> Result<(), String> {
-    // Validate the URL parses + has a host before persisting. The
-    // backend constructor would reject it anyway, but rejecting at
-    // save-time gives the user immediate feedback in the Settings
-    // modal instead of "save OK, then OCR breaks later".
-    if rehydrate_ocr::http::host_of(&cfg.base_url).is_none() {
-        return Err(format!(
-            "Ollama URL must be a full URL with a host (got {:?})",
-            cfg.base_url
-        ));
-    }
+    validate_ollama_url(&cfg.base_url)?;
     if cfg.model.trim().is_empty() {
         return Err("Pick a model from the list or enter a custom name.".into());
     }
@@ -110,8 +101,60 @@ pub async fn save_ollama_config(cfg: OllamaConfigDto) -> Result<(), String> {
     config::save(&on_disk).map_err(err)
 }
 
+/// Reject URLs that the user shouldn't be pointing OCR at. Three
+/// gates:
+///
+/// 1. Must parse with a host (the existing `host_of` check).
+/// 2. Scheme must be `http` or `https` — `file://`, `gopher://`,
+///    etc. would be Just Weird and could trick ureq into doing
+///    something unexpected.
+/// 3. Non-loopback hosts may not use plain `http://`. Localhost is
+///    fine over http (the daemon doesn't speak HTTPS); but if the
+///    user points at a LAN box, encrypt the link. Otherwise PNG
+///    page renders and transcript responses cross the network in
+///    plaintext, and anyone on-path sees handwriting content.
+///
+/// Both `save_ollama_config` and `ping_ollama` route through this
+/// so the renderer can't bypass the gates by going straight to the
+/// probe endpoint.
+fn validate_ollama_url(url_str: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url_str)
+        .map_err(|e| format!("Ollama URL is not a valid URL: {e}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("Ollama URL must have a host (got {url_str:?})"))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!(
+            "Ollama URL scheme must be http or https (got {scheme:?})"
+        ));
+    }
+    let is_loopback = host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host == "[::1]";
+    if scheme == "http" && !is_loopback {
+        return Err(format!(
+            "plain HTTP is only allowed for localhost. {host:?} must use https:// — \
+             otherwise notebook page images and transcripts cross the network in plaintext."
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn ping_ollama(base_url: String) -> Result<PingReport, String> {
+    // Same scheme + loopback gate the save path enforces — probing
+    // bypasses save, so without this the renderer could trigger
+    // requests to e.g. cloud-metadata endpoints just by calling
+    // ping_ollama with a crafted URL.
+    if let Err(msg) = validate_ollama_url(&base_url) {
+        return Ok(PingReport {
+            ok: false,
+            error: Some(msg),
+            models: Vec::new(),
+        });
+    }
     // Spawn-blocking because ureq is sync. Short timeout for the
     // probe — the UI is waiting on this.
     let report = tauri::async_runtime::spawn_blocking(move || -> PingReport {
@@ -319,6 +362,24 @@ pub async fn transcribe_document(
     rm_pages.sort_by(|a, b| a.path.cmp(&b.path));
     if rm_pages.is_empty() {
         return Err("document has no .rm pages to transcribe".into());
+    }
+    // Memory guard: every page renders into a Vec<u8> PNG (~100 KB
+    // per page typical, more for dense ink), and all PNGs live in
+    // memory together while transcribe_pages iterates them serially
+    // through Ollama. A 1 000-page notebook would peak around
+    // 100 MB just for the PNG vec — fine on a desktop, but
+    // pathological notebook sizes can balloon further. 500 pages
+    // is a generous ceiling for any realistic notebook; users with
+    // larger ones can split them, which is also a saner OCR
+    // workflow (each split takes minutes on CPU).
+    const MAX_OCR_PAGES: usize = 500;
+    if rm_pages.len() > MAX_OCR_PAGES {
+        return Err(format!(
+            "notebook has {} pages — OCR is capped at {} pages to keep memory bounded. \
+             Split the notebook on the tablet first.",
+            rm_pages.len(),
+            MAX_OCR_PAGES
+        ));
     }
 
     // Render every page to PNG on a worker thread.
@@ -796,4 +857,45 @@ pub async fn list_documents_needing_ocr(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod ollama_url_tests {
+    use super::validate_ollama_url;
+
+    #[test]
+    fn accepts_localhost_http() {
+        validate_ollama_url("http://localhost:11434").unwrap();
+        validate_ollama_url("http://127.0.0.1:11434").unwrap();
+        validate_ollama_url("http://[::1]:11434").unwrap();
+    }
+
+    #[test]
+    fn accepts_remote_https() {
+        validate_ollama_url("https://ollama.example.com").unwrap();
+        validate_ollama_url("https://10.0.0.5:11434").unwrap();
+    }
+
+    #[test]
+    fn rejects_non_loopback_plain_http() {
+        // The classic LAN-Ollama misconfiguration that would
+        // otherwise leak page images and transcripts in plaintext.
+        assert!(validate_ollama_url("http://10.0.0.5:11434").is_err());
+        assert!(validate_ollama_url("http://ollama.example.com").is_err());
+        assert!(validate_ollama_url("http://192.168.1.10:11434").is_err());
+    }
+
+    #[test]
+    fn rejects_non_http_schemes() {
+        // ureq would do something unexpected with these.
+        assert!(validate_ollama_url("file:///etc/passwd").is_err());
+        assert!(validate_ollama_url("gopher://example.com").is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_urls() {
+        assert!(validate_ollama_url("").is_err());
+        assert!(validate_ollama_url("not a url").is_err());
+        assert!(validate_ollama_url("http://").is_err());
+    }
 }

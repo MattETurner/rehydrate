@@ -17,6 +17,13 @@ use std::time::Duration;
 /// Wraps `ureq::Agent` and pins it to one host. Constructing a new
 /// `RestrictedAgent` is the only sanctioned way to obtain an agent
 /// inside this crate.
+///
+/// `Clone` is derived because `ureq::Agent` is internally
+/// reference-counted — cloning the wrapper preserves the connection
+/// pool, which matters when a single OCR run fires ~50 sequential
+/// requests at the same Ollama host: without clone-and-reuse, each
+/// page would tear down and re-establish the TCP connection.
+#[derive(Clone)]
 pub struct RestrictedAgent {
     inner: ureq::Agent,
     host: String,

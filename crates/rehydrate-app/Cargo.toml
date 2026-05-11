@@ -46,6 +46,10 @@ image = { workspace = true }
 rm-parser = { path = "../rm-parser" }
 base64 = "0.22"
 tempfile = { workspace = true }
+# Used only to validate user-supplied Ollama / publishing URLs in
+# `ocr_commands::validate_ollama_url`. `rehydrate-ocr` already
+# transitively pulls this in via `url`, so the build cost is zero.
+url = "2"
 
 [features]
 # `devtools` enables the Tauri webview inspector (F12 / Cmd+Opt+I).

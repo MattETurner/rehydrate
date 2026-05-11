@@ -190,8 +190,16 @@ pub fn render_rm_to_png(rm_bytes: &[u8]) -> Result<Vec<u8>, RenderError> {
             let pb = map_xy(b.x(), b.y());
             // `pixel_width_for` returns native-resolution px; scale
             // to the same fit factor so strokes keep their visual
-            // proportion to the rasterised canvas.
-            let width_px = (pixel_width_for(tool, a, thickness) * fit).max(1.0);
+            // proportion to the rasterised canvas. The upper clamp
+            // protects against pathological cases: a notebook with
+            // a single character produces a tiny bbox, which makes
+            // `fit` huge and would otherwise turn a 3 px pen stroke
+            // into a hundred-pixel-thick smear. `MAX_STROKE_PX` is
+            // a generous ceiling — even a chunky highlighter at
+            // canvas-fill scale tops out around 80 px.
+            const MAX_STROKE_PX: f32 = 120.0;
+            let width_px =
+                (pixel_width_for(tool, a, thickness) * fit).clamp(1.0, MAX_STROKE_PX);
             stroke_segment(&mut img, pa, pb, width_px, colour);
         }
     }

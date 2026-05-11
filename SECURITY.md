@@ -68,23 +68,47 @@ pages to an Ollama daemon the user runs themselves (default
 `http://localhost:11434`). What you should know:
 
 - **Local-loopback by default.** The default URL never leaves the
-  machine. If you change it to a LAN address, you are explicitly
-  opting into transcripts traversing your network.
+  machine. If you change it to a LAN or internet address, you are
+  explicitly opting into **both transcripts *and* page image
+  bytes** (PNG renders of each notebook page) traversing your
+  network to that host. This is not metadata-only — it's the
+  literal content of your handwriting.
+- **Scheme is validated.** `save_ollama_config` and `ping_ollama`
+  reject `file://`, `gopher://`, etc., and refuse `http://` for
+  any non-loopback host. Pointing OCR at a LAN box requires
+  `https://` so PNG bytes don't cross the network in plaintext.
 - **No authentication.** Ollama's `/api/generate` is unauthenticated;
   anyone with network access to the daemon can use it. Keep the
   daemon firewalled to your trusted network if you expose it past
-  localhost.
+  localhost. The "Test connection" probe also returns the full
+  list of models the daemon has pulled (via `/api/tags`) — if you
+  point at a *shared* Ollama, you can see what other users on
+  that daemon have downloaded.
 - **Host-pin + no redirects.** `crates/rehydrate-ocr/src/http.rs`
   wraps `ureq` in a `RestrictedAgent` that refuses any request to
   a host other than the one parsed from the configured base URL,
   and disables HTTP redirects entirely — so a malicious DNS reply
   or compromised proxy can't quietly send your transcripts elsewhere.
+  The `no_egress.rs` integration test asserts that no `.rs` file
+  in `rehydrate-ocr` or `rehydrate-publish` (other than `http.rs`
+  itself) constructs a `ureq::Agent` directly — preventing a future
+  refactor from accidentally routing around the host pin.
 - **No assumed trust in Ollama itself.** A compromised local Ollama
   could return crafted output that's later rendered as Markdown
   inside the app. Transcript Markdown is rendered as plain text in
   the drawer (no HTML interpretation) and converted to HTML *only*
   when the user clicks Publish; even there it goes to the
   user-configured CMS endpoint, not back into reHydrate's UI.
+- **Auto-OCR-at-startup is opt-in.** The Settings → Ollama tab
+  exposes a toggle that, when enabled, transcribes every notebook
+  without an existing transcript when the app launches. This
+  *does* mean outbound traffic happens without further per-doc
+  consent — but only after the user explicitly checked the box.
+  The toggle defaults to off; an unreachable Ollama silently
+  skips the sweep (no auto-modal nag at launch). If you have
+  configured a remote Ollama and turn this on, expect every app
+  launch to ship page images of any new notebooks to that host
+  until the sweep completes.
 
 ## Publishing (Ghost / WordPress)
 

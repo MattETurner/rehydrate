@@ -139,6 +139,48 @@ fn sanctioned_egress_crates_pin_to_one_host() {
             path.display()
         );
     }
+    // Same files must not call the un-pinned `ureq::Agent::new()`
+    // constructor — that would bypass the host pin entirely.
+    // `AgentBuilder::new()` is fine, since `for_base_with_timeout`
+    // builds the pinned agent through it; we ban it only outside
+    // those constructor paths via grep — which is impossible
+    // without a real parser, so we rely on the broader assertion
+    // that the file uses the host-pin pattern.
+    //
+    // The narrower check: no file in these crates *outside* http.rs
+    // should reference `ureq::Agent::new` or `ureq::AgentBuilder::new`.
+    // The wrappers themselves call `AgentBuilder::new()` inside
+    // `for_base_with_timeout`; anything else routing around the
+    // wrapper would have to do so here.
+    for (crate_dir, allowed_file) in &[
+        ("crates/rehydrate-ocr/src", "http.rs"),
+        ("crates/rehydrate-publish/src", "http.rs"),
+    ] {
+        let dir = root.join(crate_dir);
+        let entries = fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("cannot read {} ({e})", dir.display())
+        });
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            if p.file_name().and_then(|n| n.to_str()) == Some(*allowed_file) {
+                continue;
+            }
+            let body = fs::read_to_string(&p).unwrap_or_default();
+            assert!(
+                !body.contains("ureq::Agent::new")
+                    && !body.contains("ureq::AgentBuilder::new")
+                    && !body.contains("AgentBuilder::new()"),
+                "{} must construct ureq agents only through {}::RestrictedAgent — \
+                 calling ureq::Agent::new() / AgentBuilder::new() directly bypasses \
+                 the host pin.",
+                p.display(),
+                allowed_file
+            );
+        }
+    }
 }
 
 #[test]
