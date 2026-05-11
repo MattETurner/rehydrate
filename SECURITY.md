@@ -1,0 +1,150 @@
+# Security & threat model
+
+reHydrate is a desktop app that mirrors a reMarkable tablet over USB-ethernet
+into a local, content-addressed library on the user's machine. This document
+records the threat model the v1.0 codebase was built against and the
+mitigations in place — so contributors and security-minded users can audit
+the trade-offs without reading every commit message.
+
+## Trust boundaries
+
+| Boundary | Who's trusted | Who's not |
+| --- | --- | --- |
+| Local machine | The OS, the user account running reHydrate | Other local users; processes running as another UID |
+| Device over USB-ethernet | The tablet physically plugged in by the user | Arbitrary servers reachable at `10.11.99.1` |
+| Tablet's xochitl filesystem | The reMarkable firmware as shipped | Files placed in the tree by other apps or by an attacker with prior device access |
+| Local library on disk | The user account's home directory | Anyone with read access to that directory |
+| Imported PDFs / EPUBs | Files the user dropped onto the window or picked via the file dialog | The renderers that parse them (printpdf, image, lopdf) — treated as untrusted parsers |
+
+## Network surface
+
+- **No HTTP / HTTPS egress.** Enforced by an integration test
+  (`tests-integration/tests/no_egress.rs`) that fails CI if any business crate
+  imports a HTTP client.
+- The only network code path is **SSH/SFTP to the tablet** via `russh` + `russh-sftp`,
+  initiated by user action (Connect / Sync). The default endpoint is
+  `10.11.99.1:22` — the tablet's USB-ethernet address.
+- The Tauri webview's CSP forbids `connect-src` outside `'self'` and Tauri's
+  own IPC bridge.
+- The renderer **does not load remote URLs**. Images come from local blobs
+  (`data:`/`blob:` URLs) only.
+
+## SSH host-key verification
+
+**v1.0 accepts any host key on connect (TOFU without persistence).** The
+threat model: the user physically plugged a USB cable into a device they
+own. An adversary who can substitute a different SSH host on `10.11.99.1:22`
+must have either compromised the cable / network stack or replaced the
+tablet itself — both of which require physical access that defeats
+host-key pinning anyway.
+
+If you're running reHydrate against any SSH endpoint that isn't a tablet
+you physically own, **don't use v1.0 yet**. A future release will add
+optional host-key pinning for users who want it.
+
+## Credentials
+
+- The SSH password the tablet shows under *Settings → Help → Copyrights and
+  licenses → "GPLv3 Compliance"* is stored in the OS keyring via the
+  `keyring` crate.
+  - macOS: Keychain (Login)
+  - Windows: Credential Manager
+  - Linux: `secret-service` (typically `gnome-keyring`)
+- The password is held in memory as `secrecy::SecretString`, which
+  zero-fills on drop. The only places it's materialised as a `String`
+  are the keyring write (`set_password`) and the russh `authenticate_password`
+  call; both are scoped to the connect path.
+- On Linux without `secret-service`, the keyring write fails and the
+  app surfaces a `keyring:warning` toast — the password is **not**
+  silently written to plaintext.
+- `forget_device_password` deletes the keyring entry.
+
+## Untrusted device data
+
+The tablet is treated as **untrusted** even though most users own theirs:
+firmware bugs, third-party hacks (e.g. KOReader), and prior device
+compromise are realistic. Every device-sourced byte is filtered:
+
+- **File sizes** are capped at 512 MiB per file (`MAX_REMOTE_FILE_BYTES`).
+  A malicious tablet can't OOM the client by serving an enormous file.
+- **Recursion** during `fetch_subtree` is bounded at 16 levels and
+  symlinks are skipped, so a directory loop on the device can't trap us.
+- **Manifest paths** are validated against `Manifest::validate_paths`:
+  no `..`, no absolute / `~` / `\\` / `:`, no control characters, no
+  trailing dots / spaces, no Windows reserved names (`CON`, `PRN`, …).
+  This applies to every path before the library reconstructs the document
+  on disk or opens a cache file.
+- **Export filenames** are sanitised with the same Windows-safe rules
+  (`sanitize()` in `commands.rs`).
+- **PDF / EPUB body extensions** are allow-listed to `{pdf, epub}` so a
+  manifest can't trick `open_document` into materialising an executable
+  type for the OS opener.
+- **Magic-byte sniff** on imported PDFs / EPUBs (`%PDF-` / `PK\x03\x04`)
+  guards against a renamed file confusing the library.
+
+## Renderer trust boundary
+
+reHydrate ships the Tauri webview as a **trusted renderer** — the
+frontend is allowed to call any registered Tauri command. This means a
+compromised renderer (XSS in third-party deps, etc.) can read the entire
+library through the existing commands. v1.0 mitigations:
+
+- **`devtools` is disabled in release builds.** The feature flag is
+  default-on for `cargo run` so contributors keep the inspector, but the
+  release workflow builds with `--no-default-features` so end users
+  can't open the inspector and arbitrary-JS-evaluate.
+- **CSP** locks `script-src` to `'self'` — no inline scripts, no remote
+  scripts. `style-src 'unsafe-inline'` remains as a v1.0 carve-out for
+  React inline styles; it'll be tightened in a follow-up.
+- **No HTTP clients in the renderer**, so a compromised renderer can't
+  exfiltrate to a remote endpoint without help from the Rust side.
+- **`tauri-plugin-opener`** is the only OS-handler bridge. It's invoked
+  only with paths inside reHydrate's cache directory and only for
+  `{pdf, epub}` extensions.
+
+## Imported files
+
+- `import_file` (picker) and `import_dropped_file` (drag-drop) both apply
+  the magic-byte sniff and a 512 MiB cap before staging bytes to a
+  `tempfile::NamedTempFile` (auto-deletes on panic / error).
+- The parsers (`printpdf`, `image`, `lopdf`) are treated as **untrusted
+  code paths** — they parse arbitrary bytes the user supplied. Past
+  versions of `image` have had CVEs in their JPEG / PNG decoders.
+  reHydrate keeps these crates on pinned versions and updates them in
+  release notes when CVEs land.
+
+## Logs
+
+The tracing log writes to a daily-rotated file under the platform's data
+directory. The log retention is capped at 30 files (`LOG_RETENTION_FILES`)
+and `read_tail` streams newest-first instead of loading every file into
+memory.
+
+Logged content is **trace-level for routine operations and warn / error
+for failures**. We make a best effort to avoid logging:
+
+- The SSH password (never logged; `SecretString::expose_secret` is only
+  ever passed to `set_password` / `authenticate_password`).
+- Full document contents.
+
+We **do** log document UUIDs and visible names, file paths inside the
+library, and the tablet's exec-output strings. Treat log files as
+sensitive data on multi-user systems.
+
+## What's deliberately out of scope for v1.0
+
+- **Auto-update**: there is none. Users get new versions only by
+  downloading them. We didn't want to ship an updater without a
+  code-signing infrastructure to back it.
+- **Sandboxing of imported PDFs**: a malicious PDF that exploits a
+  decoder bug would run with the app's privileges. v1.0 relies on
+  upstream decoders being CVE-clean.
+- **Host-key pinning for SSH**: TOFU without persistence; see above.
+- **Telemetry**: there is none, by design.
+
+## Reporting
+
+Found a security issue? Please open a private vulnerability report via
+GitHub's "Report a vulnerability" interface on the repository, or email
+the maintainers listed in `Cargo.toml`. Please don't open a public issue
+for security-sensitive matters.

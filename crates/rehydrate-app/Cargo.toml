@@ -28,7 +28,7 @@ keyring = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tauri = { version = "2", features = ["devtools"] }
+tauri = { version = "2" }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 time = { workspace = true }
@@ -41,3 +41,13 @@ image = { workspace = true }
 rm-parser = { path = "../rm-parser" }
 base64 = "0.22"
 tempfile = { workspace = true }
+
+[features]
+# `devtools` enables the Tauri webview inspector (F12 / Cmd+Opt+I).
+# It is default-on so daily `cargo run` / `cargo tauri dev` works
+# without flags, but the release workflow MUST build with
+# `--no-default-features` so shipped binaries don't expose the
+# inspector to end users — the renderer can call any registered
+# Tauri command, so an open DevTools is a security boundary skip.
+default = ["devtools"]
+devtools = ["tauri/devtools"]

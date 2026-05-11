@@ -6,12 +6,9 @@ The library lives in a single self-contained directory you control: every distin
 
 ## Status
 
-`v0.9.1` — first public release (`v0.9.0` macOS bundles were
-unlaunchable on Apple Silicon — see `CHANGELOG.md`). Beta-quality:
-feature-complete for the
-sync + library use case, but bundles ship unsigned (macOS Gatekeeper /
-Windows SmartScreen will warn on first launch — `PACKAGING.md` documents
-the signing config that's deferred to `v1.0.0`). Working features:
+`v1.0.0` — first stable release. Bundles still ship **unsigned**; see
+[Installing](#installing) below for the Gatekeeper / SmartScreen
+right-click dance on first launch. Working features:
 
 - Two-way sync (pull + push) over USB-SSH, with progress streamed live.
 - Content-addressed blob store, full version history, restore-any-version.
@@ -29,7 +26,53 @@ the signing config that's deferred to `v1.0.0`). Working features:
   toolbar without restarting.
 
 Architecture notes are in `remarkable-sync-implementation-plan.md`;
-release notes are in `CHANGELOG.md`.
+release notes are in `CHANGELOG.md`; threat model and security
+posture in `SECURITY.md`.
+
+## Installing
+
+reHydrate ships pre-built bundles on the [GitHub Releases][releases]
+page for macOS (Intel + Apple Silicon), Windows, and Linux. v1.0
+bundles are **unsigned** — buying code-signing certificates is on the
+roadmap for v1.1. Until then, the OS will warn on first launch:
+
+### macOS
+
+1. Download the matching `.dmg` for your Mac (Intel or Apple Silicon).
+2. **Right-click the `.dmg`** (or Control-click) and choose **Open**.
+   *Don't* double-click — Gatekeeper will reject the unsigned bundle.
+3. Drag reHydrate to `/Applications`.
+4. The first time you launch the app, **right-click reHydrate in
+   `/Applications`** and choose **Open**. Confirm the "unidentified
+   developer" warning. After this one-time bypass, normal
+   double-click works.
+
+### Windows
+
+1. Download the `.msi` installer.
+2. Windows SmartScreen will warn "Windows protected your PC". Click
+   **More info → Run anyway** to proceed.
+3. Install and launch normally.
+
+### Linux
+
+The `.AppImage` works on most distributions out of the box — make it
+executable (`chmod +x`) and run. The `.deb` targets Debian/Ubuntu;
+install via `sudo dpkg -i reHydrate_*.deb`.
+
+On minimal Linux installs without `secret-service` (e.g.
+gnome-keyring), the app can't save your tablet's SSH password between
+sessions — you'll see a toast warning and need to type it on each
+connect. Install `gnome-keyring` or `KeePassXC`-with-secret-service
+to enable persistence.
+
+## Updates
+
+reHydrate does **not** auto-update. Subscribe to the GitHub repo's
+release feed, or check the [Releases][releases] page periodically.
+Security fixes will be called out in the release notes.
+
+[releases]: https://github.com/dm807cam/rehydrate/releases
 
 ## Stack
 

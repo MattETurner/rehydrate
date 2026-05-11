@@ -34,26 +34,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # --no-default-features strips `devtools` from the
+          # rehydrate-app crate; release binaries must not expose the
+          # webview inspector (renderer can call any Tauri command).
           - label: macOS (Intel)
             os: macos-latest
             target: x86_64-apple-darwin
             rust_targets: x86_64-apple-darwin
-            tauri_args: --target x86_64-apple-darwin --bundles app,dmg
+            tauri_args: --target x86_64-apple-darwin --bundles app,dmg --no-default-features
           - label: macOS (Apple Silicon)
             os: macos-latest
             target: aarch64-apple-darwin
             rust_targets: aarch64-apple-darwin
-            tauri_args: --target aarch64-apple-darwin --bundles app,dmg
+            tauri_args: --target aarch64-apple-darwin --bundles app,dmg --no-default-features
           - label: Linux
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             rust_targets: x86_64-unknown-linux-gnu
-            tauri_args: --target x86_64-unknown-linux-gnu --bundles appimage,deb
+            tauri_args: --target x86_64-unknown-linux-gnu --bundles appimage,deb --no-default-features
           - label: Windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
             rust_targets: x86_64-pc-windows-msvc
-            tauri_args: --target x86_64-pc-windows-msvc --bundles msi
+            tauri_args: --target x86_64-pc-windows-msvc --bundles msi --no-default-features
 
     steps:
       - uses: actions/checkout@v4
