@@ -118,8 +118,8 @@ pub async fn save_ollama_config(cfg: OllamaConfigDto) -> Result<(), String> {
 /// so the renderer can't bypass the gates by going straight to the
 /// probe endpoint.
 fn validate_ollama_url(url_str: &str) -> Result<(), String> {
-    let parsed = url::Url::parse(url_str)
-        .map_err(|e| format!("Ollama URL is not a valid URL: {e}"))?;
+    let parsed =
+        url::Url::parse(url_str).map_err(|e| format!("Ollama URL is not a valid URL: {e}"))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| format!("Ollama URL must have a host (got {url_str:?})"))?;
@@ -173,19 +173,22 @@ pub async fn ping_ollama(base_url: String) -> Result<PingReport, String> {
         };
         let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
         match agent.get(&url) {
-            Ok(resp) if resp.status == 200 => match serde_json::from_str::<TagsResponse>(&resp.body)
-            {
-                Ok(parsed) => PingReport {
-                    ok: true,
-                    error: None,
-                    models: parsed.models.into_iter().map(|m| m.name).collect(),
-                },
-                Err(e) => PingReport {
-                    ok: true,
-                    error: Some(format!("connected, but /api/tags returned unexpected JSON: {e}")),
-                    models: Vec::new(),
-                },
-            },
+            Ok(resp) if resp.status == 200 => {
+                match serde_json::from_str::<TagsResponse>(&resp.body) {
+                    Ok(parsed) => PingReport {
+                        ok: true,
+                        error: None,
+                        models: parsed.models.into_iter().map(|m| m.name).collect(),
+                    },
+                    Err(e) => PingReport {
+                        ok: true,
+                        error: Some(format!(
+                            "connected, but /api/tags returned unexpected JSON: {e}"
+                        )),
+                        models: Vec::new(),
+                    },
+                }
+            }
             Ok(resp) => PingReport {
                 ok: false,
                 error: Some(format!("HTTP {}", resp.status)),
@@ -241,10 +244,18 @@ struct TagsModel {
 pub enum OcrStatusReport {
     /// The configured Ollama URL doesn't respond. UI auto-opens the
     /// Settings modal on the Ollama tab.
-    Unreachable { base_url: String, model: String, error: String },
+    Unreachable {
+        base_url: String,
+        model: String,
+        error: String,
+    },
     /// Daemon responds but doesn't have the configured model pulled.
     /// UI surfaces an explainer + a copy-paste `ollama pull` command.
-    ModelMissing { base_url: String, model: String, available: Vec<String> },
+    ModelMissing {
+        base_url: String,
+        model: String,
+        available: Vec<String>,
+    },
     /// Ready to transcribe.
     Ready { base_url: String, model: String },
 }
@@ -337,7 +348,11 @@ pub async fn transcribe_document(
     // through to the actual request, which surfaces the same error
     // shape via the backend.
     if let Some(false) = cached_ping_ok(&state, &ollama.base_url).await {
-        return Err(unconfigured_error(&ollama.base_url, &ollama.model, "cached probe failed"));
+        return Err(unconfigured_error(
+            &ollama.base_url,
+            &ollama.model,
+            "cached probe failed",
+        ));
     }
 
     // Pull the manifest + every `.rm` page blob.
@@ -409,7 +424,11 @@ pub async fn transcribe_document(
         Ok(b) => b,
         Err(e) => {
             record_ping(&state, &ollama.base_url, false).await;
-            return Err(unconfigured_error(&ollama.base_url, &ollama.model, &format!("{e}")));
+            return Err(unconfigured_error(
+                &ollama.base_url,
+                &ollama.model,
+                &format!("{e}"),
+            ));
         }
     };
 
@@ -625,7 +644,13 @@ pub async fn export_transcript(
 
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim()
         .to_string()

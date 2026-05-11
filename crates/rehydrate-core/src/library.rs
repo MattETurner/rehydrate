@@ -1673,11 +1673,7 @@ impl Library {
     /// xochitl picks it up as a `CollectionType` entry. Returns the
     /// row that the UI can splice into its folder list without a
     /// full reload.
-    pub fn create_folder(
-        &self,
-        visible_name: &str,
-        parent: Option<&str>,
-    ) -> Result<FolderEntry> {
+    pub fn create_folder(&self, visible_name: &str, parent: Option<&str>) -> Result<FolderEntry> {
         let trimmed = visible_name.trim().to_string();
         if trimmed.is_empty() {
             return Err(Error::InvalidArgument(
@@ -1757,9 +1753,7 @@ impl Library {
         new_sort_index: f64,
     ) -> Result<()> {
         if !new_sort_index.is_finite() {
-            return Err(Error::InvalidArgument(
-                "sort_index must be finite".into(),
-            ));
+            return Err(Error::InvalidArgument("sort_index must be finite".into()));
         }
         if new_parent == Some(folder_id) {
             return Err(Error::InvalidArgument(
@@ -2512,7 +2506,10 @@ mod tests {
             .iter()
             .find(|f| f.folder_id == child.folder_id)
             .unwrap();
-        assert_eq!(listed_child.parent.as_deref(), Some(parent.folder_id.as_str()));
+        assert_eq!(
+            listed_child.parent.as_deref(),
+            Some(parent.folder_id.as_str())
+        );
 
         // Both rows are pending push so the next sync uploads their
         // metadata files to the device.
@@ -2520,7 +2517,10 @@ mod tests {
         assert_eq!(pending.len(), 2);
         for (_, json) in pending {
             let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-            assert_eq!(v.get("type").and_then(|x| x.as_str()), Some("CollectionType"));
+            assert_eq!(
+                v.get("type").and_then(|x| x.as_str()),
+                Some("CollectionType")
+            );
             assert_eq!(v.get("synced").and_then(|x| x.as_bool()), Some(false));
         }
     }
@@ -2561,9 +2561,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let lib = Library::open(tmp.path()).unwrap();
         let a = lib.create_folder("A", None).unwrap();
-        let b = lib
-            .create_folder("B", Some(&a.folder_id))
-            .unwrap();
+        let b = lib.create_folder("B", Some(&a.folder_id)).unwrap();
 
         // Self → reject.
         assert!(lib
@@ -2584,7 +2582,8 @@ mod tests {
         // User reorders it locally.
         lib.reorder_folder("dev-1", None, 999.5).unwrap();
         // Device sends the same folder again (e.g. another sync).
-        lib.upsert_folder("dev-1", None, "Pulled", "{\"v\":2}").unwrap();
+        lib.upsert_folder("dev-1", None, "Pulled", "{\"v\":2}")
+            .unwrap();
         let folders = lib.list_folders().unwrap();
         let row = folders.iter().find(|f| f.folder_id == "dev-1").unwrap();
         // Local order is preserved; metadata is refreshed.

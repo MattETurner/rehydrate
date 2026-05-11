@@ -155,10 +155,7 @@ impl Publisher for GhostClient {
         let url = format!("{}/site/", self.admin_url(""));
         let resp = self.agent.get(
             &url,
-            &[
-                ("Authorization", auth.as_str()),
-                ("Accept-Version", "v5.0"),
-            ],
+            &[("Authorization", auth.as_str()), ("Accept-Version", "v5.0")],
         )?;
         if resp.status == 401 || resp.status == 403 {
             return Err(PublishError::AuthFailed(resp.status));

@@ -892,11 +892,30 @@ fn sanitize(name: &str) -> String {
     let stem = trimmed.split('.').next().unwrap_or(trimmed);
     let reserved = matches!(
         stem.to_ascii_uppercase().as_str(),
-        "CON" | "PRN" | "AUX" | "NUL"
-            | "COM0" | "COM1" | "COM2" | "COM3" | "COM4"
-            | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
-            | "LPT0" | "LPT1" | "LPT2" | "LPT3" | "LPT4"
-            | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM0"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT0"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
     );
     if reserved {
         // Prefix-rescue a reserved name so the on-disk filename is

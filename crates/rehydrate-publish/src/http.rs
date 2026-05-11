@@ -128,8 +128,14 @@ mod tests {
 
     #[test]
     fn host_of_extracts_lowercased_host() {
-        assert_eq!(host_of("https://Example.COM/foo").as_deref(), Some("example.com"));
-        assert_eq!(host_of("HTTPS://blog.example.com:443/x").as_deref(), Some("blog.example.com"));
+        assert_eq!(
+            host_of("https://Example.COM/foo").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            host_of("HTTPS://blog.example.com:443/x").as_deref(),
+            Some("blog.example.com")
+        );
         assert_eq!(host_of("not-a-url"), None);
         assert_eq!(host_of(""), None);
     }

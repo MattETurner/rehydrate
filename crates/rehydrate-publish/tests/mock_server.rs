@@ -140,7 +140,10 @@ fn ghost_surfaces_401_as_auth_failed() {
     let addr = format!("http://{}", server.server_addr());
     let _t = thread::spawn(move || {
         let req = server.recv().unwrap();
-        let _ = req.respond(json_response(401, r#"{"errors":[{"message":"Auth failed"}]}"#));
+        let _ = req.respond(json_response(
+            401,
+            r#"{"errors":[{"message":"Auth failed"}]}"#,
+        ));
     });
     let client = GhostClient::new(rehydrate_publish::GhostCredentials {
         base_url: addr,

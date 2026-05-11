@@ -157,9 +157,8 @@ fn sanctioned_egress_crates_pin_to_one_host() {
         ("crates/rehydrate-publish/src", "http.rs"),
     ] {
         let dir = root.join(crate_dir);
-        let entries = fs::read_dir(&dir).unwrap_or_else(|e| {
-            panic!("cannot read {} ({e})", dir.display())
-        });
+        let entries =
+            fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {} ({e})", dir.display()));
         for entry in entries.flatten() {
             let p = entry.path();
             if p.extension().and_then(|e| e.to_str()) != Some("rs") {

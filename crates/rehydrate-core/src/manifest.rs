@@ -195,11 +195,30 @@ fn is_windows_reserved_component(component: &str) -> bool {
     let upper = stem.to_ascii_uppercase();
     matches!(
         upper.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL"
-            | "COM0" | "COM1" | "COM2" | "COM3" | "COM4"
-            | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
-            | "LPT0" | "LPT1" | "LPT2" | "LPT3" | "LPT4"
-            | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM0"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT0"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
     )
 }
 
@@ -356,11 +375,7 @@ mod tests {
     fn validate_paths_rejects_control_chars() {
         for bad in ["foo\nbar", "foo\rbar", "foo\x01bar", "foo\x7fbar"] {
             let m = manifest_with_path(bad);
-            assert!(
-                m.validate_paths().is_err(),
-                "expected reject for {:?}",
-                bad
-            );
+            assert!(m.validate_paths().is_err(), "expected reject for {:?}", bad);
         }
     }
 
@@ -368,8 +383,17 @@ mod tests {
     fn validate_paths_rejects_windows_reserved_names() {
         // Bare reserved names AND reserved-with-extension both blocked.
         for bad in [
-            "CON", "PRN", "AUX", "NUL", "COM1", "LPT9", "con", "Com3",
-            "CON.metadata", "lpt1.txt", "nested/CON",
+            "CON",
+            "PRN",
+            "AUX",
+            "NUL",
+            "COM1",
+            "LPT9",
+            "con",
+            "Com3",
+            "CON.metadata",
+            "lpt1.txt",
+            "nested/CON",
         ] {
             assert!(
                 manifest_with_path(bad).validate_paths().is_err(),

@@ -117,9 +117,7 @@ impl Publisher for WordpressClient {
         // the credentials are valid; 401/403 if not.
         let url = self.rest_url("/users/me");
         let auth = self.auth_header();
-        let resp = self
-            .agent
-            .get(&url, &[("Authorization", auth.as_str())])?;
+        let resp = self.agent.get(&url, &[("Authorization", auth.as_str())])?;
         if resp.status == 401 || resp.status == 403 {
             return Err(PublishError::AuthFailed(resp.status));
         }

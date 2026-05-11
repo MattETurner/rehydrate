@@ -16,10 +16,7 @@ pub enum OcrProgressEvent {
     /// One page produced N characters of transcript.
     PageDone { page_index: usize, chars: usize },
     /// One page failed; the run continues with the rest.
-    PageFailed {
-        page_index: usize,
-        message: String,
-    },
+    PageFailed { page_index: usize, message: String },
     /// Whole run finished (success or cancelled). Used to close out
     /// the renderer's "running" UI state cleanly.
     Done {

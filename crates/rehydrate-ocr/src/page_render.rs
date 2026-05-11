@@ -198,8 +198,7 @@ pub fn render_rm_to_png(rm_bytes: &[u8]) -> Result<Vec<u8>, RenderError> {
             // a generous ceiling — even a chunky highlighter at
             // canvas-fill scale tops out around 80 px.
             const MAX_STROKE_PX: f32 = 120.0;
-            let width_px =
-                (pixel_width_for(tool, a, thickness) * fit).clamp(1.0, MAX_STROKE_PX);
+            let width_px = (pixel_width_for(tool, a, thickness) * fit).clamp(1.0, MAX_STROKE_PX);
             stroke_segment(&mut img, pa, pb, width_px, colour);
         }
     }

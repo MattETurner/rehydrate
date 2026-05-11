@@ -94,11 +94,7 @@ impl OllamaBackend {
 
     /// Single-page request. Synchronous (blocking) because ureq is
     /// blocking; callers run this inside `spawn_blocking`.
-    fn transcribe_one_blocking(
-        &self,
-        png_bytes: &[u8],
-        prompt: &str,
-    ) -> Result<String, OcrError> {
+    fn transcribe_one_blocking(&self, png_bytes: &[u8], prompt: &str) -> Result<String, OcrError> {
         // `think: false` disables the Qwen3 / Qwen3.5 family's
         // chain-of-thought trace. Without it the model is free to
         // emit `<think>…</think>` blocks before the actual answer,
@@ -127,10 +123,9 @@ impl OllamaBackend {
             200 => {
                 let v: serde_json::Value = serde_json::from_str(&resp.body)
                     .map_err(|e| OcrError::Backend(format!("malformed JSON from ollama: {e}")))?;
-                let raw = v
-                    .get("response")
-                    .and_then(|s| s.as_str())
-                    .ok_or_else(|| OcrError::Backend("ollama response missing `response` field".into()))?;
+                let raw = v.get("response").and_then(|s| s.as_str()).ok_or_else(|| {
+                    OcrError::Backend("ollama response missing `response` field".into())
+                })?;
                 Ok(strip_thinking(raw))
             }
             // A 404 from `/api/generate` is overwhelmingly "model not
@@ -167,9 +162,9 @@ fn map_agent_error(err: AgentError) -> OcrError {
         // mid-flight (or someone bypassed `OllamaBackend::new`).
         // Treat as a config bug rather than a transient network
         // problem so retries don't paper over it.
-        AgentError::CrossHost { found, expected } => OcrError::Backend(format!(
-            "agent host mismatch: {found} != {expected}"
-        )),
+        AgentError::CrossHost { found, expected } => {
+            OcrError::Backend(format!("agent host mismatch: {found} != {expected}"))
+        }
     }
 }
 
@@ -202,7 +197,9 @@ fn strip_thinking(raw: &str) -> String {
     let mut s = raw.to_string();
     loop {
         let lower = s.to_ascii_lowercase();
-        let Some(open) = lower.find("<think>") else { break };
+        let Some(open) = lower.find("<think>") else {
+            break;
+        };
         match lower[open..].find("</think>") {
             Some(close_rel) => {
                 let close = open + close_rel + "</think>".len();
@@ -238,7 +235,9 @@ impl OcrBackend for OllamaBackend {
                 return Err(OcrError::Cancelled);
             }
             if let Some(p) = &progress {
-                let _ = p.send(OcrProgressEvent::PageStarted { page_index: i }).await;
+                let _ = p
+                    .send(OcrProgressEvent::PageStarted { page_index: i })
+                    .await;
             }
             // The blocking ureq call would otherwise stall the
             // tokio runtime; offload to the blocking pool so other
@@ -294,7 +293,9 @@ impl OcrBackend for OllamaBackend {
                     // responding for another N pages.
                     if matches!(
                         &e,
-                        OcrError::Unreachable(_) | OcrError::ModelNotPulled(_) | OcrError::Cancelled
+                        OcrError::Unreachable(_)
+                            | OcrError::ModelNotPulled(_)
+                            | OcrError::Cancelled
                     ) {
                         return Err(e);
                     }
@@ -369,9 +370,7 @@ mod tests {
 
     #[test]
     fn strip_thinking_removes_multiple_blocks() {
-        let r = strip_thinking(
-            "<think>step 1</think>line one\n<think>step 2</think>line two",
-        );
+        let r = strip_thinking("<think>step 1</think>line one\n<think>step 2</think>line two");
         assert_eq!(r, "line one\nline two");
     }
 
