@@ -22,12 +22,13 @@ pub use page_render::render_rm_to_png;
 pub use progress::OcrProgressEvent;
 
 /// Default Ollama model identifier surfaced to the IPC layer and
-/// pre-selected in the Settings modal's model dropdown. Qwen3-VL is
-/// the current vision-language family on Ollama (released late
-/// 2025): the 4B build at ~3.3 GB fits comfortably on 8 GB GPUs and
-/// Apple-Silicon unified-memory budgets, and the upstream notes
-/// call out improved handwriting recognition (now 32 languages, up
-/// from 10) over the previous Qwen2.5-VL line.
+/// pre-selected in the Settings modal's model dropdown. Qwen 3.5
+/// (released ~one month ago, as of v1.0.0) is the current
+/// unified vision-language family on Ollama and explicitly
+/// outperforms the Qwen3-VL line on the benchmarks that matter
+/// for this app: OCRBench 93.1% and OmniDocBench1.5 90.8%. The
+/// 4B build at ~3.4 GB fits comfortably on 8 GB GPUs / Apple
+/// Silicon and is the sweet spot for handwritten notebooks.
 pub fn default_model_id() -> &'static str {
-    "qwen3-vl:4b"
+    "qwen3.5:4b"
 }

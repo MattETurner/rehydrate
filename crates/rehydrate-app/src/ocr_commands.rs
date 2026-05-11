@@ -181,21 +181,21 @@ pub async fn ping_ollama(base_url: String) -> Result<PingReport, String> {
 
 #[tauri::command]
 pub async fn list_curated_ollama_models() -> Result<Vec<CuratedOllamaModel>, String> {
-    // Qwen3-VL (late 2025) supersedes the Qwen2.5-VL line we had on
-    // the feature branch. Upstream calls out improved handwriting OCR
-    // (32 languages, up from 10) which is exactly the workload here.
-    // Two curated tiers keep the dropdown manageable; users with
-    // bigger machines or different preferences can pull anything
-    // else and enter it via the "Custom…" option in the picker.
+    // Qwen 3.5 (released ~1 month before v1.0.0) supersedes the
+    // Qwen3-VL line. Upstream benchmarks: OCRBench 93.1% and
+    // OmniDocBench1.5 90.8% — both directly relevant to the
+    // handwritten-notebook workload. Two curated tiers keep the
+    // dropdown manageable; the "Custom…" option in the picker
+    // covers users who pull a different model.
     Ok(vec![
         CuratedOllamaModel {
-            id: "qwen3-vl:4b".into(),
-            label: "Qwen3-VL 4B — default, fast".into(),
+            id: "qwen3.5:4b".into(),
+            label: "Qwen 3.5 4B — default, fast".into(),
             vram_hint: "~4 GB VRAM / Apple Silicon unified memory",
         },
         CuratedOllamaModel {
-            id: "qwen3-vl:8b".into(),
-            label: "Qwen3-VL 8B — sharper at cursive".into(),
+            id: "qwen3.5:9b".into(),
+            label: "Qwen 3.5 9B — sharper at cursive + math".into(),
             vram_hint: "~7 GB VRAM recommended",
         },
     ])
