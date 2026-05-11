@@ -119,6 +119,21 @@ export function App() {
   // X of Y" feedback for a long-running background transcription.
   const [ocrJob, setOcrJob] = useState<OcrJob | null>(null);
   const [ocrJobElapsed, setOcrJobElapsed] = useState(0);
+  // Auto-OCR sweep state. `queue` is the FIFO of remaining
+  // doc ids; `totalAtStart` keeps the original size for the
+  // "N of M" badge in the chip. `null` = no sweep active.
+  const [autoOcrSweep, setAutoOcrSweep] = useState<
+    | {
+        queue: { documentId: string; visibleName: string }[];
+        totalAtStart: number;
+        done: number;
+      }
+    | null
+  >(null);
+  // Idempotency guard: stores the library path the sweep effect
+  // has already kicked off for. Library switches change the path,
+  // which lets the effect fire again for the new library.
+  const autoOcrInitialised = useRef<string | null>(null);
   const refreshing = useRef(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const toast = useToast();
@@ -1017,6 +1032,134 @@ export function App() {
     },
     [refreshLibrary, toast],
   );
+
+  // ---- Auto-OCR sweep --------------------------------------------------
+  // When the user has opted in via Settings → Ollama, every notebook
+  // without an existing transcript gets OCRed sequentially after
+  // the library opens. The sweep:
+  //
+  // * silently aborts if Ollama is unreachable — we don't auto-open
+  //   the Settings modal at launch the way the manual OCR action
+  //   does, because that's hostile (the app launches, immediately
+  //   opens a modal) and the user already opted in by checking the
+  //   box;
+  // * uses the same `OcrJobChip` for visibility (clicking × cancels
+  //   the whole sweep, not just the in-flight doc);
+  // * skips per-doc failures and keeps going (a single bad page
+  //   shouldn't strand 49 others); a final summary toast reports
+  //   total transcribed.
+  //
+  // `sweepRunningRef` is the cancellation flag readable inside the
+  // async loop's closure — React state doesn't update synchronously
+  // for this, so the loop would otherwise see stale values.
+  const sweepRunningRef = useRef(false);
+  const startAutoOcrSweep = useCallback(async () => {
+    if (sweepRunningRef.current) return;
+    sweepRunningRef.current = true;
+    try {
+      const cfg = await ipc.getOllamaConfig();
+      if (!cfg.auto_ocr_on_startup) return;
+      // Pre-flight ping. Silent on failure — daemon not running
+      // at launch is a normal-life state, not a thing to nag about.
+      const probe = await ipc.pingOllama(cfg.base_url);
+      if (!probe.ok) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `Auto-OCR sweep skipped: Ollama not reachable at ${cfg.base_url}`,
+        );
+        return;
+      }
+      const raw = await ipc.listDocumentsNeedingOcr();
+      if (raw.length === 0) return;
+      const candidates = raw.map((c) => ({
+        documentId: c.document_id,
+        visibleName: c.visible_name,
+      }));
+      setAutoOcrSweep({
+        queue: candidates,
+        totalAtStart: candidates.length,
+        done: 0,
+      });
+      let transcribed = 0;
+      let skipped = 0;
+      for (let i = 0; i < candidates.length; i++) {
+        if (!sweepRunningRef.current) break;
+        const c = candidates[i];
+        setOcrJob({
+          documentId: c.documentId,
+          visibleName: c.visibleName,
+          phase: "running",
+          pagesDone: 0,
+          charCount: 0,
+          startedAt: Date.now(),
+        });
+        try {
+          await ipc.transcribeDocument(c.documentId, null);
+          transcribed += 1;
+        } catch (e) {
+          // Ollama went away mid-sweep (the daemon was killed, the
+          // network dropped, …) — stop. Other errors are per-doc
+          // and we keep going.
+          const unconfigured = parseOllamaUnconfigured(e);
+          if (unconfigured) {
+            // eslint-disable-next-line no-console
+            console.info(
+              `Auto-OCR sweep aborted mid-pass: ${unconfigured.message}`,
+            );
+            break;
+          }
+          // eslint-disable-next-line no-console
+          console.warn(`Auto-OCR skipped ${c.visibleName}: ${e}`);
+          skipped += 1;
+        }
+        setAutoOcrSweep((prev) =>
+          prev
+            ? {
+                ...prev,
+                done: prev.done + 1,
+                queue: prev.queue.slice(1),
+              }
+            : null,
+        );
+      }
+      setOcrJob(null);
+      setAutoOcrSweep(null);
+      if (transcribed > 0 || skipped > 0) {
+        await refreshLibrary();
+        toast.show({
+          tone: "ok",
+          duration: 8000,
+          body:
+            skipped === 0
+              ? `Auto-OCR finished — transcribed ${transcribed} notebook${transcribed === 1 ? "" : "s"}.`
+              : `Auto-OCR finished — transcribed ${transcribed}, skipped ${skipped}.`,
+        });
+      }
+    } finally {
+      sweepRunningRef.current = false;
+    }
+  }, [refreshLibrary, toast]);
+
+  // Cancel-on-dismiss for the chip: when a sweep is active, the
+  // chip's × button stops the queue *and* hides the chip.
+  const dismissOcrChip = useCallback(() => {
+    if (sweepRunningRef.current) {
+      sweepRunningRef.current = false;
+    }
+    setOcrJob(null);
+    setAutoOcrSweep(null);
+  }, []);
+
+  // Fire the sweep when the library is open. The ref guard inside
+  // `startAutoOcrSweep` prevents re-entry; `libraryPath` as a dep
+  // gives us one sweep per library-open transition (so library
+  // switching also kicks off the new library's sweep).
+  useEffect(() => {
+    if (!libraryOpen) return;
+    if (autoOcrInitialised.current === libraryPath) return;
+    autoOcrInitialised.current = libraryPath;
+    void startAutoOcrSweep();
+  }, [libraryOpen, libraryPath, startAutoOcrSweep]);
 
   async function archiveOne(d: DocumentSummary) {
     const ok = await confirm({
@@ -1976,7 +2119,8 @@ export function App() {
         <OcrJobChip
           job={ocrJob}
           elapsedSeconds={ocrJobElapsed}
-          onDismiss={() => setOcrJob(null)}
+          onDismiss={dismissOcrChip}
+          sweep={autoOcrSweep}
         />
       )}
       {showCheatsheet && <Cheatsheet onClose={() => setShowCheatsheet(false)} />}

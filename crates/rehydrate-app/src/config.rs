@@ -39,6 +39,16 @@ pub struct OllamaConfig {
     /// "Custom…" free-text option for anything else the user has
     /// `ollama pull`ed.
     pub model: String,
+    /// When true, the app kicks off a background OCR sweep at
+    /// startup: every live document whose current version doesn't
+    /// already have a transcript gets transcribed serially through
+    /// the same `transcribe_document` pipeline a manual "Convert
+    /// to text…" would use. Default off — first-run users haven't
+    /// opted in to network traffic with the Ollama daemon yet.
+    /// `#[serde(default)]` on the field covers existing on-disk
+    /// configs without a migration step.
+    #[serde(default)]
+    pub auto_ocr_on_startup: bool,
 }
 
 impl Default for OllamaConfig {
@@ -51,6 +61,9 @@ impl Default for OllamaConfig {
             // (OCRBench 93.1%, OmniDocBench1.5 90.8%). 4B is
             // the sweet-spot tier for handwritten notebooks.
             model: "qwen3.5:4b".to_string(),
+            // First-run users haven't told us they want network
+            // traffic with Ollama; opt-in via the Settings toggle.
+            auto_ocr_on_startup: false,
         }
     }
 }

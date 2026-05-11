@@ -13,6 +13,7 @@ import type {
   GhostCredentials,
   LibrarySummary,
   LogTail,
+  OcrCandidate,
   OcrProgressEvent,
   OcrStatusReport,
   OllamaConfig,
@@ -135,6 +136,8 @@ export const ipc = {
   listCuratedOllamaModels: () =>
     invoke<CuratedOllamaModel[]>("list_curated_ollama_models"),
   defaultOllamaModel: () => invoke<string>("default_ollama_model"),
+  listDocumentsNeedingOcr: () =>
+    invoke<OcrCandidate[]>("list_documents_needing_ocr"),
 
   // ---- CMS publish ----------------------------------------------------
   publishTranscript: (versionId: number, target: PublishKind) =>

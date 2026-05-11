@@ -59,29 +59,11 @@ async fn lib_arc(state: &State<'_, AppState>) -> Result<Arc<Library>, String> {
 //   Ollama config + reachability
 // =====================================================================
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct OllamaConfigDto {
-    pub base_url: String,
-    pub model: String,
-}
-
-impl From<config::OllamaConfig> for OllamaConfigDto {
-    fn from(c: config::OllamaConfig) -> Self {
-        Self {
-            base_url: c.base_url,
-            model: c.model,
-        }
-    }
-}
-
-impl From<OllamaConfigDto> for config::OllamaConfig {
-    fn from(c: OllamaConfigDto) -> Self {
-        Self {
-            base_url: c.base_url,
-            model: c.model,
-        }
-    }
-}
+/// `OllamaConfig` re-exported as the IPC DTO. The struct already
+/// derives `Serialize + Deserialize`, and using it directly keeps
+/// the Rust and TS sides in lockstep — adding a new field touches
+/// `config.rs` and the TS interface only.
+pub type OllamaConfigDto = config::OllamaConfig;
 
 #[derive(Serialize)]
 pub struct PingReport {
@@ -105,8 +87,7 @@ pub struct CuratedOllamaModel {
 
 #[tauri::command]
 pub async fn get_ollama_config() -> Result<OllamaConfigDto, String> {
-    let cfg = config::load();
-    Ok(cfg.ollama.into())
+    Ok(config::load().ollama)
 }
 
 #[tauri::command]
@@ -125,7 +106,7 @@ pub async fn save_ollama_config(cfg: OllamaConfigDto) -> Result<(), String> {
         return Err("Pick a model from the list or enter a custom name.".into());
     }
     let mut on_disk = config::load();
-    on_disk.ollama = cfg.into();
+    on_disk.ollama = cfg;
     config::save(&on_disk).map_err(err)
 }
 
@@ -770,4 +751,49 @@ pub async fn ping_publish_target(target: PublishKind) -> Result<(), String> {
 #[tauri::command]
 pub async fn default_ollama_model() -> Result<String, String> {
     Ok(default_model_id().to_string())
+}
+
+/// Live documents whose current version doesn't already have an
+/// `ocr/transcript.md` derived artefact. The auto-OCR-at-startup
+/// sweep iterates this list. Documents are returned in `(visible
+/// name, doc id)` shape — the renderer wants the title for the
+/// progress chip, the id for the actual `transcribe_document`
+/// call.
+#[derive(Serialize)]
+pub struct OcrCandidate {
+    pub document_id: String,
+    pub visible_name: String,
+}
+
+#[tauri::command]
+pub async fn list_documents_needing_ocr(
+    state: State<'_, AppState>,
+) -> Result<Vec<OcrCandidate>, String> {
+    let lib = lib_arc(&state).await?;
+    // `list_documents` is cheap (one SELECT + a manifest blob hash
+    // per row); the per-doc `read_derived_artefact` is a manifest
+    // parse + a hash lookup that returns None without reading any
+    // additional blob bytes if the path isn't in the manifest.
+    // O(docs); fine for libraries up to several thousand entries
+    // and below the user's "wait, why is the app frozen" threshold.
+    let docs = lib.list_documents().map_err(err)?;
+    let mut out = Vec::with_capacity(docs.len());
+    for doc in docs {
+        // Notebooks are the only doc type the OCR pipeline can
+        // handle today — PDFs and EPUBs carry their own text and
+        // would just produce duplicate/inferior transcripts.
+        if doc.doc_type != "Notebook" {
+            continue;
+        }
+        let existing = lib
+            .read_derived_artefact(doc.current_version_id, TRANSCRIPT_PATH)
+            .map_err(err)?;
+        if existing.is_none() {
+            out.push(OcrCandidate {
+                document_id: doc.document_id,
+                visible_name: doc.visible_name,
+            });
+        }
+    }
+    Ok(out)
 }

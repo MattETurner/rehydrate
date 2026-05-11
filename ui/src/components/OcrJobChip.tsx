@@ -27,14 +27,26 @@ export interface OcrJob {
   error?: string;
 }
 
+/// When the auto-OCR-at-startup sweep is in flight, the App passes
+/// `sweep` so the chip can render "(N of M)" batch progress and
+/// change the close-button affordance to "stop the sweep" rather
+/// than "hide while it keeps running" — those are different actions
+/// from the user's perspective.
+export interface OcrSweepProgress {
+  totalAtStart: number;
+  done: number;
+}
+
 export function OcrJobChip({
   job,
   elapsedSeconds,
   onDismiss,
+  sweep,
 }: {
   job: OcrJob;
   elapsedSeconds: number;
   onDismiss: () => void;
+  sweep?: OcrSweepProgress | null;
 }) {
   if (job.phase !== "running") return null;
   const pageLabel = job.pagesDone === 1 ? "page" : "pages";
@@ -43,13 +55,25 @@ export function OcrJobChip({
   // come in. Width is capped at 80% so the chip never looks "done"
   // before it actually is.
   const pct = Math.min(80, 8 + job.pagesDone * 6);
+  const inSweep = sweep && sweep.totalAtStart > 0;
+  const titleClose = inSweep
+    ? "Stop the auto-OCR sweep"
+    : "Hide — OCR keeps running in the background";
   return (
     <div className="ocr-chip" role="status" aria-live="polite">
       <div className="ocr-chip-bar">
         <span className="indeterminate" style={{ width: `${pct}%` }} />
       </div>
       <div className="ocr-chip-text">
-        <strong>OCR · {job.visibleName}</strong>
+        <strong>
+          {inSweep ? "Auto OCR" : "OCR"} · {job.visibleName}
+          {inSweep && (
+            <span className="muted small">
+              {" "}
+              ({sweep!.done + 1} of {sweep!.totalAtStart})
+            </span>
+          )}
+        </strong>
         <span className="muted small">
           {job.pagesDone} {pageLabel} · {job.charCount.toLocaleString()} chars · {formatElapsed(elapsedSeconds)}
         </span>
@@ -57,9 +81,9 @@ export function OcrJobChip({
       <button
         type="button"
         className="ocr-chip-close"
-        aria-label="Hide progress"
+        aria-label={inSweep ? "Stop auto-OCR" : "Hide progress"}
         onClick={onDismiss}
-        title="Hide — OCR keeps running in the background"
+        title={titleClose}
       >
         ×
       </button>

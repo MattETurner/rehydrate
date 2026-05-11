@@ -81,6 +81,7 @@ pub fn run() {
             ocr_commands::ping_ollama,
             ocr_commands::list_curated_ollama_models,
             ocr_commands::default_ollama_model,
+            ocr_commands::list_documents_needing_ocr,
             ocr_commands::publish_transcript,
             ocr_commands::publish_credential_status,
             ocr_commands::ping_publish_target,

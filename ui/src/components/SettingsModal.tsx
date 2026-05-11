@@ -99,6 +99,7 @@ function OllamaTab({
   const [model, setModel] = useState("");
   const [customModel, setCustomModel] = useState("");
   const [useCustom, setUseCustom] = useState(false);
+  const [autoOcr, setAutoOcr] = useState(false);
   const [curated, setCurated] = useState<CuratedOllamaModel[]>([]);
   const [busy, setBusy] = useState<"save" | "test" | null>(null);
   const [ping, setPing] = useState<PingReport | null>(null);
@@ -115,6 +116,7 @@ function OllamaTab({
         ]);
         if (cancelled) return;
         setBaseUrl(cfg.base_url);
+        setAutoOcr(cfg.auto_ocr_on_startup);
         setCurated(list);
         const knownIds = list.map((c) => c.id);
         if (knownIds.includes(cfg.model)) {
@@ -165,6 +167,7 @@ function OllamaTab({
       const cfg: OllamaConfig = {
         base_url: baseUrl.trim(),
         model: effectiveModel,
+        auto_ocr_on_startup: autoOcr,
       };
       await ipc.saveOllamaConfig(cfg);
       notify("ok", "Saved Ollama settings.");
@@ -237,6 +240,25 @@ function OllamaTab({
           />
         </label>
       )}
+
+      <label className="settings-checkbox">
+        <input
+          type="checkbox"
+          checked={autoOcr}
+          onChange={(e) => setAutoOcr(e.target.checked)}
+          disabled={busy !== null}
+        />
+        <span>
+          <strong>Auto-transcribe new notebooks at startup</strong>
+          <span className="muted small">
+            When you open the app, every notebook without an existing
+            transcript is OCRed in the background. Off until Ollama is
+            actually reachable, so a daemon-stopped launch silently
+            skips the sweep instead of erroring out. Existing
+            transcripts are never overwritten.
+          </span>
+        </span>
+      </label>
 
       <div className="actions">
         <button

@@ -55,6 +55,14 @@ the v0.9.x line accumulated and to land enough of the
   `/api/tags` and reports which models are pulled. Background
   progress is shown in a floating chip; the result lands in the
   Transcript drawer with Save-as-`.txt` / Save-as-`.md` actions.
+- **Auto-OCR at startup.** Optional toggle in Settings → Ollama.
+  When enabled, every notebook without an existing transcript is
+  transcribed sequentially after the app opens. Silently skips
+  when Ollama is unreachable (no nagging at launch); per-doc
+  failures don't abort the sweep; the progress chip shows
+  "(N of M)" batch progress and × cancels the whole queue. Off
+  by default — opt-in keeps first-run users from unexpected
+  network traffic.
 - **Publish transcripts as drafts to Ghost or WordPress.** The
   Transcript drawer's "Publish to Ghost" / "Publish to WordPress"
   buttons convert the Markdown transcript to HTML and POST it

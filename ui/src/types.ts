@@ -182,6 +182,17 @@ export type ProgressEvent =
 export interface OllamaConfig {
   base_url: string;
   model: string;
+  /** When true, the app auto-transcribes every notebook without a
+   *  transcript on app startup. Off by default — opt-in via the
+   *  Settings modal's Ollama tab. */
+  auto_ocr_on_startup: boolean;
+}
+
+/** A document the auto-OCR sweep should transcribe — i.e. a live
+ *  notebook whose current version has no `ocr/transcript.md`. */
+export interface OcrCandidate {
+  document_id: string;
+  visible_name: string;
 }
 
 export interface CuratedOllamaModel {
