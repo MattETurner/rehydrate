@@ -1,8 +1,11 @@
 //! Tauri binary entry point. Holds AppState and exposes commands. No
 //! business logic — every command delegates to the rehydrate-* crates.
 
+use tauri::Manager;
+
 mod commands;
 mod config;
+mod keychain;
 mod logging;
 mod notebook_pdf;
 mod ocr_commands;
@@ -90,6 +93,18 @@ pub fn run() {
             ocr_commands::set_wordpress_credentials,
             ocr_commands::forget_wordpress_credentials,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running rehydrate");
+        .build(tauri::generate_context!())
+        .expect("error while building rehydrate")
+        .run(|app, event| {
+            // Signal background tasks (reachability watcher, progress
+            // forwarders) that the app is going away so they can exit
+            // their loops cleanly instead of being torn down with the
+            // runtime.
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                let state = app.state::<AppState>();
+                state
+                    .shutdown_requested
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        });
 }

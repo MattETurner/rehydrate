@@ -155,19 +155,40 @@ pub async fn execute_pull(
     // moved to the archive. The user can restore from there. Keeps the
     // app from silently throwing away history when something disappears
     // from the tablet (intentionally or otherwise).
+    //
+    // Safety guard: SFTP `read_dir` is page-based, and we have no
+    // contract that says a short page = end-of-stream. A truncated
+    // listing would otherwise read as "almost everything was deleted"
+    // and trigger a mass-archive. Refuse to sweep if the device
+    // returned drastically fewer documents than we previously knew
+    // about — the user can re-sync to pick up real bulk deletes,
+    // but a transient SFTP hiccup won't shred their library.
     if !cancel.is_cancelled() {
         match library.previously_synced_ids() {
             Ok(known) => {
-                for doc_id in known {
-                    if device_ids.contains(&doc_id) {
-                        continue;
-                    }
-                    if let Err(e) = library.archive_document(&doc_id, ArchiveReason::Device) {
-                        tracing::warn!(
-                            uuid = %doc_id,
-                            error = %e,
-                            "could not archive device-deleted document"
-                        );
+                let prior_count = known.len();
+                let device_doc_count = device_ids.len();
+                let suspicious_truncation = prior_count >= 4 && device_doc_count * 2 < prior_count;
+                if suspicious_truncation {
+                    tracing::warn!(
+                        prior_count,
+                        device_doc_count,
+                        "device listing returned <50% of previously-synced docs; \
+                         skipping the device-deletion sweep to avoid mass-archiving \
+                         on a truncated read"
+                    );
+                } else {
+                    for doc_id in known {
+                        if device_ids.contains(&doc_id) {
+                            continue;
+                        }
+                        if let Err(e) = library.archive_document(&doc_id, ArchiveReason::Device) {
+                            tracing::warn!(
+                                uuid = %doc_id,
+                                error = %e,
+                                "could not archive device-deleted document"
+                            );
+                        }
                     }
                 }
             }
@@ -247,7 +268,7 @@ async fn fetch_and_record(
                     document_id: item.entry.uuid.clone(),
                     file: f.path.clone(),
                     bytes: res.size,
-                    deduped: matches!(res.outcome, rehydrate_core::blob::PutOutcome::Deduplicated),
+                    deduped: matches!(res.outcome, rehydrate_core::PutOutcome::Deduplicated),
                 })
                 .await;
         }

@@ -59,7 +59,7 @@ impl Db {
     }
 
     fn run_migrations(&self) -> Result<()> {
-        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations (\
                 name TEXT PRIMARY KEY,\
@@ -91,7 +91,7 @@ impl Db {
     /// Lock the underlying connection. Held briefly per operation; SQLite is
     /// fine with serialised access.
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().expect("db mutex poisoned")
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

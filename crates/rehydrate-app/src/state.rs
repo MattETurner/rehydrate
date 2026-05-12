@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -27,6 +28,11 @@ pub struct AppState {
     /// request; cache TTL is `OLLAMA_PING_TTL` (30 s) so we don't
     /// re-probe on every OCR action while the user is mid-batch.
     pub last_ollama_ping: RwLock<Option<OllamaPing>>,
+    /// Set to `true` at app exit. Long-lived background tasks (the
+    /// reachability watcher, progress forwarders) consult this each
+    /// loop and bail out cleanly instead of holding the `AppHandle`
+    /// across the runtime's teardown.
+    pub shutdown_requested: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +58,7 @@ impl AppState {
             device_info: RwLock::new(None),
             device_reachable: RwLock::new(false),
             last_ollama_ping: RwLock::new(None),
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
         }
     }
 }

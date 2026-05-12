@@ -5,6 +5,7 @@ use rehydrate_core::{
     ArchiveReason, ArchivedDocument, DocumentSummary, FolderEntry, GarbageCollectReport,
     ImportKind, Library, VerifyReport, VersionEntry,
 };
+use rehydrate_device::known_hosts::KnownHosts;
 use rehydrate_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rehydrate_device::{Device, DeviceInfo};
 use rehydrate_sync::{
@@ -18,11 +19,24 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::config;
+use crate::keychain;
 use crate::logging;
-use crate::state::{default_library_dir, AppState, KEYRING_DEVICE_USER, KEYRING_SERVICE};
+use crate::state::{default_library_dir, AppState, KEYRING_DEVICE_USER};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
+}
+
+/// Resolve the per-user known-hosts store for SSH host-key pinning.
+/// Falls back to a cwd-relative path if the OS doesn't expose a
+/// config directory — the file then lives next to the binary, which
+/// is functional but not pretty (and very unusual in practice; every
+/// platform we support exposes a config dir).
+fn known_hosts_for_app() -> KnownHosts {
+    let dir = directories::ProjectDirs::from("app", "rehydrate", "reHydrate")
+        .map(|d| d.config_dir().to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    KnownHosts::new(dir.join("known_hosts.json"))
 }
 
 /// Clone the `Arc<Library>` out of the mutex briefly and drop the guard.
@@ -342,9 +356,18 @@ pub async fn import_file(
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled")
         .to_string();
-    lib.import_file(&path, kind, &visible_name)
-        .map(Some)
-        .map_err(err)
+    // Run on the blocking pool: `import_file` does synchronous file
+    // I/O (open + stream-hash) and a SQLite commit; on the
+    // single-threaded executor it would stall every other IPC call
+    // for the duration of an import.
+    let name_for_task = visible_name.clone();
+    let import =
+        tauri::async_runtime::spawn_blocking(move || lib.import_file(&path, kind, &name_for_task))
+            .await
+            .map_err(err)?
+            .map_err(err)?;
+    let _ = visible_name;
+    Ok(Some(import))
 }
 
 /// Import a file the user dragged onto the window. WebView security
@@ -358,12 +381,19 @@ pub async fn import_file(
 /// Same magic-byte sniff as `import_file`: a "*.pdf" that doesn't
 /// start with "%PDF-" is rejected before any blob is written.
 /// Hard cap on `import_dropped_file`. Real PDFs and EPUBs top out at
-/// a few hundred MB even for textbook-sized documents; anything past
-/// this is either a misclick or a malicious / corrupted file the
-/// user shouldn't be ingesting. The bytes traverse a JSON-encoded
-/// IPC channel so without this cap a 10 GB drag could OOM both the
-/// renderer (encoding side) and the Rust side (decoding side).
-const MAX_IMPORT_FILE_BYTES: u64 = 512 * 1024 * 1024;
+/// a few hundred MB even for textbook-sized documents; reMarkable
+/// notebook PDFs are rarely past ~20 MB.
+///
+/// The bytes traverse a JSON-encoded IPC channel (each byte becomes
+/// 1–4 ASCII chars in a `number[]`), so the renderer-side encoder and
+/// the Rust-side JSON decoder both allocate ~4× the cap before this
+/// guard fires. 64 MB on the wire ⇒ ~256 MB worst case in the JSON
+/// decoder — uncomfortable but survivable on every system the app
+/// runs on. A streaming `tauri::ipc::Channel<Vec<u8>>` path would
+/// eliminate the multiplier; we keep the JSON-array path for now to
+/// avoid an extra dep on either side, and pay for it with a tight
+/// cap.
+const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[tauri::command]
 pub async fn import_dropped_file(
@@ -418,7 +448,13 @@ pub async fn import_dropped_file(
         tf.write_all(&bytes).map_err(err)?;
         tf.flush().map_err(err)?;
     }
-    lib.import_file(tf.path(), kind, &visible_name).map_err(err)
+    // Same rationale as `import_file`: hand the synchronous import
+    // off to the blocking pool so the executor stays responsive.
+    let path = tf.path().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || lib.import_file(&path, kind, &visible_name))
+        .await
+        .map_err(err)?
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -443,7 +479,16 @@ pub async fn library_summary(state: State<'_, AppState>) -> Result<LibrarySummar
         .clone()
         .ok_or_else(|| "no library is open".to_string())?;
     let docs = lib.list_documents().map_err(err)?;
-    let (blob_count, size_bytes) = blob_stats(&path);
+    // `blob_stats` walks the blob store from disk — for a large library
+    // that's tens of thousands of fanout entries to stat. Done inline
+    // it stalls the Tauri command thread (and on a single-threaded
+    // executor, every other IPC call). Move to `spawn_blocking` so
+    // the runtime stays responsive while we count.
+    let blob_path = path.clone();
+    let (blob_count, size_bytes) =
+        tauri::async_runtime::spawn_blocking(move || blob_stats(&blob_path))
+            .await
+            .map_err(err)?;
     let version_count = lib.version_count().map_err(err)?;
     Ok(LibrarySummary {
         path,
@@ -974,34 +1019,46 @@ pub async fn device_state(state: State<'_, AppState>) -> Result<DeviceState, Str
         reachable: *state.device_reachable.read().await,
         connected: state.device.lock().await.is_some(),
         info: state.device_info.read().await.clone(),
-        has_stored_password: keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER)
-            .ok()
-            .and_then(|e| e.get_password().ok())
-            .is_some(),
+        has_stored_password: keychain::slot_has_value(KEYRING_DEVICE_USER),
     })
 }
 
 /// Save a device password into the OS keychain. Does not connect.
 #[tauri::command]
 pub async fn save_device_password(password: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER).map_err(err)?;
-    entry.set_password(&password).map_err(err)
+    keychain::write_slot(KEYRING_DEVICE_USER, &password)
 }
 
 #[tauri::command]
 pub async fn forget_device_password() -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER).map_err(err)?;
-    // Ignore "not found" since the operation is logically idempotent.
-    let _ = entry.delete_credential();
-    Ok(())
+    keychain::forget_slot(KEYRING_DEVICE_USER)
 }
 
-/// Open an SSH session against the tablet. If `password` is `None`, reads
-/// from the keychain. If a password is supplied, also persists it to the
-/// keychain on success.
+/// Open an SSH session against the tablet.
+///
+/// `password` semantics:
+/// - `None`: read the password from the OS keychain. If none stored,
+///   returns an error so the renderer can show the password dialog.
+/// - `Some(_)`: use the supplied password.
+///
+/// `remember` semantics:
+/// - `Some(true)`: on a successful connect, persist `password` to the
+///   keychain. Requires `password` to be `Some(_)`.
+/// - Any other value: do **not** write the keychain.
+///
+/// The previous default was "always save on first successful
+/// connect". The renderer is the choke point — if it's XSS'd, both
+/// `save_device_password` and `connect_device` are reachable
+/// programmatically. Requiring an explicit `remember: true` flag
+/// means a hostile script that just wants to quietly probe
+/// `connect_device` (e.g. to confirm a tablet is online) can no
+/// longer overwrite the user's stored password as a side effect.
+/// The dedicated `save_device_password` command remains the
+/// canonical "store this" call.
 #[tauri::command]
 pub async fn connect_device(
     password: Option<String>,
+    remember: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<DeviceInfo, String> {
@@ -1017,30 +1074,28 @@ pub async fn connect_device(
     let (secret, freshly_typed) = match password {
         Some(p) => (SecretString::from(p), true),
         None => {
-            let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER).map_err(err)?;
-            let stored = entry
-                .get_password()
-                .map_err(|e| format!("no password stored ({e}); pass one to connect_device"))?;
+            let stored = keychain::read_slot(KEYRING_DEVICE_USER)
+                .ok_or_else(|| "no password stored; pass one to connect_device".to_string())?;
             (SecretString::from(stored), false)
         }
     };
 
-    let dev = SshDevice::connect(cfg, secret.clone()).await.map_err(err)?;
+    let dev = SshDevice::connect(cfg, secret.clone(), known_hosts_for_app())
+        .await
+        .map_err(err)?;
     let info = dev.ping().await.map_err(err)?;
 
-    // Connection succeeded — only NOW persist a freshly-typed password.
-    // If the OS keyring is unavailable (most often on minimal Linux
-    // installs without `secret-service` / `gnome-keyring` running),
-    // both `Entry::new` and `set_password` can fail. We surface the
-    // failure as a `keyring:warning` event so the UI can tell the
-    // user "we couldn't save your password, you'll need to type it
-    // again next time" — silently logging makes the user wonder why
-    // their password isn't being remembered.
-    if freshly_typed {
+    // Connection succeeded — persist only if the renderer explicitly
+    // asked for it. If the OS keyring is unavailable (most often on
+    // minimal Linux installs without `secret-service` /
+    // `gnome-keyring` running), both `Entry::new` and `set_password`
+    // can fail. We surface the failure as a `keyring:warning` event
+    // so the UI can tell the user "we couldn't save your password";
+    // silently logging makes the user wonder why their password
+    // isn't being remembered.
+    if freshly_typed && remember == Some(true) {
         use secrecy::ExposeSecret;
-        let outcome = keyring::Entry::new(KEYRING_SERVICE, KEYRING_DEVICE_USER)
-            .and_then(|e| e.set_password(secret.expose_secret()));
-        if let Err(e) = outcome {
+        if let Err(e) = keychain::write_slot(KEYRING_DEVICE_USER, secret.expose_secret()) {
             tracing::warn!("could not persist device password to keychain: {e}");
             let _ = app.emit(
                 "keyring:warning",
@@ -1084,6 +1139,46 @@ async fn device_arc(state: &State<'_, AppState>) -> Result<Arc<SshDevice>, Strin
         .ok_or_else(|| "device not connected".to_string())
 }
 
+/// Forward sync progress events from the engine's channel to the
+/// renderer over the Tauri event bus. Bails out cleanly when:
+///
+/// - the engine drops its sender (channel closes), OR
+/// - the engine signals `Done`/`Cancelled`, OR
+/// - the renderer disconnects (consecutive `emit` failures past
+///   `EMIT_FAIL_THRESHOLD`) — without this guard, the forwarder
+///   would spin on a dead IPC channel until the engine itself
+///   completed.
+///
+/// Same pattern across pull/push/two-way, so it lives here rather
+/// than copy-pasted.
+fn spawn_sync_progress_forwarder(
+    app: AppHandle,
+    mut rx: tokio::sync::mpsc::Receiver<ProgressEvent>,
+) -> tauri::async_runtime::JoinHandle<()> {
+    const EMIT_FAIL_THRESHOLD: u32 = 8;
+    tauri::async_runtime::spawn(async move {
+        let mut consecutive_emit_failures: u32 = 0;
+        while let Some(ev) = rx.recv().await {
+            match app.emit("sync:progress", &ev) {
+                Ok(()) => consecutive_emit_failures = 0,
+                Err(e) => {
+                    consecutive_emit_failures += 1;
+                    if consecutive_emit_failures >= EMIT_FAIL_THRESHOLD {
+                        tracing::warn!(
+                            "sync progress forwarder bailing after {consecutive_emit_failures} \
+                             consecutive emit failures (last: {e}); renderer likely closed"
+                        );
+                        break;
+                    }
+                }
+            }
+            if matches!(ev, ProgressEvent::Done { .. } | ProgressEvent::Cancelled) {
+                break;
+            }
+        }
+    })
+}
+
 #[tauri::command]
 pub async fn pull_plan(state: State<'_, AppState>) -> Result<PullPlan, String> {
     let dev = device_arc(&state).await?;
@@ -1101,16 +1196,8 @@ pub async fn pull_execute(
 
     let plan = plan_pull(&lib, dev.as_ref()).await.map_err(err)?;
 
-    let (tx, mut rx) = progress::channel(64);
-    let app_for_task = app.clone();
-    let forwarder = tauri::async_runtime::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            let _ = app_for_task.emit("sync:progress", &ev);
-            if matches!(ev, ProgressEvent::Done { .. } | ProgressEvent::Cancelled) {
-                break;
-            }
-        }
-    });
+    let (tx, rx) = progress::channel(64);
+    let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
 
     let report = execute_pull(&lib, dev.as_ref(), plan, Some(tx), Cancel::default())
         .await
@@ -1139,16 +1226,8 @@ pub async fn push_execute(
     let lib = lib_arc(&state).await?;
 
     let plan = plan_push(&lib).map_err(err)?;
-    let (tx, mut rx) = progress::channel(64);
-    let app_for_task = app.clone();
-    let forwarder = tauri::async_runtime::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            let _ = app_for_task.emit("sync:progress", &ev);
-            if matches!(ev, ProgressEvent::Done { .. } | ProgressEvent::Cancelled) {
-                break;
-            }
-        }
-    });
+    let (tx, rx) = progress::channel(64);
+    let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
     let report = execute_push(&lib, dev.as_ref(), plan, Some(tx), Cancel::default())
         .await
         .map_err(err)?;
@@ -1176,16 +1255,8 @@ pub async fn sync_two_way(
     // ----- PULL phase -----
     let _ = app.emit("sync:phase", "pull");
     let pull_plan = plan_pull(&lib, dev.as_ref()).await.map_err(err)?;
-    let (tx, mut rx) = progress::channel(64);
-    let app_for_task = app.clone();
-    let forwarder = tauri::async_runtime::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            let _ = app_for_task.emit("sync:progress", &ev);
-            if matches!(ev, ProgressEvent::Done { .. } | ProgressEvent::Cancelled) {
-                break;
-            }
-        }
-    });
+    let (tx, rx) = progress::channel(64);
+    let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
     let pull = execute_pull(&lib, dev.as_ref(), pull_plan, Some(tx), Cancel::default())
         .await
         .map_err(err)?;
@@ -1194,16 +1265,8 @@ pub async fn sync_two_way(
     // ----- PUSH phase -----
     let _ = app.emit("sync:phase", "push");
     let push_plan = plan_push(&lib).map_err(err)?;
-    let (tx, mut rx) = progress::channel(64);
-    let app_for_task = app.clone();
-    let forwarder = tauri::async_runtime::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            let _ = app_for_task.emit("sync:progress", &ev);
-            if matches!(ev, ProgressEvent::Done { .. } | ProgressEvent::Cancelled) {
-                break;
-            }
-        }
-    });
+    let (tx, rx) = progress::channel(64);
+    let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
     let push = execute_push(&lib, dev.as_ref(), push_plan, Some(tx), Cancel::default())
         .await
         .map_err(err)?;
@@ -1238,12 +1301,45 @@ fn blob_stats(library_root: &std::path::Path) -> (usize, u64) {
     (count, size)
 }
 
+/// Hard cap on `walk` recursion depth. The blob store is a two-level
+/// fanout (`blobs/<aa>/<bb>/<hash>`) so a sane tree never exceeds 3 —
+/// anything past the cap is a malformed (or hostile) directory, and
+/// without the bound a symlink loop the os layer doesn't filter could
+/// blow the stack inside an `async` command.
+const BLOB_WALK_MAX_DEPTH: usize = 8;
+
 fn walk(p: &std::path::Path, f: &mut impl FnMut(&std::path::Path)) {
-    let Ok(rd) = std::fs::read_dir(p) else { return };
+    walk_inner(p, f, 0);
+}
+
+fn walk_inner(p: &std::path::Path, f: &mut impl FnMut(&std::path::Path), depth: usize) {
+    if depth > BLOB_WALK_MAX_DEPTH {
+        return;
+    }
+    let rd = match std::fs::read_dir(p) {
+        Ok(r) => r,
+        Err(e) => {
+            // Surface — but don't crash — failures mid-walk so an
+            // orphan-blob undercount is visible in the operations log
+            // rather than silently shrinking the report's blob_count.
+            tracing::warn!(path = %p.display(), "read_dir failed during blob walk: {e}");
+            return;
+        }
+    };
     for entry in rd.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            walk(&path, f);
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        // Skip symlinks: the blob store should never contain them, and
+        // following a planted symlink could let the walker enumerate
+        // files outside the library root.
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            walk_inner(&path, f, depth + 1);
         } else {
             f(&path);
         }
@@ -1253,6 +1349,11 @@ fn walk(p: &std::path::Path, f: &mut impl FnMut(&std::path::Path)) {
 /// Background task started at app launch. Polls the USB-ethernet endpoint
 /// every 2s and emits `device:reachable` events on changes. Cheap and
 /// platform-agnostic — no USB driver hooks needed.
+///
+/// The loop watches `AppState::shutdown_requested` and exits when the
+/// app's `RunEvent::ExitRequested` handler sets it — without the flag,
+/// the thread holds the `AppHandle` past Tauri's teardown and prevents
+/// clean shutdown of the executor.
 pub fn spawn_reachability_watcher(app: AppHandle) {
     // Run on a dedicated OS thread with its own tokio current-thread
     // runtime. Doing this from the Tauri `setup` callback fails because
@@ -1275,7 +1376,16 @@ pub fn spawn_reachability_watcher(app: AppHandle) {
             };
             rt.block_on(async move {
                 let mut last: Option<bool> = None;
+                // Snapshot the shutdown flag once; cloning the Arc
+                // up front keeps the per-tick check off the AppHandle.
+                let shutdown = {
+                    let state = app.state::<AppState>();
+                    state.shutdown_requested.clone()
+                };
                 loop {
+                    if shutdown.load(std::sync::atomic::Ordering::Acquire) {
+                        break;
+                    }
                     let now = is_reachable("10.11.99.1", 22).await;
                     if last != Some(now) {
                         let state = app.state::<AppState>();
