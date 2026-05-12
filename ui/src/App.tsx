@@ -9,7 +9,6 @@ import {
 } from "react";
 import {
   ipc,
-  onDeviceReachable,
   onKeyringWarning,
   onLegacyFormatWarning,
 } from "./ipc";
@@ -51,13 +50,13 @@ import {
 import { formatError } from "./formatError";
 import type {
   ArchivedDocument,
-  DeviceState,
   DocumentSummary,
   FolderEntry,
-  LibrarySummary,
-  RecentLibraryEntry,
 } from "./types";
+import { useDeviceSync } from "./hooks/useDeviceSync";
+import { useLibrary } from "./hooks/useLibrary";
 import { useOcr } from "./hooks/useOcr";
+import { useSelection } from "./hooks/useSelection";
 import {
   countByKind,
   emptyHintFor,
@@ -77,16 +76,40 @@ import {
 
 export function App() {
   const [defaultPath, setDefaultPath] = useState<string | null>(null);
-  const [libraryOpen, setLibraryOpen] = useState(false);
-  const [libraryPath, setLibraryPath] = useState<string | null>(null);
-  const [recentLibraries, setRecentLibraries] = useState<RecentLibraryEntry[]>(
-    [],
-  );
-  const [summary, setSummary] = useState<LibrarySummary | null>(null);
-  const [documents, setDocuments] = useState<DocumentSummary[] | null>(null);
-  const [folders, setFolders] = useState<FolderEntry[]>([]);
-  const [archived, setArchived] = useState<ArchivedDocument[]>([]);
-  const [device, setDevice] = useState<DeviceState | null>(null);
+  // Library content state + refresh callbacks live in `useLibrary`
+  // — see `./hooks/useLibrary.ts`. The hook owns the four content
+  // lists, the recents list, the open-state pair, and the canonical
+  // refresh path. Imperative orchestrators (openLibrary,
+  // switchToLibrary, openAnotherLibrary) stay in App.tsx because
+  // they cross selection / expanded / confirm boundaries.
+  const {
+    libraryOpen,
+    libraryPath,
+    recentLibraries,
+    summary,
+    documents,
+    folders,
+    archived,
+    setLibraryOpen,
+    setLibraryPath,
+    setSummary,
+    setDocuments,
+    setFolders,
+    setArchived,
+    refreshLibrary,
+    refreshRecentLibraries,
+    clearLibraryUi,
+  } = useLibrary({ setError: (msg) => setError(msg) });
+  // Device connection state + tryConnect/disconnect/submitPassword
+  // live in `useDeviceSync` — see `./hooks/useDeviceSync.ts`. The
+  // hook owns the `device:reachable` Tauri event listener and the
+  // three connect-flow actions.
+  const { device, setDevice, tryConnect, disconnect, submitPassword } =
+    useDeviceSync({
+      setError: (msg) => setError(msg),
+      openPasswordDialog: () => setShowPassword(true),
+      closePasswordDialog: () => setShowPassword(false),
+    });
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showSync, setShowSync] = useState(false);
@@ -94,13 +117,26 @@ export function App() {
   const [showLogs, setShowLogs] = useState(false);
   const [view, setView] = useState<View>(() => loadPersistedView());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [anchorId, setAnchorId] = useState<string | null>(null);
-  // Keyboard cursor — moves with arrow keys and tracks the last
-  // clicked row, but does NOT paint a selection highlight in default
-  // mode. The visible "selected" background is reserved for select
-  // mode entries in `selectedIds`.
-  const [focusId, setFocusId] = useState<string | null>(null);
+  // Selection + keyboard-focus state lives in `useSelection` —
+  // see `./hooks/useSelection.ts` for the rationale and the
+  // selection/focus duality.
+  // `anchorId` isn't read here — the hook's internal `handleRowClick`
+  // is the only consumer — but `setAnchorId` is used by the
+  // keyboard cascade in the body.
+  const {
+    selectedIds,
+    focusId,
+    selectMode,
+    selectedId,
+    setSelectedIds,
+    setAnchorId,
+    setFocusId,
+    setSelectMode,
+    handleRowClick,
+    toggleSelectMode,
+    clearSelection,
+    clearFocus,
+  } = useSelection(openInViewer);
   const [syncPhase, setSyncPhase] = useState<"idle" | "syncing" | "failed">("idle");
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
@@ -108,7 +144,6 @@ export function App() {
   const [viewMode, setViewMode] = useState<"list" | "grid">(() =>
     loadPersistedViewMode(),
   );
-  const [selectMode, setSelectMode] = useState(false);
   const [quickLookId, setQuickLookId] = useState<string | null>(null);
   const [showCheatsheet, setShowCheatsheet] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
@@ -151,17 +186,9 @@ export function App() {
   // the library path that's already been kicked off so a re-render
   // doesn't re-fire the sweep for the same library.
   const autoOcrInitialised = useRef<string | null>(null);
-  const refreshing = useRef(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const toast = useToast();
   const confirm = useConfirm();
-  // Convenience: the current "single focused" id used by keyboard
-  // shortcuts (rename, quick-look, archive). Falls back to the only
-  // selected entry when in select mode for ergonomics.
-  const selectedId = useMemo(
-    () => focusId ?? (selectedIds.size === 1 ? [...selectedIds][0] : null),
-    [focusId, selectedIds],
-  );
 
   // ---- Initial load -----------------------------------------------------
   useEffect(() => {
@@ -207,18 +234,8 @@ export function App() {
     };
   }, []);
 
-  // ---- Reachability event ----------------------------------------------
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    onDeviceReachable(() => {
-      ipc.deviceState().then(setDevice).catch(() => {});
-    }).then((u) => {
-      unlisten = u;
-    });
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, []);
+  // The `device:reachable` listener lives in `useDeviceSync`; see
+  // the hook for the why.
 
   // ---- Keyring warnings ------------------------------------------------
   // Emitted when we couldn't persist the device password (most often
@@ -252,37 +269,10 @@ export function App() {
     };
   }, [toast]);
 
-  // ---- Refresh ---------------------------------------------------------
-  const refreshLibrary = useCallback(async () => {
-    if (refreshing.current) return;
-    refreshing.current = true;
-    try {
-      const [s, d, f, a] = await Promise.all([
-        ipc.librarySummary(),
-        ipc.listDocuments(),
-        ipc.listFolders(),
-        ipc.listArchived(),
-      ]);
-      setSummary(s);
-      setDocuments(d);
-      setFolders(f);
-      setArchived(a);
-    } catch (e) {
-      setError(formatError(e));
-    } finally {
-      refreshing.current = false;
-    }
-  }, []);
+  // `refreshLibrary` and `refreshRecentLibraries` are provided by
+  // `useLibrary` (destructured at the top of this component).
 
   // ---- Library / device commands --------------------------------------
-  async function refreshRecentLibraries() {
-    try {
-      const list = await ipc.listRecentLibraries();
-      setRecentLibraries(list);
-    } catch {
-      // Non-fatal — the switcher just shows whatever it had.
-    }
-  }
 
   async function openLibrary() {
     if (!defaultPath) return;
@@ -305,10 +295,7 @@ export function App() {
     setError(null);
     // Clear stale UI before fetching the new library so the user sees
     // an obvious "loading" state instead of cross-library leakage.
-    setDocuments(null);
-    setFolders([]);
-    setArchived([]);
-    setSummary(null);
+    clearLibraryUi();
     setSelectedIds(new Set());
     setFocusId(null);
     setExpanded(new Set());
@@ -349,10 +336,7 @@ export function App() {
       }
 
       // Wipe stale UI before fetching the new library.
-      setDocuments(null);
-      setFolders([]);
-      setArchived([]);
-      setSummary(null);
+      clearLibraryUi();
       setSelectedIds(new Set());
       setFocusId(null);
       setExpanded(new Set());
@@ -367,94 +351,9 @@ export function App() {
     }
   }
 
-  // ---- Row click + selection ------------------------------------------
-  // Two modes: in regular mode a single click opens the doc and just
-  // marks it as keyboard-focused; in select-mode a click toggles a
-  // checkbox at the row's leading edge. Cmd/Ctrl-click and Shift-click
-  // still work as power shortcuts in select mode.
-  const handleRowClick = useCallback(
-    (
-      d: DocumentSummary,
-      list: DocumentSummary[],
-      e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
-    ) => {
-      const id = d.document_id;
-      if (!selectMode) {
-        // Cmd-click while NOT in select mode is the discoverable
-        // shortcut for "I want to start selecting" — flips select mode
-        // on and checks this row.
-        if (e.metaKey || e.ctrlKey) {
-          setSelectMode(true);
-          setSelectedIds(new Set([id]));
-          setAnchorId(id);
-          setFocusId(id);
-          return;
-        }
-        // Plain click in default mode: open the doc, but also claim
-        // keyboard focus on this row. The focus ring stays subtle
-        // (no row-selection background) but it makes the typical
-        // "click a row, then press F2 to rename" flow work — without
-        // this, F2 was a no-op until the user pressed an arrow key
-        // first to seed the cursor.
-        setFocusId(id);
-        setAnchorId(id);
-        openInViewer(d);
-        return;
-      }
-      // Select mode: click toggles, shift extends a range.
-      if (e.shiftKey && anchorId) {
-        const ai = list.findIndex((x) => x.document_id === anchorId);
-        const bi = list.findIndex((x) => x.document_id === id);
-        if (ai >= 0 && bi >= 0) {
-          const [lo, hi] = ai < bi ? [ai, bi] : [bi, ai];
-          setSelectedIds(
-            new Set(list.slice(lo, hi + 1).map((x) => x.document_id)),
-          );
-          // Anchor stays on the original click; focus follows the
-          // user's finger to the new endpoint so subsequent ↑/↓ feels
-          // continuous from there.
-          setFocusId(id);
-          return;
-        }
-      }
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        return next;
-      });
-      setAnchorId(id);
-      setFocusId(id);
-    },
-    // openInViewer is a stable reference (declared further below in
-    // the module). selectMode + anchorId are the only state we read.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectMode, anchorId],
-  );
-
-  const toggleSelectMode = useCallback(() => {
-    setSelectMode((m) => {
-      // Leaving select mode clears any selection AND the keyboard
-      // cursor so nothing visual lingers from the mode.
-      if (m) {
-        setSelectedIds(new Set());
-        setAnchorId(null);
-        setFocusId(null);
-      }
-      return !m;
-    });
-  }, []);
-
-  const clearSelection = useCallback(() => {
-    setSelectedIds(new Set());
-    setAnchorId(null);
-  }, []);
-
-  // Drop the keyboard cursor (the inset accent bar). Hooked up to
-  // the Esc cascade — last resort once dialogs/drawers are closed.
-  const clearFocus = useCallback(() => {
-    setFocusId(null);
-  }, []);
+  // Row click + selection lives in `useSelection`. `handleRowClick`,
+  // `toggleSelectMode`, `clearSelection`, `clearFocus` are
+  // destructured into scope at the top of this component.
 
   // While Quick Look is open, follow the keyboard cursor — pressing
   // ↑/↓ updates the previewed document, mirroring macOS Finder /
@@ -477,30 +376,8 @@ export function App() {
     persistViewMode(viewMode);
   }, [viewMode]);
 
-  async function tryConnect() {
-    setError(null);
-    try {
-      if (device?.has_stored_password) {
-        await ipc.connectDevice();
-        setDevice(await ipc.deviceState());
-      } else {
-        setShowPassword(true);
-      }
-    } catch (e) {
-      setError(formatError(e));
-    }
-  }
-
-  async function disconnect() {
-    await ipc.disconnectDevice();
-    setDevice(await ipc.deviceState());
-  }
-
-  async function submitPassword(password: string, remember: boolean) {
-    await ipc.connectDevice(password, remember);
-    setDevice(await ipc.deviceState());
-    setShowPassword(false);
-  }
+  // `tryConnect` / `disconnect` / `submitPassword` are provided by
+  // `useDeviceSync` (destructured at the top of this component).
 
   function openSync() {
     if (!device?.connected) {
