@@ -28,7 +28,18 @@ interface Props {
 /* Drawer that shows the OCR transcript for the document's CURRENT
  * version (transcripts attach to the manifest, so a re-OCR after
  * edits creates a new version automatically). Mirrors the
- * HistoryDrawer visual style. */
+ * HistoryDrawer visual style.
+ *
+ * Layout note: the parent `.drawer` uses
+ * `grid-template-rows: auto auto 1fr auto` (header, meta, content,
+ * footer). The component renders exactly that shape — a `<header>`,
+ * a `<div className="transcript-meta">`, a scrollable
+ * `<div className="transcript-scroll">`, and a `<footer>`. An
+ * earlier version emitted ad-hoc sibling `<p>` / `<pre>` / `<div>`
+ * elements that got slotted into the wrong grid rows and produced a
+ * huge empty band between the title and the transcript text. The
+ * structure here matches the grid's expectation 1:1.
+ */
 export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: Props) {
   const [transcript, setTranscript] = useState<TranscriptDocument | null | undefined>(
     undefined,
@@ -108,18 +119,10 @@ export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: 
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <aside
-        className="drawer"
+        className="drawer transcript-drawer"
         onClick={(e) => e.stopPropagation()}
         aria-label="Transcript"
       >
-        {/*
-          The other drawers (History/Log/Sync) use a bare <header>
-          matched by `.drawer header` in styles.css. Earlier this
-          file used `className="drawer-header"` / `"drawer-body"`,
-          which had no CSS rules anywhere — see the audit. Aligning
-          on the shared pattern picks up the existing rules and
-          keeps drawers visually consistent.
-        */}
         <header>
           <h2>Transcript</h2>
           <button
@@ -131,81 +134,89 @@ export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: 
           </button>
         </header>
 
-        <p className="muted drawer-subtitle">
-          <strong>{document.visible_name}</strong>
-        </p>
+        <div className="transcript-meta">
+          <div className="transcript-meta-title">{document.visible_name}</div>
+          {transcript && (
+            <div className="muted small transcript-meta-sub">
+              {transcript.model && (
+                <>
+                  Model: <code>{transcript.model}</code>
+                </>
+              )}
+              {transcript.model && transcript.language && " · "}
+              {transcript.language && <>Language: {transcript.language}</>}
+              {(transcript.model || transcript.language) && " · "}
+              Version {transcript.version_id}
+            </div>
+          )}
+        </div>
 
-        {transcript === undefined && (
-          <div className="drawer-loading">
-            <Skeleton width="60%" height={14} mb={8} />
-            <Skeleton width="100%" height={14} mb={8} />
-            <Skeleton width="92%" height={14} mb={8} />
-            <Skeleton width="88%" height={14} mb={8} />
-            <Skeleton width="74%" height={14} />
-          </div>
-        )}
+        <div className="transcript-scroll">
+          {transcript === undefined && (
+            <div className="drawer-loading">
+              <Skeleton width="60%" height={14} mb={8} />
+              <Skeleton width="100%" height={14} mb={8} />
+              <Skeleton width="92%" height={14} mb={8} />
+              <Skeleton width="88%" height={14} mb={8} />
+              <Skeleton width="74%" height={14} />
+            </div>
+          )}
           {transcript === null && (
-            <p>
+            <p className="transcript-empty muted">
               No transcript yet. Use <em>Convert to text…</em> from the
               document menu.
             </p>
           )}
-
           {transcript && (
-            <>
-              <p className="muted small">
-                {transcript.model && <>Model: <code>{transcript.model}</code> · </>}
-                {transcript.language && <>Language: {transcript.language} · </>}
-                Version {transcript.version_id}
-              </p>
-
-              <pre className="transcript-body">
-                {stripFrontmatter(transcript.markdown)}
-              </pre>
-
-              <div className="drawer-actions">
-                <button
-                  disabled={busy !== null}
-                  onClick={() => exportAs("txt")}
-                >
-                  {busy === "txt" ? "Saving…" : "Save as .txt"}
-                </button>
-                <button
-                  disabled={busy !== null}
-                  onClick={() => exportAs("markdown")}
-                >
-                  {busy === "markdown" ? "Saving…" : "Save as .md"}
-                </button>
-                <button
-                  disabled={busy !== null || !creds?.ghost}
-                  title={
-                    creds?.ghost
-                      ? "Publish as a draft to Ghost"
-                      : "Configure Ghost credentials in Publishing settings first"
-                  }
-                  onClick={() => publish("ghost")}
-                >
-                  {busy === "ghost" ? "Publishing…" : "Publish to Ghost"}
-                </button>
-                <button
-                  disabled={busy !== null || !creds?.wordpress}
-                  title={
-                    creds?.wordpress
-                      ? "Publish as a draft to WordPress"
-                      : "Configure WordPress credentials in Publishing settings first"
-                  }
-                  onClick={() => publish("wordpress")}
-                >
-                  {busy === "wordpress" ? "Publishing…" : "Publish to WordPress"}
-                </button>
-              </div>
-              {error && (
-                <div className="error inline" role="alert">
-                  {error}
-                </div>
-              )}
-            </>
+            <pre className="transcript-body">
+              {stripFrontmatter(transcript.markdown)}
+            </pre>
           )}
+          {error && (
+            <div className="error inline" role="alert">
+              {error}
+            </div>
+          )}
+        </div>
+
+        {transcript && (
+          <footer className="transcript-footer">
+            <button
+              disabled={busy !== null}
+              onClick={() => exportAs("txt")}
+            >
+              {busy === "txt" ? "Saving…" : "Save as .txt"}
+            </button>
+            <button
+              disabled={busy !== null}
+              onClick={() => exportAs("markdown")}
+            >
+              {busy === "markdown" ? "Saving…" : "Save as .md"}
+            </button>
+            <button
+              disabled={busy !== null || !creds?.ghost}
+              title={
+                creds?.ghost
+                  ? "Publish as a draft to Ghost"
+                  : "Configure Ghost credentials in Publishing settings first"
+              }
+              onClick={() => publish("ghost")}
+            >
+              {busy === "ghost" ? "Publishing…" : "Publish to Ghost"}
+            </button>
+            <button
+              disabled={busy !== null || !creds?.wordpress}
+              title={
+                creds?.wordpress
+                  ? "Publish as a draft to WordPress"
+                  : "Configure WordPress credentials in Publishing settings first"
+              }
+              onClick={() => publish("wordpress")}
+            >
+              {busy === "wordpress" ? "Publishing…" : "Publish to WordPress"}
+            </button>
+          </footer>
+        )}
       </aside>
     </div>
   );

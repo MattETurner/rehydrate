@@ -1366,18 +1366,76 @@ input[type="search"]:focus {
   padding: 0 4px;
 }
 
-/* Transcript drawer body — render the markdown verbatim in a
- * monospace block, with comfortable wrap behaviour. */
+/* Transcript drawer.
+ *
+ * The parent `.drawer` is a CSS grid with rows
+ * `auto auto 1fr auto`. The drawer's four immediate children map
+ * 1:1: `<header>` (auto), `.transcript-meta` (auto),
+ * `.transcript-scroll` (1fr, the scrollable region), and
+ * `<footer.transcript-footer>` (auto). The earlier version put the
+ * model line straight under the header, which got slotted into
+ * the `1fr` row and produced an enormous empty band above the
+ * transcript text. The new shape lets the body fill the available
+ * height naturally and the action buttons stick to the bottom
+ * even when the transcript is long enough to scroll. */
+.transcript-meta {
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.transcript-meta-title {
+  font-weight: 600;
+  font-size: var(--text-md);
+  color: var(--text);
+  /* Truncate runaway titles so the meta block stays one or two
+   * lines tall — we don't want a 4-line title pushing the
+   * transcript off-screen. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.transcript-meta-sub {
+  /* Inherits `.muted .small`; only layout overrides here. */
+}
+.transcript-scroll {
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.transcript-empty {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+}
 .transcript-body {
   white-space: pre-wrap;
+  word-break: break-word;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
   font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: var(--space-3);
-  max-height: 50vh;
-  overflow-y: auto;
+  margin: 0;
+  /* No `max-height` — the parent `.transcript-scroll` owns the
+   * scroll. Letting both scroll produces the nested-scroll-bars
+   * artefact and an arbitrary 50vh ceiling that doesn't match the
+   * drawer's actual content area. */
+}
+.transcript-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
 }
 .drawer-actions {
   display: flex;
@@ -2635,14 +2693,12 @@ input[type="search"]:focus {
   align-items: center;
 }
 
-/* Transcript drawer subtitle and loading-skeleton container. The
- * drawer's body content sits directly under `.drawer` now; these
- * keep the visuals consistent with the other drawers. */
-.drawer-subtitle {
-  margin: var(--space-3) var(--space-4) 0;
-}
+/* Loading-skeleton container used inside `.transcript-scroll`
+ * while the transcript fetch is in flight. The transcript-specific
+ * meta block has its own padding; the loading wrapper just needs
+ * tiny vertical breathing room before the Skeleton blocks render. */
 .drawer-loading {
-  padding: var(--space-3) var(--space-4);
+  padding-top: var(--space-2);
 }
 
 /* Assertive toaster sits below the polite one inside the shared
