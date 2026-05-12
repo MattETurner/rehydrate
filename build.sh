@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Build the reHydrate desktop app.
 #
-# Default mode produces a release `.dmg` + `.app.tar.gz` under
-# `target/aarch64-apple-darwin/release/bundle/` — the same artefact
-# the GitHub release workflow attaches to a tag, minus the SHA256SUMS
-# upload step. Use this when you want to test the actual installer
-# locally before tagging a release.
+# Default mode produces a release `.dmg` + `.app` under
+# `target/aarch64-apple-darwin/release/bundle/` — the same artefacts
+# the GitHub release workflow attaches to a tag, minus the
+# SHA256SUMS upload step. Use this when you want to test the actual
+# installer locally before tagging a release.
 #
 # Usage:
 #   ./build.sh                # build the .dmg + .app bundle (release)
@@ -15,6 +15,7 @@
 #   ./build.sh --dev          # cargo run -p rehydrate-app --release
 #                             # (fast iteration; produces no installer)
 #   ./build.sh --dev --debug  # ... in debug profile
+#   ./build.sh --dev --no-run # build the dev binary without launching
 #   ./build.sh -h | --help
 #
 # Two `cargo tauri build` flags are non-negotiable:
@@ -54,7 +55,7 @@ for arg in "$@"; do
     --open)      OPEN_BUNDLE=1 ;;
     --install)   INSTALL_BUNDLE=1 ;;
     -h|--help)
-      sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -64,6 +65,24 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# Reject flag combinations that look intentional but do nothing.
+# Silent no-ops in scripted invocations bury real bugs.
+if [[ "$MODE" == "bundle" && $RUN -eq 0 ]]; then
+  # `--no-run` only meaningful in --dev (the bundle path never auto-
+  # launches in the first place). The default for `RUN` is 0; we
+  # only catch this when the user explicitly passed `--no-run` and
+  # didn't pair it with `--dev`.
+  : # NOP — RUN=0 is the bundle-mode default; nothing to gate on.
+fi
+if [[ "$MODE" == "dev" && $INSTALL_BUNDLE -eq 1 ]]; then
+  echo "==> \`--install\` requires the bundle mode (run without --dev)." >&2
+  exit 1
+fi
+if [[ "$MODE" == "dev" && $OPEN_BUNDLE -eq 1 ]]; then
+  echo "==> \`--open\` requires the bundle mode (run without --dev)." >&2
+  exit 1
+fi
 
 # Refuse cross-arch surprises. The release pipeline ships ARM-only;
 # building an Intel `.dmg` locally would produce something that
@@ -76,6 +95,26 @@ if [[ "$MODE" == "bundle" && "$ARCH" != "arm64" ]]; then
   echo "    Use \`./build.sh --dev\` to run the bare binary on this host," >&2
   echo "    or run this script on an Apple Silicon Mac to produce a .dmg." >&2
   exit 1
+fi
+
+# Verify build prerequisites BEFORE the slow UI build, so a fresh
+# clone without the Tauri CLI installed fails in 50 ms rather than
+# burning ~1–2 minutes on `npm ci` first. Dev mode skips this — it
+# just runs the bare binary and doesn't need cargo-tauri.
+if [[ "$MODE" == "bundle" ]]; then
+  if ! command -v cargo-tauri >/dev/null 2>&1; then
+    echo "==> tauri-cli missing; install with:" >&2
+    echo "       cargo install tauri-cli --version '^2.0.0'" >&2
+    exit 1
+  fi
+  # Ensure the aarch64 target is installed (no-op if it already
+  # is). `rustup target add` is idempotent and very fast on a hit.
+  if command -v rustup >/dev/null 2>&1; then
+    if ! rustup target list --installed | grep -q '^aarch64-apple-darwin$'; then
+      echo "==> installing aarch64-apple-darwin target via rustup"
+      rustup target add aarch64-apple-darwin
+    fi
+  fi
 fi
 
 echo "==> mode: $MODE / profile: $PROFILE"
@@ -116,23 +155,8 @@ if [[ "$MODE" == "dev" ]]; then
 fi
 
 # ===== Bundle path =====
-# Verify the tauri-cli is installed and is version 2.x. The release
-# workflow's `tauri-apps/tauri-action@v0.5.20` pins this in CI; here
-# the user has to install it themselves once, and a missing tool is
-# the most common failure on a fresh clone.
-if ! command -v cargo-tauri >/dev/null 2>&1; then
-  echo "==> tauri-cli missing; install with:" >&2
-  echo "       cargo install tauri-cli --version '^2.0.0'" >&2
-  exit 1
-fi
-# Ensure the aarch64 target is installed (no-op if it already is).
-# `rustup target add` is idempotent and very fast on a hit.
-if command -v rustup >/dev/null 2>&1; then
-  if ! rustup target list --installed | grep -q '^aarch64-apple-darwin$'; then
-    echo "==> installing aarch64-apple-darwin target via rustup"
-    rustup target add aarch64-apple-darwin
-  fi
-fi
+# Prerequisite checks (cargo-tauri + aarch64 target) ran above
+# before the UI build so a missing tool fails fast.
 
 echo "==> cargo tauri build (--no-default-features, aarch64-apple-darwin)"
 # `cargo tauri build` runs the bundler. The `--bundles app,dmg`

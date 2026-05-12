@@ -1549,7 +1549,10 @@ input[type="search"]:focus {
  * Toaster.
  * ===================================================================== */
 
-.toaster {
+/* Anchor wrapper owns the `position: fixed`; the polite + assertive
+ * inner stacks flow vertically inside it so they stack visually
+ * instead of painting on top of each other. */
+.toaster-anchor {
   position: fixed;
   top: var(--space-4);
   right: var(--space-4);
@@ -1557,6 +1560,12 @@ input[type="search"]:focus {
   flex-direction: column;
   gap: var(--space-2);
   z-index: 200;
+  pointer-events: none;
+}
+.toaster {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   pointer-events: none;
 }
 .toast {
@@ -2636,10 +2645,12 @@ input[type="search"]:focus {
   padding: var(--space-3) var(--space-4);
 }
 
-/* Assertive toaster sits beside the polite one and shares the same
- * positioning. Two regions because screen readers cap how many
- * polite announcements they merge and we want error toasts read
- * immediately. */
+/* Assertive toaster sits below the polite one inside the shared
+ * `.toaster-anchor` wrapper. Two distinct regions because screen
+ * readers cap how many polite announcements they merge and we want
+ * error toasts read immediately. No extra positioning needed —
+ * the anchor's `flex-direction: column` stacks them vertically. */
 .toaster-assertive {
-  /* Same anchor as .toaster — the two stacks visually merge. */
+  /* Reserved for future variations; visual stacking is owned by
+   * `.toaster-anchor`. */
 }

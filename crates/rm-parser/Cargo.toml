@@ -3,6 +3,11 @@ name = "rm-parser"
 version = "0.1.0"
 edition.workspace = true
 license = "MIT"
+# Mark as not-for-publish, matching every other workspace crate
+# (see workspace.package.publish = false in the root Cargo.toml).
+# Without this the parser was the only crate that would have been
+# accidentally publishable to crates.io.
+publish = false
 description = "Vendored fork of remarkable_lines (https://github.com/Lyr-7D1h/remarkable-lines), with public accessors added so we can render .rm strokes to PDF. Original by Lyr <lyr-7d1h@pm.me>."
 
 [dependencies]

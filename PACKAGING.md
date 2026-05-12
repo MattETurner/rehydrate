@@ -23,7 +23,7 @@ The `.github/workflows/release.yml` workflow runs on a GitHub-hosted
 1. Builds the UI bundle (`npm ci && npm run build`).
 2. Runs `cargo tauri build --target aarch64-apple-darwin --bundles
    app,dmg -- --no-default-features`, producing
-   `reHydrate_<version>_aarch64.dmg` and an `.app.tar.gz` archive.
+   `reHydrate_<version>_aarch64.dmg` and the unwrapped `.app`.
 3. Uploads both to a *draft* GitHub Release at the tag.
 4. Hashes the bundles with `shasum -a 256` and uploads a
    `SHA256SUMS` file alongside them.

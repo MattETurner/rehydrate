@@ -80,13 +80,6 @@ ignore = [
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained; static Unicode tables" },
   { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident unmaintained; static Unicode tables" },
 
-  # rand 0.7.3 — unsound with a custom logger using rand::rng().
-  #
-  # Pulled by `phf_generator` at build time only (the printpdf
-  # render path uses `phf` for static CSS-selector tables). Not in
-  # the runtime path; the advisory's precondition (custom global
-  # logger) doesn't apply.
-  { id = "RUSTSEC-2026-0097", reason = "build-time only via phf_generator; not in runtime path" },
 ]
 
 [licenses]

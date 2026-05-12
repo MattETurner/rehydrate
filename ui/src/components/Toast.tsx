@@ -132,16 +132,31 @@ export function Toaster({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={ctx}>
       {children}
-      <div className="toaster" role="status" aria-live="polite" aria-atomic="false">
-        {polite.map(renderToast)}
-      </div>
-      <div
-        className="toaster toaster-assertive"
-        role="alert"
-        aria-live="assertive"
-        aria-atomic="false"
-      >
-        {assertive.map(renderToast)}
+      {/*
+        Single outer anchor so the polite + assertive stacks
+        visually merge into one column. Both were `.toaster`
+        previously and shared the same `position: fixed`
+        coordinates, which painted them on top of each other.
+        The wrapper owns the position; each child stack flows
+        normally inside.
+      */}
+      <div className="toaster-anchor">
+        <div
+          className="toaster"
+          role="status"
+          aria-live="polite"
+          aria-atomic="false"
+        >
+          {polite.map(renderToast)}
+        </div>
+        <div
+          className="toaster toaster-assertive"
+          role="alert"
+          aria-live="assertive"
+          aria-atomic="false"
+        >
+          {assertive.map(renderToast)}
+        </div>
       </div>
     </ToastContext.Provider>
   );

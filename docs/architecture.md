@@ -209,7 +209,7 @@ polish item — see `PACKAGING.md`.
   prevent this from being added later.
 - **Note rendering and OCR.** _Shipped in v1._ Notebook rendering
   lives in `crates/rm-parser` (parses reMarkable v6) and
-  `crates/rehydrate-app::notebook_pdf` (renders to PDF). OCR is a
+  `crates/rehydrate-render` (renders to PDF). OCR is a
   separate crate, `crates/rehydrate-ocr`, talking to a user-supplied
   Ollama daemon. Full-text search remains deferred.
 - **Publishing to a CMS.** _Shipped in v1._ `crates/rehydrate-publish`
