@@ -2,6 +2,18 @@ use std::io::{Cursor, Read};
 
 use crate::{ParseError, ParseErrorKind};
 
+/// Build the "buffer underrun" error returned by `read_bytes` and
+/// `skip_bytes` when the caller asked for more than `remaining()`
+/// bytes. The kind is `Io` so `Bitreader::eof()` still recognises
+/// it as end-of-stream rather than treating a normal stream
+/// boundary as a malformed-input error.
+fn eof_error(requested: usize, available: usize) -> ParseError {
+    ParseError::new(
+        format!("requested {requested} bytes but only {available} remain"),
+        ParseErrorKind::Io,
+    )
+}
+
 pub trait Readable: Read + AsRef<[u8]> {}
 impl<T: Read + AsRef<[u8]>> Readable for T {}
 
@@ -68,12 +80,18 @@ impl<N: Readable> Bitreader<N> {
     /// Skip `amount` bytes without allocating. Same bounds check as
     /// `read_bytes`; used when the caller only needs to advance the
     /// cursor (e.g. tolerated trailing bytes on a block).
+    ///
+    /// On overshoot, the error's kind is [`ParseErrorKind::Io`] — the
+    /// same kind `read_exact` would have produced via
+    /// `io::ErrorKind::UnexpectedEof`. Several callers (notably
+    /// [`Bitreader::eof`]) treat `Io` as "no more bytes" rather than
+    /// "the input was malformed"; returning `InvalidInput` here would
+    /// have broken the EOF-detection idiom for legitimate truncated
+    /// streams.
     pub fn skip_bytes(&mut self, amount: usize) -> Result<(), ParseError> {
         let avail = self.remaining();
         if amount > avail {
-            return Err(ParseError::invalid(&format!(
-                "asked to skip {amount} bytes but only {avail} remain"
-            )));
+            return Err(eof_error(amount, avail));
         }
         let pos = self.cursor.position();
         self.cursor.set_position(pos + amount as u64);
@@ -81,18 +99,24 @@ impl<N: Readable> Bitreader<N> {
     }
 
     pub fn read_bytes(&mut self, amount: usize) -> Result<Vec<u8>, ParseError> {
-        // Refuse to allocate more than the buffer can possibly provide.
-        // Without this guard, a malformed file can declare a length
-        // of ~4 GB and the parser allocates eagerly *before*
+        // Refuse to allocate more than the buffer can possibly
+        // provide. Without this guard, a malformed file can declare
+        // a length of ~4 GB and the parser allocates eagerly *before*
         // discovering the underlying stream is empty — the classic
-        // length-prefix DOS shape (see audit H-2). With the guard,
-        // allocation is bounded by the file's actual size, which the
-        // OS-level mmap / read cap already constrains.
+        // length-prefix DOS shape (see audit H-2).
+        //
+        // The error kind here is deliberately `Io` rather than
+        // `InvalidInput`. Several callers rely on the `read_bytes` →
+        // `read_exact` chain producing an `Io` error at end-of-stream
+        // (the underlying `io::Read` returns `UnexpectedEof`), and
+        // [`Bitreader::eof`] specifically catches `Io` to mean "no
+        // more bytes." Returning `InvalidInput` here turned every
+        // legitimate end-of-buffer into a fatal parse error and
+        // broke notebook OCR for any document where the parser
+        // walked to EOF — which is basically every document.
         let avail = self.remaining();
         if amount > avail {
-            return Err(ParseError::invalid(&format!(
-                "requested {amount} bytes but only {avail} remain"
-            )));
+            return Err(eof_error(amount, avail));
         }
         let mut buffer = vec![0; amount];
         self.read_exact(&mut buffer)?;
@@ -248,9 +272,29 @@ mod tests {
     }
 
     #[test]
+    fn read_bytes_overshoot_is_io_kind_so_eof_idiom_works() {
+        // Regression guard: the bounds check in `read_bytes` must
+        // return a `ParseErrorKind::Io` error, not `InvalidInput`.
+        // `Bitreader::eof()` reads 1 byte and treats an `Io`
+        // failure as "no more bytes" — that's how every parser
+        // loop in this crate knows when to stop. Returning
+        // `InvalidInput` here broke notebook OCR for every
+        // document that walked to EOF (i.e. basically all of them).
+        let mut r = br(&[]);
+        let err = r.read_bytes(1).unwrap_err();
+        assert_eq!(err.kind, ParseErrorKind::Io, "{err:?}");
+        // And the high-level eof() recognises it.
+        let mut r2 = br(&[]);
+        assert_eq!(r2.eof().unwrap(), true);
+    }
+
+    #[test]
     fn skip_bytes_refuses_overshoot() {
         let mut r = br(&[0x01, 0x02, 0x03, 0x04]);
-        assert!(r.skip_bytes(usize::MAX / 2).is_err());
+        let err = r.skip_bytes(usize::MAX / 2).unwrap_err();
+        // Same `Io` kind contract as `read_bytes` — see the
+        // regression test above for why.
+        assert_eq!(err.kind, ParseErrorKind::Io);
         // Stream cursor must not have moved past EOF — a follow-up
         // read returns the original bytes.
         let kept = r.read_bytes(4).unwrap();
