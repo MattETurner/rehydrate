@@ -102,8 +102,13 @@ export const ipc = {
   saveDevicePassword: (password: string) =>
     invoke<void>("save_device_password", { password }),
   forgetDevicePassword: () => invoke<void>("forget_device_password"),
-  connectDevice: (password?: string) =>
-    invoke<DeviceInfo>("connect_device", { password: password ?? null }),
+  connectDevice: (password?: string, remember?: boolean) =>
+    invoke<DeviceInfo>("connect_device", {
+      password: password ?? null,
+      // The backend defaults to *not* persisting unless the renderer
+      // explicitly asks. `undefined` ⇒ null on the wire ⇒ no save.
+      remember: remember ?? null,
+    }),
   disconnectDevice: () => invoke<void>("disconnect_device"),
 
   pullPlan: () => invoke<PullPlan>("pull_plan"),

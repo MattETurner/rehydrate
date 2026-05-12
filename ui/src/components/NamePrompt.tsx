@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
+import { useDialogA11y } from "../dialogA11y";
+import { formatError } from "../formatError";
+
 interface Props {
   /** Modal title, e.g. "New folder". */
   title: string;
@@ -33,9 +36,14 @@ export function NamePrompt({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const { dialogProps, rootRef, titleId } = useDialogA11y({
+    onEscape: () => {
+      if (!busy) onCancel();
+    },
+    initialFocusRef: inputRef,
+  });
 
   useEffect(() => {
-    inputRef.current?.focus();
     inputRef.current?.select();
   }, []);
 
@@ -51,26 +59,36 @@ export function NamePrompt({
     try {
       await onSubmit(trimmed);
     } catch (err) {
-      setError(String(err));
+      setError(formatError(err));
       setBusy(false);
     }
   }
 
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>{title}</h2>
+    <div className="modal-backdrop" onClick={() => !busy && onCancel()}>
+      <div
+        className="modal"
+        onClick={(e) => e.stopPropagation()}
+        ref={rootRef}
+        {...dialogProps}
+      >
+        <h2 id={titleId}>{title}</h2>
         {subtitle && <p className="muted">{subtitle}</p>}
         <form onSubmit={submit}>
           <input
             ref={inputRef}
             type="text"
+            aria-label={placeholder}
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
             placeholder={placeholder}
           />
-          {error && <div className="error inline">{error}</div>}
+          {error && (
+            <div className="error inline" role="alert">
+              {error}
+            </div>
+          )}
           <div className="actions">
             <button type="button" onClick={onCancel} disabled={busy}>
               Cancel

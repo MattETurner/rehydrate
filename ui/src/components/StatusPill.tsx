@@ -43,22 +43,24 @@ export function StatusPill({ state, phase = "idle", onConnect, onDisconnect }: P
 
   return (
     <span ref={hostRef} className="popover-host">
-      <span
-        className={`pill ${label.toneClass} clickable`}
-        role="button"
-        tabIndex={0}
+      {/*
+        Real `<button>` rather than a `role="button"` span so screen
+        readers, focus rings, and Enter/Space handling all come for
+        free. The visual is identical because `.pill.clickable`
+        already styles a clickable pill.
+      */}
+      <button
+        type="button"
+        className={`pill ${label.toneClass} clickable pill-button`}
         onClick={() => state && setOpen((v) => !v)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            setOpen((v) => !v);
-          }
-        }}
+        aria-haspopup="dialog"
+        aria-expanded={open ? "true" : "false"}
         title={label.title}
+        disabled={!state}
       >
         <span className={`pill-dot${label.live ? " live" : ""}`} />
         {label.text}
-      </span>
+      </button>
       {open && state && (
         <DevicePopover
           state={state}

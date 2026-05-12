@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { useDialogA11y } from "../dialogA11y";
+import { formatError } from "../formatError";
 import { Icon } from "./Icon";
 import { ipc } from "../ipc";
 import type { FolderEntry } from "../types";
@@ -74,6 +76,11 @@ export function ChooseFolderDialog({
   const [newName, setNewName] = useState("");
   const excluded = useMemo(() => new Set(excludedIds), [excludedIds]);
   const roots = useMemo(() => buildTree(folders, excluded), [folders, excluded]);
+  const { dialogProps, rootRef, titleId } = useDialogA11y({
+    onEscape: () => {
+      if (!busy) onCancel();
+    },
+  });
 
   async function submit() {
     setBusy(true);
@@ -81,7 +88,7 @@ export function ChooseFolderDialog({
     try {
       await onChoose(selected);
     } catch (err) {
-      setError(String(err));
+      setError(formatError(err));
       setBusy(false);
     }
   }
@@ -101,19 +108,21 @@ export function ChooseFolderDialog({
       setCreating(false);
       setNewName("");
     } catch (err) {
-      setError(String(err));
+      setError(formatError(err));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
+    <div className="modal-backdrop" onClick={() => !busy && onCancel()}>
       <div
         className="modal choose-folder-modal"
         onClick={(e) => e.stopPropagation()}
+        ref={rootRef}
+        {...dialogProps}
       >
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         {subtitle && <p className="muted">{subtitle}</p>}
         <ul className="folder-picker">
           <li
@@ -202,7 +211,11 @@ export function ChooseFolderDialog({
             />
           ))}
         </ul>
-        {error && <div className="error inline">{error}</div>}
+        {error && (
+          <div className="error inline" role="alert">
+            {error}
+          </div>
+        )}
         <div className="actions">
           <button type="button" onClick={onCancel} disabled={busy}>
             Cancel

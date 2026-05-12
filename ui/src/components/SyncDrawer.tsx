@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ipc, onSyncPhase, onSyncProgress } from "../ipc";
 import { Icon } from "./Icon";
 import { Skeleton } from "./Skeleton";
+import { formatError } from "../formatError";
 import type {
   PlanItemStatus,
   ProgressEvent,
@@ -73,7 +74,7 @@ export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
         setPushPlan(ps);
       })
       .catch((e) => {
-        if (mounted) setPlanError(String(e));
+        if (mounted) setPlanError(formatError(e));
       });
     return () => {
       mounted = false;
@@ -211,7 +212,7 @@ export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
         setTimeout(() => onClose(), 1500);
       }
     } catch (e) {
-      setPlanError(String(e));
+      setPlanError(formatError(e));
     } finally {
       unlistenPhase();
       unlistenProgress();

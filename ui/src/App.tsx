@@ -28,7 +28,7 @@ import { useConfirm } from "./components/Confirm";
 import { Cheatsheet } from "./components/Cheatsheet";
 import { SettingsModal, parseOllamaUnconfigured } from "./components/SettingsModal";
 import { TranscriptDrawer } from "./components/TranscriptDrawer";
-import { OcrJobChip, type OcrJob } from "./components/OcrJobChip";
+import { OcrJobChip } from "./components/OcrJobChip";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { Onboarding } from "./components/Onboarding";
 import { QuickLook } from "./components/QuickLook";
@@ -37,12 +37,14 @@ import { NamePrompt } from "./components/NamePrompt";
 import { ChooseFolderDialog } from "./components/ChooseFolderDialog";
 import { Thumbnail, invalidateThumbnail } from "./components/Thumbnail";
 import { DRAG_ICON_SVG, setCustomDragImage } from "./dragImage";
+import { formatError } from "./formatError";
 import type {
   ArchivedDocument,
   DeviceState,
   DocumentSummary,
   FolderEntry,
   LibrarySummary,
+  OcrJob,
   RecentLibraryEntry,
 } from "./types";
 
@@ -182,7 +184,7 @@ export function App() {
         // means switching after first-open doesn't flicker.
         await refreshRecentLibraries();
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(formatError(e));
       }
     })();
     return () => {
@@ -295,7 +297,7 @@ export function App() {
       setFolders(f);
       setArchived(a);
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       refreshing.current = false;
     }
@@ -321,7 +323,7 @@ export function App() {
       setShowOnboarding(false);
       await Promise.all([refreshLibrary(), refreshRecentLibraries()]);
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -344,7 +346,7 @@ export function App() {
       setLibraryPath(opened);
       await Promise.all([refreshLibrary(), refreshRecentLibraries()]);
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -390,7 +392,7 @@ export function App() {
       setShowOnboarding(false);
       await Promise.all([refreshLibrary(), refreshRecentLibraries()]);
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -514,7 +516,7 @@ export function App() {
         setShowPassword(true);
       }
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -523,8 +525,8 @@ export function App() {
     setDevice(await ipc.deviceState());
   }
 
-  async function submitPassword(password: string) {
-    await ipc.connectDevice(password);
+  async function submitPassword(password: string, remember: boolean) {
+    await ipc.connectDevice(password, remember);
     setDevice(await ipc.deviceState());
     setShowPassword(false);
   }
@@ -574,7 +576,7 @@ export function App() {
         ),
       });
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -614,7 +616,7 @@ export function App() {
             : `Cleared ${r.deleted} unused file${r.deleted === 1 ? "" : "s"} · freed ${formatBytes(r.bytes_freed)}.`,
       });
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -647,7 +649,7 @@ export function App() {
         });
       }
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -656,7 +658,7 @@ export function App() {
     try {
       await ipc.openDocument(d.document_id);
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -716,7 +718,7 @@ export function App() {
                   await ipc.unarchiveDocument(documentId);
                   await refreshLibrary();
                 } catch (e) {
-                  toast.show({ tone: "err", body: String(e) });
+                  toast.show({ tone: "err", body: formatError(e) });
                 }
               },
             },
@@ -760,14 +762,14 @@ export function App() {
                   await ipc.moveDocument(documentId, previousParent);
                   await refreshLibrary();
                 } catch (e) {
-                  toast.show({ tone: "err", body: String(e) });
+                  toast.show({ tone: "err", body: formatError(e) });
                 }
               },
             },
           });
         }
       } catch (e) {
-        setError(String(e));
+        setError(formatError(e));
       }
     },
     [documents, folders, refreshLibrary, toast, animateOutThenRefresh, view],
@@ -855,7 +857,7 @@ export function App() {
         body: `Moved ${ids.length} document${ids.length === 1 ? "" : "s"} to ${targetName}.`,
       });
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setMovingDocs(null);
     }
@@ -902,7 +904,7 @@ export function App() {
         // doesn't abort the whole drop.
         toast.show({
           tone: "err",
-          body: `Couldn't import ${file.name}: ${String(e)}`,
+          body: `Couldn't import ${file.name}: ${formatError(e)}`,
         });
       }
     }
@@ -937,7 +939,7 @@ export function App() {
         await ipc.reorderFolder(draggedId, newParent, newSortIndex);
         await refreshLibrary();
       } catch (e) {
-        setError(String(e));
+        setError(formatError(e));
       }
     },
     [refreshLibrary],
@@ -1014,7 +1016,7 @@ export function App() {
           }
           setOcrJob((cur) =>
             cur && cur.documentId === doc.document_id
-              ? { ...cur, phase: "error", error: String(e) }
+              ? { ...cur, phase: "error", error: formatError(e) }
               : cur,
           );
           toast.show({
@@ -1022,7 +1024,7 @@ export function App() {
             duration: 0,
             body: (
               <>
-                OCR failed for <strong>{doc.visible_name}</strong>: {String(e)}
+                OCR failed for <strong>{doc.visible_name}</strong>: {formatError(e)}
               </>
             ),
           });
@@ -1225,7 +1227,7 @@ export function App() {
         body: `Moved ${ids.length} document${ids.length === 1 ? "" : "s"} to Archive.`,
       });
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setLeavingIds((s) => {
         const next = new Set(s);
@@ -1255,7 +1257,7 @@ export function App() {
         body: `Moved ${ids.length} document${ids.length === 1 ? "" : "s"} to ${targetName}.`,
       });
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -1274,7 +1276,7 @@ export function App() {
         ),
       });
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -1299,7 +1301,7 @@ export function App() {
         ),
       });
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -1837,10 +1839,15 @@ export function App() {
 
         <main className="content">
           {error && (
-            <div className="error">
+            <div className="error" role="alert">
               <Icon name="warn" />
               <span>{error}</span>
-              <button onClick={() => setError(null)} className="close-inline">
+              <button
+                onClick={() => setError(null)}
+                className="close-inline"
+                aria-label="Dismiss error"
+                title="Dismiss"
+              >
                 ×
               </button>
             </div>
@@ -1867,6 +1874,7 @@ export function App() {
                     <input
                       ref={searchInputRef}
                       type="search"
+                      aria-label="Search this view"
                       placeholder="Search this view…"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}

@@ -8,6 +8,8 @@ import type {
 } from "../types";
 import { Icon } from "./Icon";
 import { parsePublishUnconfigured } from "./SettingsModal";
+import { formatError } from "../formatError";
+import { Skeleton } from "./Skeleton";
 
 interface Props {
   document: DocumentSummary;
@@ -42,7 +44,7 @@ export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: 
         const t = await ipc.getTranscript(document.current_version_id);
         if (!cancelled) setTranscript(t);
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(formatError(e));
       }
       try {
         const status = await ipc.publishCredentialStatus();
@@ -69,7 +71,7 @@ export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: 
         );
       }
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setBusy(null);
     }
@@ -96,7 +98,7 @@ export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: 
       if (unconfigured && onOpenSettings) {
         onOpenSettings("publishing", unconfigured.message);
       } else {
-        setError(String(e));
+        setError(formatError(e));
       }
     } finally {
       setBusy(null);
@@ -110,19 +112,38 @@ export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: 
         onClick={(e) => e.stopPropagation()}
         aria-label="Transcript"
       >
-        <header className="drawer-header">
+        {/*
+          The other drawers (History/Log/Sync) use a bare <header>
+          matched by `.drawer header` in styles.css. Earlier this
+          file used `className="drawer-header"` / `"drawer-body"`,
+          which had no CSS rules anywhere — see the audit. Aligning
+          on the shared pattern picks up the existing rules and
+          keeps drawers visually consistent.
+        */}
+        <header>
           <h2>Transcript</h2>
-          <button className="icon ghost" onClick={onClose} aria-label="Close">
+          <button
+            className="icon ghost"
+            onClick={onClose}
+            aria-label="Close transcript"
+          >
             <Icon name="x" />
           </button>
         </header>
 
-        <div className="drawer-body">
-          <p className="muted">
-            <strong>{document.visible_name}</strong>
-          </p>
+        <p className="muted drawer-subtitle">
+          <strong>{document.visible_name}</strong>
+        </p>
 
-          {transcript === undefined && <p>Loading…</p>}
+        {transcript === undefined && (
+          <div className="drawer-loading">
+            <Skeleton width="60%" height={14} mb={8} />
+            <Skeleton width="100%" height={14} mb={8} />
+            <Skeleton width="92%" height={14} mb={8} />
+            <Skeleton width="88%" height={14} mb={8} />
+            <Skeleton width="74%" height={14} />
+          </div>
+        )}
           {transcript === null && (
             <p>
               No transcript yet. Use <em>Convert to text…</em> from the
@@ -178,10 +199,13 @@ export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: 
                   {busy === "wordpress" ? "Publishing…" : "Publish to WordPress"}
                 </button>
               </div>
-              {error && <div className="error inline">{error}</div>}
+              {error && (
+                <div className="error inline" role="alert">
+                  {error}
+                </div>
+              )}
             </>
           )}
-        </div>
       </aside>
     </div>
   );

@@ -5,6 +5,7 @@ import { useToast } from "./Toast";
 import { Icon } from "./Icon";
 import { Skeleton } from "./Skeleton";
 import type { DocumentSummary, VersionEntry } from "../types";
+import { formatError } from "../formatError";
 
 interface Props {
   document: DocumentSummary;
@@ -26,7 +27,7 @@ export function HistoryDrawer({ document, onClose }: Props) {
         if (!cancelled) setVersions(v);
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(formatError(e));
       });
     return () => {
       cancelled = true;
@@ -61,7 +62,7 @@ export function HistoryDrawer({ document, onClose }: Props) {
         body: `Restored to ${label}. The change will sync on the next sync.`,
       });
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
@@ -78,7 +79,7 @@ export function HistoryDrawer({ document, onClose }: Props) {
         body: `Exported ${result.file_count} file${result.file_count === 1 ? "" : "s"} to ${result.path}`,
       });
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setBusy(null);
     }
@@ -94,7 +95,7 @@ export function HistoryDrawer({ document, onClose }: Props) {
         prev,
       );
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 

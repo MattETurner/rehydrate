@@ -3,39 +3,14 @@
  * navigating away from the document) doesn't lose progress
  * visibility. The actual job is a single in-flight call to
  * `ipc.transcribeDocument`; per-page deltas come over `ocr:progress`
- * events handled in App.tsx. We render a small pill that animates
- * its width across the page count when known, and a label that
- * stays readable at the chip's compact size.
+ * events handled in App.tsx.
  *
- * Click cancels the job (best-effort — the IPC call doesn't yet
- * support cancellation, so this just hides the chip; the job keeps
- * running on the backend until done. Wire to a real cancel signal
- * later if cancellation matters). */
-export interface OcrJob {
-  documentId: string;
-  visibleName: string;
-  phase: "running" | "done" | "error";
-  /** Pages completed so far, per `page_done` events. */
-  pagesDone: number;
-  /** Cumulative chars across pages — updates as work proceeds. */
-  charCount: number;
-  /** ms timestamp; used for elapsed-time display. */
-  startedAt: number;
-  /** Final page count once `transcribe_document` returns. */
-  totalPages?: number;
-  /** Set when phase = "error". */
-  error?: string;
-}
-
-/// When the auto-OCR-at-startup sweep is in flight, the App passes
-/// `sweep` so the chip can render "(N of M)" batch progress and
-/// change the close-button affordance to "stop the sweep" rather
-/// than "hide while it keeps running" — those are different actions
-/// from the user's perspective.
-export interface OcrSweepProgress {
-  totalAtStart: number;
-  done: number;
-}
+ * The "×" button is **Hide**, not Cancel — the IPC call doesn't
+ * support cancellation today, so a real "stop the model now"
+ * affordance would be a lie. In the sweep mode the user *can* stop
+ * the *sweep* (the queue between docs) by signalling via the
+ * cancellation token, which is a real action and labelled as such. */
+import type { OcrJob, OcrSweepProgress } from "../types";
 
 export function OcrJobChip({
   job,
@@ -56,12 +31,24 @@ export function OcrJobChip({
   // before it actually is.
   const pct = Math.min(80, 8 + job.pagesDone * 6);
   const inSweep = sweep && sweep.totalAtStart > 0;
+  // Sweep mode: the × stops the *sweep* (real cancellation token).
+  // Single-job mode: the × is Hide only — the IPC call has no
+  // cancellation handle, so framing it as "cancel" would lie.
+  // The label and tooltip match the actual behaviour.
   const titleClose = inSweep
     ? "Stop the auto-OCR sweep"
     : "Hide — OCR keeps running in the background";
+  const ariaClose = inSweep ? "Stop auto-OCR sweep" : "Hide OCR progress";
   return (
     <div className="ocr-chip" role="status" aria-live="polite">
-      <div className="ocr-chip-bar">
+      <div
+        className="ocr-chip-bar"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(pct)}
+        aria-label={`OCR progress for ${job.visibleName}`}
+      >
         <span className="indeterminate" style={{ width: `${pct}%` }} />
       </div>
       <div className="ocr-chip-text">
@@ -81,11 +68,11 @@ export function OcrJobChip({
       <button
         type="button"
         className="ocr-chip-close"
-        aria-label={inSweep ? "Stop auto-OCR" : "Hide progress"}
+        aria-label={ariaClose}
         onClick={onDismiss}
         title={titleClose}
       >
-        ×
+        {inSweep ? "Stop" : "Hide"}
       </button>
     </div>
   );

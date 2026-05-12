@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ipc } from "../ipc";
+import { formatError } from "../formatError";
 
 interface Props {
   onClose: () => void;
@@ -19,7 +20,7 @@ export function LogDrawer({ onClose }: Props) {
       setLines(t.lines);
       setLogDir(t.log_dir);
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setLoading(false);
     }
@@ -43,12 +44,16 @@ export function LogDrawer({ onClose }: Props) {
         <button onClick={refresh} disabled={loading} className="link">
           {loading ? "Refreshing…" : "Refresh"}
         </button>
-        <button onClick={onClose} className="close">
+        <button onClick={onClose} className="close" aria-label="Close logs">
           ×
         </button>
       </header>
 
-      {error && <div className="error">{error}</div>}
+      {error && (
+        <div className="error" role="alert">
+          {error}
+        </div>
+      )}
 
       {lines.length === 0 && !error ? (
         <div className="empty">No log entries yet.</div>

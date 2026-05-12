@@ -8,7 +8,11 @@ import type {
   PublishCredentialStatus,
   WordpressCredentials,
 } from "../types";
+import { useDialogA11y } from "../dialogA11y";
 import { Icon } from "./Icon";
+import { formatError } from "../formatError";
+import { useConfirm } from "./Confirm";
+import { Skeleton } from "./Skeleton";
 
 interface Props {
   /** Which tab to open with. The OCR command flow auto-opens the
@@ -24,6 +28,29 @@ interface Props {
 
 export type SettingsTab = "ollama" | "publishing";
 
+/// Client-side URL shape validation. Matches the Rust side's
+/// `validate_remote_url` rules at the surface (scheme + host present)
+/// without trying to replicate the IP-range checks — the backend
+/// remains authoritative, this just catches obvious typos so the
+/// user doesn't bounce through a save → IPC round-trip just to learn
+/// they forgot a "/" or a scheme.
+function validateUrlShape(url: string): string | null {
+  if (!url) return "URL is required.";
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "URL doesn't look right. Did you include `https://`?";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "URL must start with http:// or https://.";
+  }
+  if (!parsed.hostname) {
+    return "URL must have a host.";
+  }
+  return null;
+}
+
 /* Single tabbed Settings modal. Replaces the standalone
  * PublishingSettings panel from the OCR feature branch and adds the
  * Ollama connection tab the v1.0 OCR pivot needs. Credentials still
@@ -36,16 +63,20 @@ export function SettingsModal({
   notify,
 }: Props) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const { dialogProps, rootRef, titleId } = useDialogA11y({
+    onEscape: onClose,
+  });
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div
         className="modal modal-wide settings-modal"
         onClick={(e) => e.stopPropagation()}
-        aria-label="Settings"
+        ref={rootRef}
+        {...dialogProps}
       >
         <header className="modal-header">
-          <h2>Settings</h2>
-          <button className="icon ghost" onClick={onClose} aria-label="Close">
+          <h2 id={titleId}>Settings</h2>
+          <button className="icon ghost" onClick={onClose} aria-label="Close Settings">
             <Icon name="x" />
           </button>
         </header>
@@ -104,6 +135,11 @@ function OllamaTab({
   const [busy, setBusy] = useState<"save" | "test" | null>(null);
   const [ping, setPing] = useState<PingReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Track initial load so the form renders a Skeleton placeholder
+  // until both `getOllamaConfig` and `listCuratedOllamaModels` land
+  // — otherwise the form briefly flashes empty fields and looks
+  // broken on slow boots.
+  const [loaded, setLoaded] = useState(false);
 
   // Initial load: pull the persisted config + the curated model list.
   useEffect(() => {
@@ -127,8 +163,12 @@ function OllamaTab({
           setCustomModel(cfg.model);
           setUseCustom(true);
         }
+        setLoaded(true);
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) {
+          setError(formatError(e));
+          setLoaded(true);
+        }
       }
     })();
     return () => {
@@ -154,25 +194,34 @@ function OllamaTab({
         notify("warn", result.error ?? "Couldn't reach Ollama.");
       }
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setBusy(null);
     }
   }
 
   async function save() {
+    // Client-side URL shape check so a typo surfaces here rather than
+    // after the round-trip — matches the backend's
+    // `validate_remote_url` rules (`http`/`https` only, host present).
+    const trimmedUrl = baseUrl.trim();
+    const urlErr = validateUrlShape(trimmedUrl);
+    if (urlErr) {
+      setError(urlErr);
+      return;
+    }
     setBusy("save");
     setError(null);
     try {
       const cfg: OllamaConfig = {
-        base_url: baseUrl.trim(),
+        base_url: trimmedUrl,
         model: effectiveModel,
         auto_ocr_on_startup: autoOcr,
       };
       await ipc.saveOllamaConfig(cfg);
       notify("ok", "Saved Ollama settings.");
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setBusy(null);
     }
@@ -182,6 +231,18 @@ function OllamaTab({
     if (!ping?.ok) return null;
     return ping.models.includes(effectiveModel);
   }, [ping, effectiveModel]);
+
+  if (!loaded) {
+    return (
+      <section className="settings-section">
+        <Skeleton width="80%" height={14} mb={12} />
+        <Skeleton width="100%" height={32} mb={12} />
+        <Skeleton width="100%" height={32} mb={12} />
+        <Skeleton width="60%" height={14} mb={12} />
+        <Skeleton width="100%" height={32} mb={12} />
+      </section>
+    );
+  }
 
   return (
     <section className="settings-section">
@@ -337,15 +398,23 @@ function PublishingTab({ notify }: { notify: Props["notify"] }) {
   const [wpBusy, setWpBusy] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const confirm = useConfirm();
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const s = await ipc.publishCredentialStatus();
-        if (!cancelled) setStatus(s);
+        if (!cancelled) {
+          setStatus(s);
+          setLoaded(true);
+        }
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) {
+          setError(formatError(e));
+          setLoaded(true);
+        }
       }
     })();
     return () => {
@@ -357,16 +426,22 @@ function PublishingTab({ notify }: { notify: Props["notify"] }) {
     try {
       setStatus(await ipc.publishCredentialStatus());
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     }
   }
 
   async function saveGhost() {
+    const trimmedUrl = ghostUrl.trim();
+    const urlErr = validateUrlShape(trimmedUrl);
+    if (urlErr) {
+      setError(`Ghost URL: ${urlErr}`);
+      return;
+    }
     setGhostBusy("save");
     setError(null);
     try {
       const creds: GhostCredentials = {
-        base_url: ghostUrl.trim(),
+        base_url: trimmedUrl,
         admin_api_key: ghostKey.trim(),
       };
       await ipc.setGhostCredentials(creds);
@@ -374,7 +449,7 @@ function PublishingTab({ notify }: { notify: Props["notify"] }) {
       notify("ok", "Saved Ghost credentials.");
       setGhostKey("");
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setGhostBusy(null);
     }
@@ -387,13 +462,20 @@ function PublishingTab({ notify }: { notify: Props["notify"] }) {
       await ipc.pingPublishTarget("ghost");
       notify("ok", "Ghost connection succeeded.");
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setGhostBusy(null);
     }
   }
 
   async function forgetGhost() {
+    const ok = await confirm({
+      title: "Forget Ghost credentials?",
+      body: "The Admin API key will be removed from your OS keychain. You'll need to paste it again to publish.",
+      confirmLabel: "Forget",
+      destructive: true,
+    });
+    if (!ok) return;
     setGhostBusy("forget");
     setError(null);
     try {
@@ -401,18 +483,24 @@ function PublishingTab({ notify }: { notify: Props["notify"] }) {
       await refreshStatus();
       notify("ok", "Forgot Ghost credentials.");
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setGhostBusy(null);
     }
   }
 
   async function saveWp() {
+    const trimmedUrl = wpUrl.trim();
+    const urlErr = validateUrlShape(trimmedUrl);
+    if (urlErr) {
+      setError(`WordPress URL: ${urlErr}`);
+      return;
+    }
     setWpBusy("save");
     setError(null);
     try {
       const creds: WordpressCredentials = {
-        base_url: wpUrl.trim(),
+        base_url: trimmedUrl,
         username: wpUser.trim(),
         application_password: wpPwd.trim(),
       };
@@ -421,7 +509,7 @@ function PublishingTab({ notify }: { notify: Props["notify"] }) {
       notify("ok", "Saved WordPress credentials.");
       setWpPwd("");
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setWpBusy(null);
     }
@@ -434,13 +522,20 @@ function PublishingTab({ notify }: { notify: Props["notify"] }) {
       await ipc.pingPublishTarget("wordpress");
       notify("ok", "WordPress connection succeeded.");
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setWpBusy(null);
     }
   }
 
   async function forgetWp() {
+    const ok = await confirm({
+      title: "Forget WordPress credentials?",
+      body: "The application password will be removed from your OS keychain. You'll need to paste it again to publish.",
+      confirmLabel: "Forget",
+      destructive: true,
+    });
+    if (!ok) return;
     setWpBusy("forget");
     setError(null);
     try {
@@ -448,10 +543,21 @@ function PublishingTab({ notify }: { notify: Props["notify"] }) {
       await refreshStatus();
       notify("ok", "Forgot WordPress credentials.");
     } catch (e) {
-      setError(String(e));
+      setError(formatError(e));
     } finally {
       setWpBusy(null);
     }
+  }
+
+  if (!loaded) {
+    return (
+      <section className="settings-section">
+        <Skeleton width="80%" height={14} mb={12} />
+        <Skeleton width="100%" height={32} mb={12} />
+        <Skeleton width="100%" height={32} mb={12} />
+        <Skeleton width="60%" height={14} mb={12} />
+      </section>
+    );
   }
 
   return (

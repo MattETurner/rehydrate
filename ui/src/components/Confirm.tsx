@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -85,35 +86,64 @@ export function ConfirmHost({ children }: { children: ReactNode }) {
     <ConfirmContext.Provider value={ctx}>
       {children}
       {pending && (
-        <div className="modal-backdrop" onClick={() => close(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>{pending.title}</h2>
-            {pending.body && (
-              <p style={{ marginTop: 8, color: "var(--muted)" }}>
-                {pending.body}
-              </p>
-            )}
-            <div
-              className="actions"
-              style={{ marginTop: "var(--space-4)" }}
-            >
-              <button onClick={() => close(false)}>
-                {pending.cancelLabel ?? "Cancel"}
-              </button>
-              <button
-                ref={(el) => {
-                  confirmBtnRef.current = el;
-                  if (el) el.focus();
-                }}
-                className={pending.destructive ? "primary danger" : "primary"}
-                onClick={() => close(true)}
-              >
-                {pending.confirmLabel ?? "Confirm"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          pending={pending}
+          confirmBtnRef={confirmBtnRef}
+          onClose={close}
+        />
       )}
     </ConfirmContext.Provider>
+  );
+}
+
+function ConfirmDialog({
+  pending,
+  confirmBtnRef,
+  onClose,
+}: {
+  pending: PendingConfirm;
+  confirmBtnRef: React.MutableRefObject<HTMLButtonElement | null>;
+  onClose: (ok: boolean) => void;
+}) {
+  // Destructive confirms get `alertdialog`; the rest get a regular
+  // `dialog`. The two roles differ in how screen readers announce
+  // them — `alertdialog` is read more assertively, matching the
+  // higher-stakes nature of "delete forever / archive bulk / etc."
+  const titleId = useId();
+  const bodyId = useId();
+  const role = pending.destructive ? "alertdialog" : "dialog";
+  return (
+    <div className="modal-backdrop" onClick={() => onClose(false)}>
+      <div
+        className="modal"
+        onClick={(e) => e.stopPropagation()}
+        role={role}
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={pending.body ? bodyId : undefined}
+      >
+        <h2 id={titleId}>{pending.title}</h2>
+        {pending.body && (
+          <p id={bodyId} className="dialog-body">
+            {pending.body}
+          </p>
+        )}
+        <div className="actions actions-spaced">
+          <button onClick={() => onClose(false)}>
+            {pending.cancelLabel ?? "Cancel"}
+          </button>
+          <button
+            ref={(el) => {
+              confirmBtnRef.current = el;
+              if (el) el.focus();
+            }}
+            className={pending.destructive ? "primary danger" : "primary"}
+            onClick={() => onClose(true)}
+          >
+            {pending.confirmLabel ?? "Confirm"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

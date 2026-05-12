@@ -233,6 +233,35 @@ export type OcrProgressEvent =
   | { kind: "page_failed"; page_index: number; message: string }
   | { kind: "done"; pages_done: number; total_chars: number };
 
+/// Local UI state describing a running OCR job. Used by `OcrJobChip`
+/// and by `App.tsx`. Domain shape, not a component-internal type —
+/// lives here so unrelated callers don't reach into a component file
+/// to import it.
+export interface OcrJob {
+  documentId: string;
+  visibleName: string;
+  phase: "running" | "done" | "error";
+  /** Pages completed so far, per `page_done` events. */
+  pagesDone: number;
+  /** Cumulative chars across pages — updates as work proceeds. */
+  charCount: number;
+  /** ms timestamp; used for elapsed-time display. */
+  startedAt: number;
+  /** Final page count once `transcribe_document` returns. */
+  totalPages?: number;
+  /** Set when phase = "error". */
+  error?: string;
+}
+
+/// Sweep progress, used when the user kicked off "OCR every notebook
+/// without a transcript at startup". The chip surfaces "(N of M)"
+/// batch progress and re-labels the close affordance to reflect that
+/// pressing it stops the sweep instead of just hiding the chip.
+export interface OcrSweepProgress {
+  totalAtStart: number;
+  done: number;
+}
+
 export interface TranscriptSummary {
   document_id: string;
   version_id: number;

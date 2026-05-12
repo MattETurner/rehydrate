@@ -84,39 +84,57 @@ export function Toaster({ children }: { children: ReactNode }) {
 
   const ctx = useMemo<ToastContextValue>(() => ({ show, dismiss }), [show, dismiss]);
 
+  // Two live regions: a polite one for `info` / `ok` / `warn`
+  // (announced when the user is idle), and an assertive one for
+  // `err` (announced immediately, even mid-typing). Error toasts
+  // auto-dismiss in 4.2 s, so without `aria-live="assertive"` screen
+  // reader users miss them entirely.
+  const polite = toasts.filter((t) => t.tone !== "err");
+  const assertive = toasts.filter((t) => t.tone === "err");
+
+  const renderToast = (t: ToastInstance) => (
+    <div
+      key={t.id}
+      className={`toast toast-${t.tone}${t.leaving ? " leaving" : ""}`}
+    >
+      <div className="toast-body">{t.body}</div>
+      {t.action && (
+        <button
+          className="toast-action"
+          onClick={async () => {
+            try {
+              await t.action!.onClick();
+            } finally {
+              dismiss(t.id);
+            }
+          }}
+        >
+          {t.action.label}
+        </button>
+      )}
+      <button
+        className="close"
+        aria-label="Dismiss notification"
+        onClick={() => dismiss(t.id)}
+      >
+        ×
+      </button>
+    </div>
+  );
+
   return (
     <ToastContext.Provider value={ctx}>
       {children}
-      <div className="toaster" role="status" aria-live="polite">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className={`toast toast-${t.tone}${t.leaving ? " leaving" : ""}`}
-          >
-            <div className="toast-body">{t.body}</div>
-            {t.action && (
-              <button
-                className="toast-action"
-                onClick={async () => {
-                  try {
-                    await t.action!.onClick();
-                  } finally {
-                    dismiss(t.id);
-                  }
-                }}
-              >
-                {t.action.label}
-              </button>
-            )}
-            <button
-              className="close"
-              aria-label="Dismiss"
-              onClick={() => dismiss(t.id)}
-            >
-              ×
-            </button>
-          </div>
-        ))}
+      <div className="toaster" role="status" aria-live="polite" aria-atomic="false">
+        {polite.map(renderToast)}
+      </div>
+      <div
+        className="toaster toaster-assertive"
+        role="alert"
+        aria-live="assertive"
+        aria-atomic="false"
+      >
+        {assertive.map(renderToast)}
       </div>
     </ToastContext.Provider>
   );

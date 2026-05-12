@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
+import { useDialogA11y } from "../dialogA11y";
+import { formatError } from "../formatError";
+
 interface Props {
   title: string;
   /** What we're renaming, e.g. "document" or "folder". Used in the
@@ -21,13 +24,18 @@ export function RenameDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const { dialogProps, rootRef, titleId } = useDialogA11y({
+    onEscape: () => {
+      if (!busy) onCancel();
+    },
+    initialFocusRef: inputRef,
+  });
 
   // Pre-select the current name (without extension when there's a dot
   // before the last segment) so the user can just start typing.
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    el.focus();
     const dot = initialName.lastIndexOf(".");
     if (dot > 0 && dot < initialName.length - 1) {
       el.setSelectionRange(0, dot);
@@ -52,16 +60,21 @@ export function RenameDialog({
     try {
       await onSubmit(trimmed);
     } catch (err) {
-      setError(String(err));
+      setError(formatError(err));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>{title}</h2>
+    <div className="modal-backdrop" onClick={() => !busy && onCancel()}>
+      <div
+        className="modal"
+        onClick={(e) => e.stopPropagation()}
+        ref={rootRef}
+        {...dialogProps}
+      >
+        <h2 id={titleId}>{title}</h2>
         <p className="muted">
           The new name syncs to the tablet on the next sync.
         </p>
@@ -69,12 +82,17 @@ export function RenameDialog({
           <input
             ref={inputRef}
             type="text"
+            aria-label={kind === "folder" ? "Folder name" : "Document name"}
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={busy}
             placeholder={kind === "folder" ? "Folder name" : "Document name"}
           />
-          {error && <div className="error inline">{error}</div>}
+          {error && (
+            <div className="error inline" role="alert">
+              {error}
+            </div>
+          )}
           <div className="actions">
             <button type="button" onClick={onCancel} disabled={busy}>
               Cancel
