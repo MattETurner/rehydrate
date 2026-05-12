@@ -26,7 +26,19 @@ pub struct AppConfig {
     /// get the localhost defaults on first launch after upgrading.
     #[serde(default)]
     pub ollama: OllamaConfig,
+    /// Schema-migration counter. Bumped each time we ship a
+    /// one-shot transformation of an on-disk field. `load()` runs
+    /// migrations up to `CURRENT_SCHEMA` and rewrites the file. A
+    /// missing field reads back as `0` (pre-migration), so older
+    /// configs flow through every migration exactly once.
+    #[serde(default)]
+    pub schema_version: u32,
 }
+
+/// Latest migration version recognised by this build. See
+/// `migrate()` for the per-step transformations applied when a
+/// config on disk lags behind.
+const CURRENT_SCHEMA: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaConfig {
@@ -35,9 +47,11 @@ pub struct OllamaConfig {
     /// run themselves (e.g. a GPU box on their LAN).
     pub base_url: String,
     /// The model tag passed to `/api/generate`. The curated UI
-    /// dropdown surfaces `qwen2.5vl:3b` and `qwen2.5vl:7b`, plus a
-    /// "Custom…" free-text option for anything else the user has
-    /// `ollama pull`ed.
+    /// dropdown surfaces `qwen3.5:4b` (default — fast, enough
+    /// power for handwritten notebooks) and `qwen3.5:9b` (sharper
+    /// at dense cursive + math, slower), plus a "Custom…" free-
+    /// text option for anything else the user has `ollama
+    /// pull`ed.
     pub model: String,
     /// When true, the app kicks off a background OCR sweep at
     /// startup: every live document whose current version doesn't
@@ -122,10 +136,51 @@ pub fn load() -> AppConfig {
     let Some(path) = config_path() else {
         return AppConfig::default();
     };
-    match fs::read(&path) {
+    let mut cfg: AppConfig = match fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(_) => AppConfig::default(),
+        Err(_) => return AppConfig::default(),
+    };
+    if migrate(&mut cfg) {
+        // One-shot migration rewrote a field — persist so we don't
+        // run the same step again on the next launch. Save errors
+        // are non-fatal here: the migration ran in memory, the
+        // user gets the new behaviour this session, and we'll
+        // retry on next launch.
+        let _ = save(&cfg);
     }
+    cfg
+}
+
+/// Applies pending schema migrations to `cfg` in place. Returns
+/// `true` if anything changed (so the caller can re-persist).
+///
+/// Migrations are append-only: bump `CURRENT_SCHEMA`, add a step
+/// that reads `cfg.schema_version` and transforms forward by one,
+/// and set `cfg.schema_version` to the new number at the end of
+/// the step. Each step must be idempotent in case the prior
+/// `save()` failed and we re-enter on the next launch.
+fn migrate(cfg: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    // v0 → v1: the `qwen3.5:9b` tier ships in the curated picker
+    // but is wildly slower on CPU than `qwen3.5:4b` while
+    // producing comparable transcripts on most handwritten
+    // notebooks. Users who picked `:9b` before we tuned the
+    // streaming OCR path (May 2026) tended to do so because it
+    // was the only Qwen 3.5 tier surfaced on day one; rewrite
+    // those to `:4b`. Anyone who genuinely wants the heavy tier
+    // can re-pick it in Settings → Ollama and the new value
+    // sticks because `schema_version` already moved past 1.
+    if cfg.schema_version < 1 {
+        if cfg.ollama.model == "qwen3.5:9b" {
+            cfg.ollama.model = "qwen3.5:4b".to_string();
+        }
+        cfg.schema_version = 1;
+        changed = true;
+    }
+
+    debug_assert!(cfg.schema_version <= CURRENT_SCHEMA);
+    changed
 }
 
 pub fn save(cfg: &AppConfig) -> Result<(), std::io::Error> {

@@ -143,7 +143,7 @@ export function SettingsOllamaTab({ notify }: Props) {
         default reHydrate looks for it on{" "}
         <code>http://localhost:11434</code>; point this at a remote box on
         your LAN if you run Ollama elsewhere. Pull a model first with{" "}
-        <code>ollama pull {effectiveModel || "qwen2.5vl:3b"}</code>.
+        <code>ollama pull {effectiveModel || "qwen3.5:4b"}</code>.
       </p>
       <label>
         Base URL
