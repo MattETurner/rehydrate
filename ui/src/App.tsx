@@ -232,6 +232,11 @@ export function App() {
     return () => {
       cancelled = true;
     };
+    // The setters and refresh callbacks are stable references from
+    // their respective hooks; this effect should run exactly once,
+    // at mount. Listing them would inflate the dep array without
+    // changing behaviour.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // The `device:reachable` listener lives in `useDeviceSync`; see
@@ -620,6 +625,10 @@ export function App() {
         setError(formatError(e));
       }
     },
+    // `bulkArchive` and `bulkMove` are declared further down in this
+    // module and are captured via closure; including them here would
+    // force a re-render every keystroke without changing behaviour.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [documents, folders, refreshLibrary, toast, animateOutThenRefresh, view],
   );
 

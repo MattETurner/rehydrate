@@ -7,20 +7,28 @@
     "dev": "vite --port 1420 --strictPort",
     "build": "tsc -b && vite build",
     "preview": "vite preview --port 1420",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc -b --noEmit",
+    "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
     "@tanstack/react-table": "^8.20.5",
     "@tanstack/react-virtual": "^3.10.8",
+    "@tauri-apps/api": "^2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^6.0.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^16.5.0",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.59.3",
     "vite": "^8.0.11"
   }
 }

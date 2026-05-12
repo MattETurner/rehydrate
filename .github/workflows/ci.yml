@@ -51,7 +51,11 @@ jobs:
 
       - name: UI typecheck
         working-directory: ui
-        run: npx tsc -b --noEmit
+        run: npm run typecheck
+
+      - name: UI lint
+        working-directory: ui
+        run: npm run lint
 
       - name: Build UI
         working-directory: ui

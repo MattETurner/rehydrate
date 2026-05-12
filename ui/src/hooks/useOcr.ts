@@ -203,7 +203,6 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
     const probe = await ipc.pingOllama(cfg.base_url);
     if (!stillOurs()) return;
     if (!probe.ok) {
-      // eslint-disable-next-line no-console
       console.info(
         `Auto-OCR sweep skipped: Ollama not reachable at ${cfg.base_url}`,
       );
@@ -242,7 +241,6 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
         const unconfigured = parseOllamaUnconfigured(e);
         if (unconfigured) {
           // Ollama went away mid-sweep — stop quietly.
-          // eslint-disable-next-line no-console
           console.info(
             `Auto-OCR sweep aborted mid-pass: ${unconfigured.message}`,
           );
@@ -252,7 +250,6 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
         // Per-doc failure (render error, etc.) — skip and continue.
         // The id is enough to locate the doc in the library; the
         // visible name is deliberately not logged.
-        // eslint-disable-next-line no-console
         console.warn(`Auto-OCR skipped doc ${c.documentId}: ${e}`);
         skipped += 1;
       }

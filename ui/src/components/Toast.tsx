@@ -76,9 +76,16 @@ export function Toaster({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
+    // Snapshot the Map ref into a local at effect-mount time so the
+    // cleanup function references the same instance it observed
+    // (lint flags reading `.current` directly in cleanup because the
+    // ref may have been swapped between mount and unmount). The
+    // Toaster only ever stores `Map`s in this ref, so the snapshot
+    // is safe.
+    const timers = timersRef.current;
     return () => {
-      for (const t of timersRef.current.values()) clearTimeout(t);
-      timersRef.current.clear();
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
     };
   }, []);
 
