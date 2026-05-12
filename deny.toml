@@ -10,10 +10,84 @@ no-default-features = false
 
 [advisories]
 # Fail on any unmaintained / yanked / vulnerable crate by default.
-# `cargo audit` runs alongside this; both are wired in CI so a new
-# advisory turns the workflow yellow without blocking merges.
+# `cargo audit` runs alongside this; both are wired in CI.
 yanked = "warn"
-ignore = []
+
+# Every entry below is paired with a written rationale. `cargo deny`
+# enforces the presence of the `reason` field on each ignore, which
+# makes the review trail obvious.
+ignore = [
+  # rsa 0.10.0-rc.16 — Marvin attack timing sidechannel (medium).
+  #
+  # Pulled via russh-keys → ssh-key → rsa. The 0.10 line is itself
+  # the upstream iteration adding constant-time, but the advisory
+  # remains open while the work lands. No alternative release is
+  # available; pinning russh to an older rsa would lose other
+  # unrelated security fixes.
+  #
+  # Mitigation: reHydrate's SSH path connects only to the device
+  # over USB-ethernet at 10.11.99.1. The threat model is "did the
+  # user plug the right device in", not a network-attached RSA
+  # timing oracle. Re-evaluate when russh publishes a release that
+  # picks up a stabilised `rsa` crate.
+  { id = "RUSTSEC-2023-0071", reason = "russh transitive; USB-only SSH path; constant-time fix tracked upstream" },
+
+  # gtk-rs GTK3 bindings — unmaintained.
+  #
+  # Pulled by Tauri's Linux build glue. We ship macOS only; the
+  # Linux feature surface is never exercised in our shipped
+  # binary. Tauri tracks the GTK4 migration upstream.
+  { id = "RUSTSEC-2024-0411", reason = "Tauri Linux glue (gdkwayland-sys); we ship macOS only" },
+  { id = "RUSTSEC-2024-0412", reason = "Tauri Linux glue (gdk); we ship macOS only" },
+  { id = "RUSTSEC-2024-0413", reason = "Tauri Linux glue (atk); we ship macOS only" },
+  { id = "RUSTSEC-2024-0414", reason = "Tauri Linux glue (gdkx11-sys); we ship macOS only" },
+  { id = "RUSTSEC-2024-0415", reason = "Tauri Linux glue (gtk); we ship macOS only" },
+  { id = "RUSTSEC-2024-0416", reason = "Tauri Linux glue (atk-sys); we ship macOS only" },
+  { id = "RUSTSEC-2024-0417", reason = "Tauri Linux glue (gdkx11); we ship macOS only" },
+  { id = "RUSTSEC-2024-0418", reason = "Tauri Linux glue (gdk-sys); we ship macOS only" },
+  { id = "RUSTSEC-2024-0419", reason = "Tauri Linux glue (gtk3-macros); we ship macOS only" },
+  { id = "RUSTSEC-2024-0420", reason = "Tauri Linux glue (gtk-sys); we ship macOS only" },
+  { id = "RUSTSEC-2024-0429", reason = "glib iterator unsoundness; gtk-rs Linux path; we ship macOS only" },
+
+  # bincode 1.x — unmaintained.
+  #
+  # Pulled by Tauri internals (state restore + window save). Tauri
+  # owns the bincode 2.x migration; we don't drive the choice.
+  { id = "RUSTSEC-2025-0141", reason = "Tauri internal; upstream owns the bincode 2.x migration" },
+
+  # fxhash — unmaintained.
+  #
+  # Pulled transitively by gtk-rs and Tauri. No CVE; just stale.
+  { id = "RUSTSEC-2025-0057", reason = "transitive via Tauri; no CVE, just unmaintained" },
+
+  # kuchiki — unmaintained.
+  #
+  # Pulled via `printpdf` for HTML title parsing during PDF
+  # rendering. No CVE; we'd need to replace printpdf to escape it.
+  { id = "RUSTSEC-2023-0019", reason = "via printpdf for HTML title parse during render; no CVE" },
+
+  # paste — unmaintained proc-macro. Used by transitive deps.
+  { id = "RUSTSEC-2024-0436", reason = "transitive proc-macro; no CVE" },
+
+  # proc-macro-error — unmaintained.
+  { id = "RUSTSEC-2024-0370", reason = "transitive; no CVE" },
+
+  # unic-* — unmaintained Unicode-table crates. Pulled via the URL
+  # parser's IDNA path. Static tables; tiny API surface.
+  { id = "RUSTSEC-2025-0075", reason = "unic-char-range unmaintained; static Unicode tables" },
+  { id = "RUSTSEC-2025-0080", reason = "unic-common unmaintained; static Unicode tables" },
+  { id = "RUSTSEC-2025-0081", reason = "unic-char-property unmaintained; static Unicode tables" },
+  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained; static Unicode tables" },
+  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident unmaintained; static Unicode tables" },
+
+  # rand 0.7.3 — unsound with a custom logger using rand::rng().
+  #
+  # Pulled by `phf_generator` at build time only (the printpdf
+  # render path uses `phf` for static CSS-selector tables). Not in
+  # the runtime path; the advisory's precondition (custom global
+  # logger) doesn't apply.
+  { id = "RUSTSEC-2026-0097", reason = "build-time only via phf_generator; not in runtime path" },
+]
 
 [licenses]
 # Project ships dual MIT OR Apache-2.0. Permissive licenses are the
@@ -34,6 +108,12 @@ allow = [
   "BSL-1.0",
   "CC0-1.0",
   "OpenSSL",
+  # NCSA — University of Illinois / NCSA Open Source License.
+  # Pulled in by `libfuzzer-sys` (only via `libfuzzer-sys` →
+  # `arbitrary` chains; not actually exercised in our shipped
+  # binary). OSI-approved permissive license; functionally
+  # equivalent to MIT/Apache-2.0 for our distribution purposes.
+  "NCSA",
 ]
 confidence-threshold = 0.8
 
@@ -42,11 +122,17 @@ confidence-threshold = 0.8
 # minor of `thiserror`, our code pulls another, etc.). Warn so we
 # notice rather than blocking.
 multiple-versions = "warn"
+# Wildcard version pins are forbidden — except for the workspace's
+# own path dependencies, which `cargo deny` treats as wildcards
+# because their version is implicit (whatever's checked out in the
+# workspace). Without this allowance, every internal `path = "..."`
+# dep would trip `wildcards = "deny"`.
 wildcards = "deny"
-# Explicit `openssl` ban: every networked crate in the workspace uses
-# `ureq` (rustls) or `russh` (custom crypto). If openssl ever appears
-# in `Cargo.lock`, something pulled it in and the audit should catch it
-# before we ship a binary that links libssl.
+allow-wildcard-paths = true
+# Explicit `openssl` ban: every networked crate in the workspace
+# uses `ureq` (rustls) or `russh` (custom crypto). If openssl ever
+# appears in `Cargo.lock`, something pulled it in and the audit
+# should catch it before we ship a binary that links libssl.
 deny = [
   { name = "openssl-sys" },
   { name = "openssl" },

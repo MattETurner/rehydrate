@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 description = "reHydrate's host-pinned, redirect-refusing ureq agent shared by the OCR and publish layers."
 
 [dependencies]

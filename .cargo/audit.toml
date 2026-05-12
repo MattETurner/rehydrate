@@ -1,0 +1,46 @@
+# cargo-audit configuration.
+#
+# Mirrors the `[advisories] ignore = [...]` block in `deny.toml`.
+# Both tools consume the same RustSec advisory feed but configure
+# their ignores separately, so this file keeps `cargo audit` and
+# `cargo deny check advisories` in lockstep locally and in CI.
+#
+# When adding or removing an ignore, edit both files together — the
+# `reason` field in `deny.toml` is authoritative for why; the entry
+# here only needs to repeat the ID.
+
+[advisories]
+ignore = [
+  # rsa Marvin attack — see deny.toml for the full rationale.
+  "RUSTSEC-2023-0071",
+  # gtk-rs GTK3 bindings unmaintained — Linux path we don't ship.
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  "RUSTSEC-2024-0429",
+  # bincode 1.x unmaintained — Tauri internal.
+  "RUSTSEC-2025-0141",
+  # fxhash unmaintained — transitive via Tauri.
+  "RUSTSEC-2025-0057",
+  # kuchiki unmaintained — via printpdf for HTML title parse.
+  "RUSTSEC-2023-0019",
+  # paste unmaintained — transitive proc-macro.
+  "RUSTSEC-2024-0436",
+  # proc-macro-error unmaintained.
+  "RUSTSEC-2024-0370",
+  # unic-* unmaintained — static Unicode tables.
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
+  # rand 0.7 unsound w/ custom logger — build-time via phf_generator.
+  "RUSTSEC-2026-0097",
+]

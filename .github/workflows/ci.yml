@@ -76,8 +76,12 @@ jobs:
   audit:
     name: Supply chain audit
     runs-on: macos-14
-    # Don't gate merges on transient advisory updates; surface them as
-    # warnings on the PR while keeping the main `rust` job authoritative.
+    # Soft-gate: a new advisory landing between commits shouldn't
+    # block a merge that's otherwise green. `cargo deny check` and
+    # `cargo audit` both read from `.cargo/audit.toml` + `deny.toml`,
+    # which carry the triage rationale for each ignored advisory.
+    # The audit job stays green for known-and-justified advisories
+    # and goes yellow when a genuinely new one lands.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -89,8 +93,15 @@ jobs:
           cargo install --locked cargo-audit
           cargo install --locked cargo-deny
 
+      # `cargo audit` reads ignores from `.cargo/audit.toml`. With
+      # `--deny warnings` a green run means "no unmaintained or
+      # vulnerable crate that we haven't already triaged."
       - name: cargo audit
         run: cargo audit --deny warnings
 
+      # `cargo deny check` covers advisories + license drift + the
+      # banned-crate list (openssl, native-tls). Configured in
+      # `deny.toml`; ignores carry a `reason` field that's required
+      # by cargo-deny for each entry.
       - name: cargo deny
         run: cargo deny check

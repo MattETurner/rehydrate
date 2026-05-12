@@ -19,6 +19,11 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dm807cam/rehydrate"
 rust-version = "1.82"
+# Workspace crates are application code; none are intended for
+# crates.io publication. Marking them `publish = false` also lets
+# `cargo deny`'s `allow-wildcard-paths` apply to internal
+# path-dep wildcards.
+publish = false
 
 [workspace.dependencies]
 anyhow = "1"

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 description = "reHydrate publish layer: post OCR transcripts as drafts to Ghost / WordPress."
 
 [dependencies]
