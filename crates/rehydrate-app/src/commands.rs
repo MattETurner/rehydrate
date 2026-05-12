@@ -600,9 +600,20 @@ pub async fn open_document(
         // Cache key includes a layout version suffix so bumping the
         // assembly logic invalidates stale previews automatically.
         // Bump this when the renderer changes shape (filtering,
-        // layout, font metrics, …) so stale notebook previews
-        // invalidate automatically.
-        const PREVIEW_LAYOUT_VERSION: &str = "ink-v16";
+        // layout, font metrics, …) — or when a parser regression
+        // causes cached fallbacks to be written for notebooks that
+        // should render correctly.
+        //
+        // v17 (this bump): the phase-4 bitreader bounds guard
+        // returned `ParseErrorKind::InvalidInput` instead of `Io`,
+        // breaking `Bitreader::eof()` and causing every notebook
+        // parse to error out. The render path caught the error and
+        // wrote a blurry thumbnail-fallback PDF to cache. Fixing
+        // the parser alone wouldn't recover those notebooks because
+        // the cache file still held the old fallback; the version
+        // suffix change invalidates every previously-cached preview
+        // so the freshly-fixed parser actually gets to run.
+        const PREVIEW_LAYOUT_VERSION: &str = "ink-v17";
         // Full manifest hash + document_id in the key — see the
         // PDF/EPUB branch above for why we no longer truncate.
         let p = cache_root.join(format!(
