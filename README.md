@@ -127,32 +127,31 @@ host you entered — never anywhere else.
 
 ## Building
 
-Prerequisites: Rust stable (≥ 1.82), Node.js 20.19+ or 22.12+, npm.
-
-```sh
-# Install UI deps and build static assets
-(cd ui && npm ci && npm run build)
-
-# Run the app
-cargo run -p rehydrate-app --release
-```
-
-For day-to-day dev with UI hot reload, install the Tauri CLI:
+Prerequisites: Rust stable (≥ 1.82), Node.js 20.19+ or 22.12+, npm,
+and (for bundle builds) the Tauri CLI:
 
 ```sh
 cargo install tauri-cli --version "^2.0.0"
-cargo tauri dev
 ```
 
-To produce a distributable `.dmg` locally:
+`./build.sh` is the one-liner. By default it produces a release
+`.dmg` + `.app` under `target/aarch64-apple-darwin/release/bundle/`
+— the same artefact the GitHub release workflow attaches to a tag.
 
 ```sh
-(cd ui && npm ci && npm run build)
-cargo tauri build -- --no-default-features
+./build.sh             # build the .dmg + .app bundle (release)
+./build.sh --open      # ... and reveal the bundle in Finder
+./build.sh --install   # ... and copy the .app to /Applications
+./build.sh --dev       # quick iteration: cargo run -p rehydrate-app --release
 ```
 
-`--no-default-features` strips the in-app webview inspector. The
-release workflow does the same — see `PACKAGING.md`.
+For day-to-day dev with UI hot reload, prefer `cargo tauri dev`
+(Vite serves the UI directly, no static bundle needed).
+
+The bundle path requires an Apple Silicon host and passes
+`--no-default-features` to strip the in-app webview inspector —
+the release workflow does the same. See `PACKAGING.md` for the
+full rationale and the manual `cargo tauri build` invocation.
 
 ## Testing against a real reMarkable
 

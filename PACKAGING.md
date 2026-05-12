@@ -42,19 +42,41 @@ the build itself.
 cargo install tauri-cli --version "^2.0.0"
 ```
 
-The UI bundle has to be built before `cargo tauri build` runs (the
-`frontendDist` in `crates/rehydrate-app/tauri.conf.json` points at
-`ui/dist/`, which `tauri build` reads but doesn't generate):
+`./build.sh` is the one-liner. By default it produces the same
+artefacts the release workflow attaches to a tag — a
+`reHydrate_<version>_aarch64.dmg` plus the unwrapped `.app` —
+under `target/aarch64-apple-darwin/release/bundle/`. It also prints
+the SHA256 of the `.dmg` so a local build can be compared against
+what CI would have shipped.
+
+```sh
+./build.sh             # produce the .dmg + .app
+./build.sh --open      # ... and reveal the bundle in Finder
+./build.sh --install   # ... and copy the .app to /Applications
+./build.sh --skip-ui   # reuse ui/dist (faster repeat builds)
+./build.sh --dev       # cargo run -p rehydrate-app --release (no bundle)
+./build.sh --dev --debug
+```
+
+The bundle mode requires an Apple Silicon host; the script refuses
+to run on x86_64 because the release pipeline ships ARM-only and a
+local Intel `.dmg` would produce something that won't run on the
+machines we actually ship to.
+
+If you'd rather drive `cargo tauri build` yourself, the equivalent
+manual invocation is:
 
 ```sh
 (cd ui && npm ci && npm run build)
-cargo tauri build -- --no-default-features
+cargo tauri build \
+  --target aarch64-apple-darwin \
+  --bundles app,dmg \
+  -- --no-default-features
 ```
 
-`./build.sh` runs the same UI build + `cargo run` for quick local
-iteration; it does *not* produce a bundle. `cargo tauri dev` runs the
-dev workflow with hot reload (Vite serves the UI directly, no static
-bundle needed).
+`cargo tauri dev` runs the hot-reload workflow with Vite serving
+the UI directly (no static bundle needed). Use it for iteration
+where you don't need a `.dmg`.
 
 Why no `beforeBuildCommand` in `tauri.conf.json`? In a Cargo
 workspace with `projectPath: crates/rehydrate-app`, `tauri-action`'s
