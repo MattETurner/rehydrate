@@ -9,6 +9,7 @@ members = [
     "crates/rehydrate-http",
     "crates/rehydrate-ocr",
     "crates/rehydrate-publish",
+    "crates/rehydrate-render",
     "tests-integration",
 ]
 

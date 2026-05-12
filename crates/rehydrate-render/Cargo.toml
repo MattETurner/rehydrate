@@ -1,0 +1,12 @@
+[package]
+name = "rehydrate-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "reHydrate notebook rendering: parse reMarkable v6 .rm files and emit multi-page A4 PDFs."
+
+[dependencies]
+image = { workspace = true }
+printpdf = { workspace = true }
+rm-parser = { path = "../rm-parser" }

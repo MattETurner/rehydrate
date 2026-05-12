@@ -626,7 +626,7 @@ pub async fn open_document(
                 for f in &rm_pages {
                     bufs.push(lib.read_blob(&f.sha256).map_err(err)?);
                 }
-                crate::notebook_pdf::build_pdf_from_rm_files(&doc.visible_name, &bufs).or_else(
+                rehydrate_render::build_pdf_from_rm_files(&doc.visible_name, &bufs).or_else(
                     |e| {
                         // .rm parse failed (older v3/v5 format we don't
                         // render, or corrupt page) — fall through to the
@@ -892,7 +892,7 @@ fn thumbnail_fallback_pdf(
     for f in &thumbs {
         pages.push(lib.read_blob(&f.sha256).map_err(err)?);
     }
-    crate::notebook_pdf::build_pdf_from_pngs(title, &pages)
+    rehydrate_render::build_pdf_from_pngs(title, &pages)
 }
 
 fn sanitize(name: &str) -> String {

@@ -5225,19 +5225,16 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 name = "rehydrate-app"
 version = "1.0.0"
 dependencies = [
- "anyhow",
  "base64 0.22.1",
  "directories",
- "image",
  "keyring",
- "printpdf",
  "pulldown-cmark",
  "rehydrate-core",
  "rehydrate-device",
  "rehydrate-ocr",
  "rehydrate-publish",
+ "rehydrate-render",
  "rehydrate-sync",
- "rm-parser",
  "secrecy",
  "serde",
  "serde_json",
@@ -5251,7 +5248,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "url",
 ]
 
 [[package]]
@@ -5332,6 +5328,15 @@ dependencies = [
  "time",
  "tiny_http",
  "tracing",
+]
+
+[[package]]
+name = "rehydrate-render"
+version = "1.0.0"
+dependencies = [
+ "image",
+ "printpdf",
+ "rm-parser",
 ]
 
 [[package]]

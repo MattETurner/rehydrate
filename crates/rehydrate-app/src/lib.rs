@@ -7,7 +7,6 @@ mod commands;
 mod config;
 mod keychain;
 mod logging;
-mod notebook_pdf;
 mod ocr_commands;
 mod state;
 mod util;
