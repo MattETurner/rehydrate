@@ -93,6 +93,48 @@ pub enum RenderError {
     Io(#[from] std::io::Error),
 }
 
+/// Return true iff the page has any stroke content worth handing to
+/// a vision-language model. We parse the `.rm` and look for at least
+/// one `SceneLineItem` block with a non-empty `points` vector.
+///
+/// Why this matters: VLMs (qwen3.5:4b in particular) hallucinate
+/// plausible essay-shaped prose when fed a pure-white canvas. The
+/// user reported this on a brand-new notebook — completely empty
+/// page → multi-paragraph generated text about "The Impact of
+/// Artificial Intelligence on Healthcare". The model is
+/// pattern-matching "page-in-a-paper" rather than transcribing.
+/// No amount of prompt engineering reliably suppresses this on
+/// blank input — the only robust fix is to never invoke the model
+/// for a blank page in the first place.
+///
+/// Parse failures and non-v6 files are conservatively treated as
+/// "no ink": the page renderer would also reject these, so passing
+/// them to OCR would produce a confusing error or hallucinated
+/// text either way.
+pub fn rm_page_has_ink(rm_bytes: &[u8]) -> bool {
+    let rm = match RemarkableFile::read(rm_bytes) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    match rm {
+        RemarkableFile::V6 { blocks, .. } => blocks.iter().any(|b| {
+            if let Block::SceneLineItem(item) = b {
+                // A `SceneLineItem` whose inner value is None means
+                // the line was removed in a later edit; only count
+                // present-and-non-empty strokes as ink.
+                item.item
+                    .value
+                    .as_ref()
+                    .map(|line| !line.points().is_empty())
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        }),
+        RemarkableFile::Other { .. } => false,
+    }
+}
+
 /// Render one `.rm` v6 page's strokes to PNG bytes, optimised for
 /// vision-LLM consumption. See module docs for the pipeline.
 pub fn render_rm_to_png(rm_bytes: &[u8]) -> Result<Vec<u8>, RenderError> {
@@ -436,6 +478,31 @@ mod tests {
     fn empty_rm_bytes_fail_with_parse_error() {
         let r = render_rm_to_png(b"");
         assert!(matches!(r, Err(RenderError::Parse(_))));
+    }
+
+    #[test]
+    fn rm_page_has_ink_is_false_for_header_only_v6() {
+        // 43-byte v6 header with no blocks — the shape of a freshly
+        // created notebook page. Pre-fix this fell through to the
+        // renderer, produced a pure-white PNG, and the VLM
+        // hallucinated essay text. The predicate must catch this.
+        let mut bytes = Vec::with_capacity(43);
+        bytes.extend_from_slice(b"reMarkable .lines file, version=6");
+        bytes.resize(43, b' ');
+        assert!(
+            !rm_page_has_ink(&bytes),
+            "header-only v6 file must report no ink",
+        );
+    }
+
+    #[test]
+    fn rm_page_has_ink_is_false_for_unparseable_bytes() {
+        // Defensive: parse failures count as "no ink" so we never
+        // hand garbage bytes to the model. The renderer would also
+        // error on these, but doing it here lets the OCR dispatcher
+        // skip the model call cleanly instead of erroring per-page.
+        assert!(!rm_page_has_ink(b""));
+        assert!(!rm_page_has_ink(b"not a remarkable file"));
     }
 
     #[test]

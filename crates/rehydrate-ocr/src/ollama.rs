@@ -105,6 +105,21 @@ impl OllamaBackend {
                 "The document is primarily in {lang}; default to that script if a glyph is ambiguous."
             ));
         }
+        // Anti-hallucination clause. Belt-and-suspenders for the
+        // primary fix in `rm_page_has_ink`: blank pages are filtered
+        // out by the renderer before they reach this prompt, but a
+        // page with only faint or near-empty strokes could still
+        // slip through. Without this line, qwen3.5:4b on a
+        // blank-looking canvas confabulates plausible essay text
+        // ("The Impact of Artificial Intelligence on Healthcare..."
+        // was the user-reported example). Empirically, models in
+        // the Qwen 3.5 family DO honour "return nothing" when it's
+        // stated this explicitly.
+        parts.push(
+            "If the image is blank, near-blank, or contains no readable handwriting / print, \
+             return an empty response — do not invent, summarise, or guess."
+                .to_string(),
+        );
         parts.push(
             "Output ONLY the transcription. No preamble, no commentary, no surrounding quotes."
                 .to_string(),

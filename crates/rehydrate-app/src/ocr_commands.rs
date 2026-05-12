@@ -397,25 +397,68 @@ pub async fn transcribe_document(
         ));
     }
 
-    // Render every page to PNG on a worker thread.
+    // Render every page to PNG on a worker thread. Pages with no
+    // ink are filtered out BEFORE the model is called — VLMs
+    // (qwen3.5:4b in particular) confabulate plausible essay-shape
+    // text when handed a pure-white canvas, and the user has hit
+    // that bug ("blank notebook → multi-paragraph fake transcript
+    // about AI in healthcare"). The blank indices are remembered
+    // so the output markdown still preserves page ordering — each
+    // skipped page becomes an empty entry in the same slot.
     let mut blobs = Vec::with_capacity(rm_pages.len());
     for f in &rm_pages {
         blobs.push(lib.read_blob(&f.sha256).map_err(err)?);
     }
-    let pages_png = tauri::async_runtime::spawn_blocking(move || {
-        let mut out = Vec::with_capacity(blobs.len());
-        for (idx, bytes) in blobs.iter().enumerate() {
-            match rehydrate_ocr::render_rm_to_png(bytes) {
-                Ok(png) => out.push(png),
-                Err(e) => {
-                    return Err(format!("page {idx} render failed: {e}"));
+    let total_pages = blobs.len();
+    let (pages_png, blank_mask) = tauri::async_runtime::spawn_blocking(
+        move || -> Result<(Vec<Vec<u8>>, Vec<bool>), String> {
+            let mut out = Vec::with_capacity(blobs.len());
+            let mut blank = Vec::with_capacity(blobs.len());
+            for (idx, bytes) in blobs.iter().enumerate() {
+                if !rehydrate_ocr::rm_page_has_ink(bytes) {
+                    blank.push(true);
+                    continue;
+                }
+                match rehydrate_ocr::render_rm_to_png(bytes) {
+                    Ok(png) => {
+                        out.push(png);
+                        blank.push(false);
+                    }
+                    Err(e) => {
+                        return Err(format!("page {idx} render failed: {e}"));
+                    }
                 }
             }
-        }
-        Ok::<Vec<Vec<u8>>, String>(out)
-    })
+            Ok((out, blank))
+        },
+    )
     .await
     .map_err(err)??;
+    let blank_count = blank_mask.iter().filter(|b| **b).count();
+    if pages_png.is_empty() {
+        // Every page in the notebook is blank. Returning an empty
+        // transcript with a frontmatter header lets the renderer
+        // show the "transcript exists but is empty" state instead
+        // of failing with a confusing error — and it locks in the
+        // page count so the user sees we did consider all N pages.
+        let model_name = format!("ollama/{}", ollama.model);
+        let now = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        let markdown = format!(
+            "---\nmodel: {model_name}\ncreated_at: {now}\nnote: skipped — all pages blank\n---\n\n"
+        );
+        let outcome = lib
+            .record_derived_artefact(&document_id, TRANSCRIPT_PATH, markdown.as_bytes())
+            .map_err(err)?;
+        return Ok(TranscriptSummary {
+            document_id,
+            version_id: outcome.version_id,
+            page_count: total_pages,
+            char_count: 0,
+            model: model_name,
+        });
+    }
 
     // Build the backend now that we know we have work to do. Cheap
     // (one AgentBuilder); fails fast on a bad URL so we surface the
@@ -483,11 +526,33 @@ pub async fn transcribe_document(
         markdown.push_str(&format!("language: {detected_lang}\n"));
     }
     markdown.push_str("---\n\n");
+    if blank_count > 0 {
+        // Record how many pages we skipped so the user can spot it
+        // in the transcript header without re-running OCR. Avoids
+        // the previous failure mode where blank pages produced
+        // hallucinated essay text indistinguishable from a real
+        // transcript.
+        markdown.push_str(&format!(
+            "note: {blank_count} blank page{} skipped\n",
+            if blank_count == 1 { "" } else { "s" }
+        ));
+    }
+    markdown.push_str("---\n\n");
     let mut total_chars = 0usize;
-    for (i, page) in pages.iter().enumerate() {
+    // Splice empty entries back into the output for skipped pages
+    // so the user-visible markdown still reflects the notebook's
+    // original page count.
+    let mut next_transcribed = pages.iter();
+    for (i, was_blank) in blank_mask.iter().enumerate() {
         if i > 0 {
             markdown.push_str("\n\n");
         }
+        if *was_blank {
+            continue;
+        }
+        let Some(page) = next_transcribed.next() else {
+            break;
+        };
         if !page.text.is_empty() {
             markdown.push_str(&page.text);
         }
@@ -504,7 +569,9 @@ pub async fn transcribe_document(
     Ok(TranscriptSummary {
         document_id,
         version_id: outcome.version_id,
-        page_count: pages.len(),
+        // Reports the full notebook page count so the user sees a
+        // truthful "X pages" tally regardless of how many were blank.
+        page_count: total_pages,
         char_count: total_chars,
         model: model_name,
     })

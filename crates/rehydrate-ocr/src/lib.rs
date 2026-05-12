@@ -18,7 +18,7 @@ pub mod progress;
 pub use backend::{Mock, OcrBackend, OcrCancel, OcrError, PageTranscript, TranscribeOptions};
 pub use http::{validate_remote_url, AgentError, RestrictedAgent};
 pub use ollama::OllamaBackend;
-pub use page_render::render_rm_to_png;
+pub use page_render::{render_rm_to_png, rm_page_has_ink};
 pub use progress::OcrProgressEvent;
 
 /// Default Ollama model identifier surfaced to the IPC layer and
