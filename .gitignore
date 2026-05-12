@@ -10,8 +10,7 @@ ui/dist/
 *.tsbuildinfo
 
 # Tauri
-crates/rmsync-app/gen/
-crates/rmsync-app/target/
+crates/rehydrate-app/target/
 
 # IDE / OS
 .DS_Store

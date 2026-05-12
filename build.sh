@@ -37,7 +37,10 @@ if [[ $BUILD_UI -eq 1 ]]; then
   echo "==> building UI bundle (ui/dist)"
   pushd ui >/dev/null
   if [[ ! -d node_modules ]]; then
-    npm install
+    # `npm ci` enforces lockfile parity; if the lock has drifted from
+    # `package.json` we want a hard failure here rather than a silent
+    # regenerate.
+    npm ci
   fi
   npm run build
   popd >/dev/null

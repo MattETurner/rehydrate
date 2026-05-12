@@ -1,10 +1,24 @@
-# reMarkable Sync — Implementation Plan
+# reHydrate — Architecture
+
+This document captures the design rationale behind the current
+codebase. It was originally written as a forward-looking
+implementation plan; the bulk has been preserved because the design
+held up, with section 12 ("Deferred to v2") updated to reflect what
+has since shipped.
 
 ## 1. Overview
 
-A cross-platform desktop application for Mac, Windows, and Linux that lets a user manage the documents on their reMarkable 2 tablet from their computer, without using the official cloud service. The app communicates with the device only over its built-in USB connection. It mirrors documents to a local library on the user's computer, keeps a full version history of every change using content-addressed storage, and lets the user push, pull, and restore documents at will.
+A macOS desktop application that lets a user manage the documents on
+their reMarkable 2 tablet from their computer, without using the
+official cloud service. The app communicates with the device only
+over its built-in USB connection. It mirrors documents to a local
+library on the user's computer, keeps a full version history of every
+change using content-addressed storage, and lets the user push, pull,
+and restore documents at will.
 
-The conceptual model is "iTunes for reMarkable" — a single trusted desktop app where the user's library lives, with the tablet as a synced satellite.
+The conceptual model is "iTunes for reMarkable" — a single trusted
+desktop app where the user's library lives, with the tablet as a
+synced satellite.
 
 ## 2. Goals and Non-Goals
 
@@ -16,13 +30,14 @@ The conceptual model is "iTunes for reMarkable" — a single trusted desktop app
 - Privacy-respecting: no telemetry, no third-party servers, no cloud component.
 - Honest handling of the device's actual data model — documents are trees of files, not single files, and the app must treat them that way.
 
-### Non-Goals for the first version
-- Rendering or previewing handwritten notes.
-- OCR or full-text search inside notes.
+### Non-Goals
 - Editing notes on the desktop.
-- Any cloud sync or remote access.
+- Any cloud sync or remote access between user machines.
 - Anything that would void the device's warranty (no firmware modification, no launcher mods).
 - Mobile clients.
+
+OCR and notebook rendering were originally deferred but were added in
+v1 — see §12.
 
 ## 3. User Stories
 
@@ -131,28 +146,49 @@ Cross-cutting: a read-only log of recent operations, accessible from any view, f
 
 A guiding principle: the UI should never lie about state. If the app does not know whether something synced, it says so. If the device is unreachable, the library remains fully usable in read-only mode.
 
-## 9. Cross-Platform Considerations
+## 9. Platform
 
-- **USB networking varies by OS.** On some platforms the device's network interface comes up automatically; on others it requires user acknowledgement or a driver step the first time. The first-run flow should detect this gracefully and provide platform-specific guidance, not a generic error.
-- **Portable library.** The library is a single self-contained directory: blob store, version logs, metadata, sync state — everything the app needs lives inside it. The user can move that directory between machines (different OS included) and point the app at it from the new machine, and it just works. The app stores no library data anywhere outside this directory. The directory's location defaults to a sensible per-platform path on first run but is fully user-configurable. Never hardcode path separators. Do not assume case-sensitive or case-insensitive filesystem behavior — name internal files by hash, treat user-visible names as metadata.
-- **Permissions.** The library directory contains personal documents. On platforms that support per-user permissions, default to user-only access.
-- **Background behavior.** OS conventions for "running in the background watching for a device" differ — menu bar item on Mac, system tray on Windows, varies by environment on Linux. Respect each platform's norms. The app must also work as a strictly foreground app for users who don't want background services.
+- **USB networking.** macOS brings the device's network interface up
+  automatically once the cable is connected. The reachability watcher
+  (`rehydrate-app::commands::spawn_reachability_watcher`) probes
+  `10.11.99.1:22` and surfaces the result to the UI.
+- **Portable library.** The library is a single self-contained
+  directory: blob store, version logs, metadata, sync state —
+  everything the app needs lives inside it. The directory's location
+  defaults to a sensible path on first run but is fully
+  user-configurable. Names are hashes internally; user-visible names
+  live in manifests.
+- **Permissions.** The library directory contains personal documents
+  and defaults to user-only access. Secrets live in the macOS
+  keychain via the `keyring` crate, never on disk.
+- **Cross-platform stance.** v1 ships ARM-only macOS. The codebase
+  has no platform-specific business logic — Linux/Windows builds were
+  cut for distribution reasons, not because the code couldn't run
+  there. Sync, library, and version control behavior are platform-
+  agnostic by construction.
 - **Installers and updates.** Each platform has its norms. Sign and notarize where applicable. Auto-update should be opt-in and the app must function fully offline; it should never need to phone home for routine use.
 - **No platform-specific business logic.** All platform differences should be confined to a thin adapter layer. Sync, library, and version control behavior must be identical everywhere.
 
-## 10. Phased Delivery
+## 10. Delivery history
 
-Each phase ends with the app in a state the user could actually rely on, even if features are still missing.
+Each phase ended with the app in a state the user could actually rely
+on. As of v1.0:
 
-**Phase 1 — Read-only mirror.** Detect the device. List its contents. Pull everything to a local library, hashing as it goes, building the blob store and version log. No push, no restore. Already useful as a backup tool.
+- **Phase 1 — Read-only mirror.** Device detection, content listing,
+  pull-only, blob store + version log. _Done._
+- **Phase 2 — History and export.** Version-log UI, export-any-past-
+  version. _Done._
+- **Phase 3 — Push and two-way sync.** Upload, change detection,
+  conflict handling that preserves losers in the version log.
+  _Done._
+- **Phase 4 — Library management.** PDF/EPUB import, folders,
+  archive-with-restore, garbage collection. _Done._
+- **Phase 5 — Polish.** Background watching, operation log,
+  `Verify` integrity check, OCR (originally v2-deferred), publishing
+  to Ghost/WordPress. _Done._
 
-**Phase 2 — History and export.** Expose the version log in the UI. Let the user export any past version of any document as a regular file on disk. The app is now also a time machine.
-
-**Phase 3 — Push and two-way sync.** Add upload. Add change detection on the library side. Add conflict handling, preserving losers in history. The app is now a full sync tool.
-
-**Phase 4 — Library management.** Drag-and-drop import of PDFs and EPUBs. Folder management. Deletion with undo via version history. Garbage collection of unreferenced blobs.
-
-**Phase 5 — Polish.** Signed installers for each platform. Background watching. Scheduled syncs. Operation log and diagnostics. Library integrity checks.
+Signed-installer / notarization is the headline remaining v1.x
+polish item — see `PACKAGING.md`.
 
 ## 11. Testing Strategy
 
@@ -162,16 +198,25 @@ Each phase ends with the app in a state the user could actually rely on, even if
 - Manual testing matrix on real hardware on each supported OS for each release. The fake covers logic; real hardware covers transport and platform quirks.
 - Maintain a privacy invariant: an automated check that no build artifact attempts outbound network activity to anything other than the device. The expected count of external network destinations is, and stays, zero.
 
-## 12. Deferred to v2
+## 12. Originally deferred to v2 — current status
 
-The following are explicitly out of scope for v1 and reserved for a future version. The implementation should not paint itself into a corner that makes them harder later, but should not implement them now either.
-
-- **Encryption at rest** for the library. v1 relies on OS-level full-disk encryption for users who need it. The library directory itself is unencrypted. The data model should be designed such that wrapping blob and manifest reads/writes in an encryption layer later is straightforward.
-- **Multi-computer sync against the same device.** v1 assumes one library, one device. Document this limitation visibly in the UI. The sync state model should not actively prevent this from being added later.
-- **Note rendering, OCR, and full-text search.** Not in v1. The blob store keeps the raw files, so all of these become possible to add later without touching the storage layer.
-- **Command-line interface.** v1 is GUI only. Internal modules should be cleanly separated from the UI, so that adding a CLI later is a matter of building a new entry point on top of existing logic, not rearchitecting.
-- **Mobile clients.** Not in v1.
-
----
-
-End of plan.
+- **Encryption at rest** for the library. _Still deferred._ v1
+  relies on OS-level full-disk encryption (FileVault). The data
+  model is shaped so wrapping blob/manifest reads/writes in an
+  encryption layer later remains a layered change.
+- **Multi-computer sync against the same device.** _Still deferred._
+  v1 assumes one library, one device. The sync state model does not
+  prevent this from being added later.
+- **Note rendering and OCR.** _Shipped in v1._ Notebook rendering
+  lives in `crates/rm-parser` (parses reMarkable v6) and
+  `crates/rehydrate-app::notebook_pdf` (renders to PDF). OCR is a
+  separate crate, `crates/rehydrate-ocr`, talking to a user-supplied
+  Ollama daemon. Full-text search remains deferred.
+- **Publishing to a CMS.** _Shipped in v1._ `crates/rehydrate-publish`
+  posts OCR transcripts to Ghost or WordPress as drafts, via a
+  host-pinned HTTP client.
+- **Command-line interface.** _Still deferred._ All domain crates
+  (`rehydrate-core`, `rehydrate-device`, `rehydrate-sync`, etc.)
+  remain Tauri-independent, so adding a CLI later means a new
+  binary, not a refactor.
+- **Mobile clients.** _Still deferred._

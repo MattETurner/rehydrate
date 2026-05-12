@@ -1,28 +1,34 @@
 name: Release
 
-# Builds macOS installers for every `v*` tag and attaches them to a
-# draft GitHub Release. Manually publishing the draft makes the build
-# public — gives a chance to spot-check the artefacts before shipping.
+# Builds the macOS (Apple Silicon) installer for every `v*` tag and
+# attaches it to a draft GitHub Release, along with a SHA256SUMS file
+# so users can verify their download against the workflow logs.
+# Manually publishing the draft makes the build public — gives a chance
+# to spot-check the artefact before shipping.
 #
-# Outputs per tag:
-#   - macOS (Intel):         reHydrate_<ver>_x64.dmg, .app.tar.gz
-#   - macOS (Apple Silicon): reHydrate_<ver>_aarch64.dmg, .app.tar.gz
+# Output per tag:
+#   - reHydrate_<ver>_aarch64.dmg
+#   - reHydrate_<ver>_aarch64.app.tar.gz
+#   - SHA256SUMS
 #
 # Tag the release with `git tag v0.1.0 && git push --tags` to start a
 # build. Use `workflow_dispatch` for dry-runs that produce GitHub
 # workflow artefacts but no Release entry.
 #
-# Runs on a self-hosted macOS runner registered on the maintainer's
-# machine — GitHub-hosted macOS minutes are billed at 10× Linux, so we
-# build locally to keep costs at zero. Linux/Windows targets were
-# dropped for the same reason; reintroduce them by adding matrix
-# entries pointing at GitHub-hosted runners (or more self-hosted hosts).
+# Intel macs and Linux/Windows are intentionally unsupported.
 
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+
+# Don't let two simultaneous tag pushes interleave uploads on the same
+# draft release. `cancel-in-progress: false` because we want both tags
+# to ship eventually, just not concurrently.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -32,39 +38,19 @@ env:
 
 jobs:
   build:
-    name: ${{ matrix.label }}
-    runs-on: [self-hosted, macOS]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The `-- --no-default-features` separator passes the flag to
-          # the underlying cargo (tauri's CLI itself doesn't recognise
-          # it). Stripping `devtools` is mandatory for release: the
-          # renderer can call any Tauri command, so a shipped inspector
-          # would bypass every security boundary.
-          - label: macOS (Intel)
-            target: x86_64-apple-darwin
-            rust_targets: x86_64-apple-darwin
-            tauri_args: --target x86_64-apple-darwin --bundles app,dmg -- --no-default-features
-          - label: macOS (Apple Silicon)
-            target: aarch64-apple-darwin
-            rust_targets: aarch64-apple-darwin
-            tauri_args: --target aarch64-apple-darwin --bundles app,dmg -- --no-default-features
-
+    name: macOS (Apple Silicon)
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust_targets }}
+          targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # Separate cache per target so cross-target builds don't
-          # invalidate each other.
-          key: ${{ matrix.target }}
+          key: aarch64-apple-darwin
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -76,7 +62,7 @@ jobs:
 
       - name: Install UI deps
         working-directory: ui
-        run: npm ci || npm install
+        run: npm ci
 
       # Build the UI bundle explicitly here. We used to lean on
       # tauri.conf.json's `beforeBuildCommand` (`npm --prefix ../../ui
@@ -92,16 +78,23 @@ jobs:
         run: npm run build
 
       # Build + (when triggered by a tag) upload to a draft release at
-      # `${{ github.ref_name }}`. The action creates the release on the
-      # first runner that finishes and then uploads to it from the
-      # others, so all platforms end up attached to the same tag.
+      # `${{ github.ref_name }}`.
       #
       # tagName is empty when triggered by workflow_dispatch so
       # tauri-action just builds without creating a release named after
       # whatever branch was used to launch the run.
+      #
+      # The `-- --no-default-features` separator passes the flag to
+      # the underlying cargo (tauri's CLI itself doesn't recognise
+      # it). Stripping `devtools` is mandatory for release: the
+      # renderer can call any Tauri command, so a shipped inspector
+      # would bypass every security boundary.
+      #
+      # `tauri-action` is pinned to a specific minor rather than `@v0`
+      # so a downstream tag move can't quietly change our release path.
       - name: Build and release
         id: tauri
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.5.20
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -111,24 +104,61 @@ jobs:
           releaseBody: |
             Automated build for `${{ github.ref_name }}`.
 
-            **Downloads**
-            - macOS (Apple Silicon): `reHydrate_*_aarch64.dmg`
-            - macOS (Intel):         `reHydrate_*_x64.dmg`
+            **Download**
+            - macOS (Apple Silicon, 11.0+): the `.dmg` attached below.
 
             macOS builds are unsigned — first launch needs a right-click → Open
             to bypass Gatekeeper.
+
+            **Verifying the download:** `shasum -a 256 reHydrate_*.dmg` and
+            compare against `SHA256SUMS` (also attached). The hashes are
+            produced by this workflow run — see the build logs for an
+            independent confirmation.
+
+            See [SECURITY.md](https://github.com/dm807cam/rehydrate/blob/main/SECURITY.md)
+            for the threat model.
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.tauri_args }}
+          args: --target aarch64-apple-darwin --bundles app,dmg -- --no-default-features
 
-      # On manual runs (no release to attach to), surface the bundles
-      # as workflow artefacts so they can still be downloaded.
+      # Produce a SHA256SUMS file covering every bundle attached to the
+      # release. Without code signing this is the only out-of-band
+      # integrity check users have. `releaseId` is exposed by
+      # tauri-action when a tag triggered the build.
+      - name: Generate SHA256SUMS
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        id: sums
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          out="$(mktemp -d)/SHA256SUMS"
+          (
+            cd target/aarch64-apple-darwin/release/bundle/dmg
+            shasum -a 256 *.dmg >> "$out" 2>/dev/null || true
+          )
+          (
+            cd target/aarch64-apple-darwin/release/bundle/macos
+            shasum -a 256 *.app.tar.gz >> "$out" 2>/dev/null || true
+          )
+          echo "---"
+          cat "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Attach SHA256SUMS to release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && steps.tauri.outputs.releaseId != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" "${{ steps.sums.outputs.path }}" --clobber
+
+      # On manual runs (no release to attach to), surface the bundle
+      # as a workflow artefact so it can still be downloaded.
       - name: Upload workflow artefacts (manual runs only)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@v4
         with:
-          name: rehydrate-${{ matrix.target }}
+          name: rehydrate-aarch64-apple-darwin
           path: |
-            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: ignore
           retention-days: 14

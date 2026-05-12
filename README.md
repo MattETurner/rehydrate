@@ -6,9 +6,9 @@ The library lives in a single self-contained directory you control: every distin
 
 ## Status
 
-`v1.0.0` — first stable release. Bundles still ship **unsigned**; see
-[Installing](#installing) below for the Gatekeeper / SmartScreen
-right-click dance on first launch. Working features:
+`v1.0.0` — first stable release. macOS (Apple Silicon) only. Bundles
+ship **unsigned**; see [Installing](#installing) below for the
+Gatekeeper right-click dance on first launch. Working features:
 
 - Two-way sync (pull + push) over USB-SSH, with progress streamed live.
 - Content-addressed blob store, full version history, restore-any-version.
@@ -33,46 +33,32 @@ right-click dance on first launch. Working features:
   trigger mean transcripts never reach anywhere you didn't
   configure.
 
-Architecture notes are in `remarkable-sync-implementation-plan.md`;
+Architecture notes are in [`docs/architecture.md`](docs/architecture.md);
 release notes are in `CHANGELOG.md`; threat model and security
 posture in `SECURITY.md`.
 
 ## Installing
 
 reHydrate ships pre-built bundles on the [GitHub Releases][releases]
-page for macOS (Intel + Apple Silicon), Windows, and Linux. v1.0
-bundles are **unsigned** — buying code-signing certificates is on the
-roadmap for v1.1. Until then, the OS will warn on first launch:
+page for **macOS (Apple Silicon, 11.0+)**. Intel Macs, Windows, and
+Linux are not currently shipped as binaries — building from source
+works on all three; see [Building](#building) below.
 
-### macOS
+v1.0 bundles are **unsigned** — code-signing is on the roadmap for
+v1.1. Until then, macOS warns on first launch:
 
-1. Download the matching `.dmg` for your Mac (Intel or Apple Silicon).
-2. **Right-click the `.dmg`** (or Control-click) and choose **Open**.
-   *Don't* double-click — Gatekeeper will reject the unsigned bundle.
-3. Drag reHydrate to `/Applications`.
-4. The first time you launch the app, **right-click reHydrate in
+1. Download `reHydrate_<version>_aarch64.dmg` from the latest release.
+2. (Optional but recommended) Verify the download against
+   `SHA256SUMS`, which is also attached to the release:
+   `shasum -a 256 reHydrate_*.dmg` should match the corresponding
+   line in `SHA256SUMS`.
+3. **Right-click the `.dmg`** (or Control-click) and choose **Open**.
+   Don't double-click — Gatekeeper will reject the unsigned bundle.
+4. Drag reHydrate to `/Applications`.
+5. The first time you launch the app, **right-click reHydrate in
    `/Applications`** and choose **Open**. Confirm the "unidentified
    developer" warning. After this one-time bypass, normal
    double-click works.
-
-### Windows
-
-1. Download the `.msi` installer.
-2. Windows SmartScreen will warn "Windows protected your PC". Click
-   **More info → Run anyway** to proceed.
-3. Install and launch normally.
-
-### Linux
-
-The `.AppImage` works on most distributions out of the box — make it
-executable (`chmod +x`) and run. The `.deb` targets Debian/Ubuntu;
-install via `sudo dpkg -i reHydrate_*.deb`.
-
-On minimal Linux installs without `secret-service` (e.g.
-gnome-keyring), the app can't save your tablet's SSH password between
-sessions — you'll see a toast warning and need to type it on each
-connect. Install `gnome-keyring` or `KeePassXC`-with-secret-service
-to enable persistence.
 
 ## Updates
 
@@ -95,14 +81,13 @@ stays on hardware you control.
 
 ```sh
 # Install Ollama (or grab the installer from ollama.com/download).
-brew install ollama          # macOS
-# curl -fsSL https://ollama.com/install.sh | sh    # Linux
+brew install ollama
 
 # Pull a vision-language model. Pick one:
 ollama pull qwen3.5:4b       # default — ~3.4 GB, runs on 8 GB GPUs / M-series
 ollama pull qwen3.5:9b       # sharper at cursive + math — ~6.6 GB
 
-# Start the daemon (background service on macOS; `ollama serve` elsewhere).
+# Start the daemon (background service on macOS).
 ```
 
 Then open reHydrate, click the gear icon → **Settings → Ollama**,
@@ -111,9 +96,13 @@ in any document's three-dot menu starts a transcription. Progress is
 shown in a floating chip; results land in the Transcript drawer with
 Save-as-`.txt` / Save-as-`.md` and **Publish** actions.
 
-Pointing reHydrate at a different host (`http://192.168.1.10:11434`,
-etc.) is supported — useful if you keep a small machine on your LAN
-just for inference. Every request is host-pinned and refuses
+Pointing reHydrate at a different host is supported — useful if you
+keep a small machine on your LAN just for inference. The host must
+be reachable by name (give the box an mDNS / DNS entry, e.g.
+`https://ollama.lan:11434`, and terminate TLS in front of Ollama)
+because reHydrate refuses plain HTTP to anything other than
+`localhost` and refuses HTTPS to literal private IPs — both close
+SSRF-shaped paths. Every request is host-pinned and refuses
 redirects (see `SECURITY.md`).
 
 ## Publishing transcripts
@@ -132,17 +121,17 @@ host you entered — never anywhere else.
 
 ## Stack
 
-- **Core:** Rust workspace (`crates/rehydrate-core`, `rehydrate-device`, `rehydrate-sync`, `rehydrate-app`)
+- **Core:** Rust workspace (`crates/rehydrate-core`, `rehydrate-device`, `rehydrate-sync`, `rehydrate-app`, `rehydrate-ocr`, `rehydrate-publish`, `rm-parser`)
 - **UI:** Tauri 2 + Vite + React + TypeScript (`ui/`)
 - **Transport:** SSH/SFTP over USB-ethernet (`10.11.99.1`)
 
 ## Building
 
-Prerequisites: Rust stable, Node 20+, npm.
+Prerequisites: Rust stable (≥ 1.82), Node.js 20.19+ or 22.12+, npm.
 
 ```sh
 # Install UI deps and build static assets
-(cd ui && npm install && npm run build)
+(cd ui && npm ci && npm run build)
 
 # Run the app
 cargo run -p rehydrate-app --release
@@ -154,6 +143,16 @@ For day-to-day dev with UI hot reload, install the Tauri CLI:
 cargo install tauri-cli --version "^2.0.0"
 cargo tauri dev
 ```
+
+To produce a distributable `.dmg` locally:
+
+```sh
+(cd ui && npm ci && npm run build)
+cargo tauri build -- --no-default-features
+```
+
+`--no-default-features` strips the in-app webview inspector. The
+release workflow does the same — see `PACKAGING.md`.
 
 ## Testing against a real reMarkable
 
@@ -171,16 +170,20 @@ MARGINALIA_RM_PASSWORD='...' \
     --test full_pull_smoke -- --ignored --nocapture
 ```
 
-Packaging notes (signed installers, icons, notarization) are in
+Packaging notes (signing, notarization, release workflow) are in
 `PACKAGING.md`.
 
 ## Layout
 
 ```
 crates/
+  rm-parser/         reMarkable v6 binary file parser
   rehydrate-core/    blob store, manifests, version log
   rehydrate-device/  device transport: trait + fake + ssh
   rehydrate-sync/    sync engine
-  rehydrate-app/     tauri binary
-ui/               react frontend
+  rehydrate-ocr/     Ollama client + page rendering
+  rehydrate-publish/ Ghost / WordPress upload
+  rehydrate-app/     Tauri binary
+ui/                  React frontend
+docs/                architecture notes + landing page
 ```

@@ -24,11 +24,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["app", "dmg"],
     "category": "Productivity",
     "copyright": "Copyright © 2026 reHydrate contributors",
     "shortDescription": "iTunes for reMarkable — privacy-respecting USB sync",
-    "longDescription": "A cross-platform desktop app that mirrors a reMarkable 2 over USB into a content-addressed local library with full version history. No cloud, no telemetry.",
+    "longDescription": "A desktop app that mirrors a reMarkable 2 over USB into a content-addressed local library with full version history. No cloud, no telemetry.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -42,14 +42,6 @@
       "entitlements": null,
       "providerShortName": null,
       "signingIdentity": "-"
-    },
-    "windows": {
-      "certificateThumbprint": null,
-      "digestAlgorithm": "sha256",
-      "timestampUrl": ""
-    },
-    "linux": {
-      "deb": { "depends": [] }
     }
   }
 }

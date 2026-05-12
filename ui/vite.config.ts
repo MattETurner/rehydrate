@@ -16,6 +16,10 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
-    sourcemap: true,
+    // Source maps are valuable in dev (Vite serves them on demand) but
+    // shipping them in the release `.dmg` exposes the unminified React
+    // tree to anyone who unpacks the bundle. Vite only honors this flag
+    // for `vite build`, so dev still gets source maps via the dev server.
+    sourcemap: false,
   },
 });

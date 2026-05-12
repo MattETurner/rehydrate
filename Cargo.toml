@@ -48,3 +48,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+# Unwinding is not load-bearing in the app (every fallible path uses
+# `Result` / `thiserror`, every Tauri command maps panics to error
+# strings). Aborting on panic shaves a few percent off the binary and
+# eliminates the unwinder from the runtime.
+panic = "abort"

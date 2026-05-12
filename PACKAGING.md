@@ -3,24 +3,37 @@
 `cargo run -p rehydrate-app --release` runs the app from source. For
 distributable installers the project uses Tauri's bundler — locally
 via `cargo tauri build`, or in CI via the `Release` workflow which
-attaches signed-on-the-runner bundles to a draft GitHub Release.
+attaches built bundles to a draft GitHub Release.
+
+reHydrate v1.0 ships ARM-only macOS. Intel Macs, Windows, and Linux
+are not currently shipped as binaries; the code is platform-agnostic
+and builds locally on each, but the release pipeline produces a
+single `aarch64-apple-darwin` `.dmg`.
 
 ## Cutting a release
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
-The `.github/workflows/release.yml` workflow fans out to four
-runners — macOS Intel, macOS Apple Silicon, Linux (Ubuntu 22.04), and
-Windows — and uploads the produced `.dmg`, `.AppImage`, `.deb`, and
-`.msi` artefacts to a draft release at the tag. Review the artefacts,
+The `.github/workflows/release.yml` workflow runs on a GitHub-hosted
+`macos-14` (Apple Silicon) runner. For each tag it:
+
+1. Builds the UI bundle (`npm ci && npm run build`).
+2. Runs `cargo tauri build --target aarch64-apple-darwin --bundles
+   app,dmg -- --no-default-features`, producing
+   `reHydrate_<version>_aarch64.dmg` and an `.app.tar.gz` archive.
+3. Uploads both to a *draft* GitHub Release at the tag.
+4. Hashes the bundles with `shasum -a 256` and uploads a
+   `SHA256SUMS` file alongside them.
+
+Review the artefacts (and the workflow logs that emit the hashes),
 then click **Publish release** in the GitHub UI to make the build
 public.
 
-A manual `workflow_dispatch` run produces the same artefacts as
-ordinary workflow artefacts (no Release entry), useful for testing
+A manual `workflow_dispatch` run produces the same artefact as an
+ordinary workflow artefact (no Release entry), useful for testing
 the build itself.
 
 ## Prerequisites for local builds
@@ -34,12 +47,13 @@ The UI bundle has to be built before `cargo tauri build` runs (the
 `ui/dist/`, which `tauri build` reads but doesn't generate):
 
 ```sh
-(cd ui && npm install && npm run build)
-cargo tauri build
+(cd ui && npm ci && npm run build)
+cargo tauri build -- --no-default-features
 ```
 
-`./build.sh` does this end-to-end. `cargo tauri dev` runs the dev
-workflow with hot reload (Vite serves the UI directly, no static
+`./build.sh` runs the same UI build + `cargo run` for quick local
+iteration; it does *not* produce a bundle. `cargo tauri dev` runs the
+dev workflow with hot reload (Vite serves the UI directly, no static
 bundle needed).
 
 Why no `beforeBuildCommand` in `tauri.conf.json`? In a Cargo
@@ -50,21 +64,32 @@ build` then fails on every platform with `ENOENT package.json`.
 Pre-building the UI explicitly (in the workflow, in `build.sh`, or
 by hand) is more robust.
 
+## `--no-default-features` is mandatory
+
+The `devtools` feature on `rehydrate-app` is default-on so daily
+`cargo run` / `cargo tauri dev` works without flags. The release
+workflow must build with `--no-default-features` so shipped binaries
+don't expose the inspector to end users — the renderer can call any
+registered Tauri command, so an open DevTools is a security boundary
+skip. Both the workflow and the local-build snippets above include
+this flag.
+
 ## What's left
 
-### 1. Icons
+### Icons
 
-Done — the icon set is generated from `logo.png` via `tauri icon`:
+Done — the icon set is generated from `assets/logo.png` via
+`tauri icon`:
 
-- `icons/32x32.png`, `128x128.png`, `128x128@2x.png` (Linux/Generic)
+- `icons/32x32.png`, `128x128.png`, `128x128@2x.png` (generic)
 - `icons/icon.icns` (macOS)
-- `icons/icon.ico` (Windows)
+- `icons/icon.ico` (kept for future Windows builds)
 
-Regenerate with `npx @tauri-apps/cli icon logo.png` from
+Regenerate with `npx @tauri-apps/cli icon ../../assets/logo.png` from
 `crates/rehydrate-app/`. `bundle.active` is `true` in
 `crates/rehydrate-app/tauri.conf.json`.
 
-### 2. macOS signing + notarization
+### macOS signing + notarization
 
 `tauri.conf.json` ships with `signingIdentity: "-"` — the magic
 value that tells Tauri (and the underlying `codesign`) to **ad-hoc
@@ -103,39 +128,21 @@ Notarization requires environment variables at `tauri build` time:
 export APPLE_ID='you@example.com'
 export APPLE_PASSWORD='app-specific-password'
 export APPLE_TEAM_ID='ABCDE12345'
-cargo tauri build
+cargo tauri build -- --no-default-features
 ```
 
 The app makes no outbound network calls beyond `10.11.99.1` (the USB
-endpoint), so the default sandbox profile is fine.
+endpoint), the user-configured Ollama host, and the user-configured
+publishing host — see `SECURITY.md`. The default sandbox profile is
+fine.
 
-### 3. Windows signing
+### Verifying a build is clean
 
-In `tauri.conf.json` under `bundle.windows`:
+After `cargo tauri build`, the bundle lands in
+`target/aarch64-apple-darwin/release/bundle/dmg/`. Smoke checks
+before shipping:
 
-- `certificateThumbprint`: SHA1 thumbprint of the code-signing
-  certificate installed in the Windows certificate store.
-- `timestampUrl`: a public RFC 3161 timestamp server, e.g.
-  `http://timestamp.digicert.com`.
-
-### 4. Linux
-
-The default `bundle.targets: "all"` produces both `.deb` and `.AppImage`
-on Linux. The `bundle.linux.deb.depends` list is currently empty;
-add system packages here if Tauri's dependency detection misses any.
-
-### 5. Auto-update
-
-Not configured. The design says auto-update should be opt-in. When you
-add it, do not enable check-on-launch by default — keep the
-no-telemetry-out-of-the-box invariant.
-
-## Verifying a build is clean
-
-After `cargo tauri build`, the bundles land in
-`target/release/bundle/<format>/`. Smoke checks before shipping:
-
-1. Install the bundle on a clean VM.
+1. Install the bundle on a clean Mac (or a fresh user account).
 2. Launch with the device unplugged. Welcome screen renders, status
    pill shows "No tablet". App is fully usable for browsing an existing
    library in read-only mode.
@@ -143,6 +150,13 @@ After `cargo tauri build`, the bundles land in
    sync. Library list populates.
 4. Disconnect cable mid-sync. App reports the partial sync, library
    stays internally consistent (`Verify` reports zero issues).
-5. Manually invoke the privacy invariant test (`cargo test --test
-   no_egress` once it's added) to confirm the bundle attempts no
-   external network destinations besides `10.11.99.1`.
+5. Run the privacy-invariant test (`cargo test --test no_egress`) to
+   confirm the bundle attempts no external network destinations
+   besides `10.11.99.1`, the configured Ollama host, and the
+   configured publishing host.
+
+### Auto-update
+
+Not configured. The design says auto-update should be opt-in. When you
+add it, do not enable check-on-launch by default — keep the
+no-telemetry-out-of-the-box invariant.
