@@ -39,7 +39,14 @@ pub struct AppState {
 pub struct OllamaPing {
     pub at: Instant,
     pub base_url: String,
-    pub ok: bool,
+    /// Strictly: did the daemon answer the last probe? This is NOT
+    /// "model present" and NOT "OCR succeeded" — overloading the
+    /// field with those meanings is what caused users to see
+    /// spurious "Ollama unreachable" errors after a missing-model
+    /// status check or a single transient request failure. Every
+    /// writer must record reachability only; model availability is
+    /// a separate, recomputed-on-demand concern.
+    pub reachable: bool,
 }
 
 /// How long a successful `ping_ollama` result is trusted before a

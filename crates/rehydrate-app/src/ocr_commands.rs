@@ -100,7 +100,26 @@ fn validate_ollama_url(url_str: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn ping_ollama(base_url: String) -> Result<PingReport, String> {
+pub async fn ping_ollama(
+    base_url: String,
+    state: State<'_, AppState>,
+) -> Result<PingReport, String> {
+    let report = probe_ollama(base_url.clone()).await?;
+    // Every probe — whether from Settings → Test connection, from
+    // ocr_status, or from an internal call — must refresh the
+    // shared reachability cache. Without this the user can verify
+    // in Settings that the daemon is up, return to the library,
+    // hit Convert, and still be told it's unreachable for the
+    // full 30s cache TTL.
+    record_ping(&state, &base_url, report.ok).await;
+    Ok(report)
+}
+
+/// Internal probe that performs the HTTP call without touching
+/// the cache. Lets `ocr_status` re-use the same logic while only
+/// recording once at its own call site (and lets the test suite
+/// exercise the network shape without a `State` handle).
+async fn probe_ollama(base_url: String) -> Result<PingReport, String> {
     // Same scheme + loopback gate the save path enforces — probing
     // bypasses save, so without this the renderer could trigger
     // requests to e.g. cloud-metadata endpoints just by calling
@@ -114,7 +133,7 @@ pub async fn ping_ollama(base_url: String) -> Result<PingReport, String> {
     }
     // Spawn-blocking because ureq is sync. Short timeout for the
     // probe — the UI is waiting on this.
-    let report = tauri::async_runtime::spawn_blocking(move || -> PingReport {
+    tauri::async_runtime::spawn_blocking(move || -> PingReport {
         let agent = match rehydrate_ocr::RestrictedAgent::for_base_with_timeout(
             &base_url,
             std::time::Duration::from_secs(5),
@@ -138,6 +157,12 @@ pub async fn ping_ollama(base_url: String) -> Result<PingReport, String> {
                         models: parsed.models.into_iter().map(|m| m.name).collect(),
                     },
                     Err(e) => PingReport {
+                        // Daemon answered with 200 — still reachable
+                        // even if the body wasn't the JSON we expected
+                        // (older / forked builds, proxies). Treat as
+                        // reachable so we don't loop back to "Ollama
+                        // unreachable"; the empty model list surfaces
+                        // a clear "Model not pulled" path instead.
                         ok: true,
                         error: Some(format!(
                             "connected, but /api/tags returned unexpected JSON: {e}"
@@ -159,8 +184,7 @@ pub async fn ping_ollama(base_url: String) -> Result<PingReport, String> {
         }
     })
     .await
-    .map_err(err)?;
-    Ok(report)
+    .map_err(err)
 }
 
 #[tauri::command]
@@ -222,7 +246,11 @@ pub async fn ocr_status(state: State<'_, AppState>) -> Result<OcrStatusReport, S
     let ollama = config::load().ollama;
     let base = ollama.base_url.clone();
     let model = ollama.model.clone();
-    let probe = ping_ollama(base.clone()).await?;
+    let probe = probe_ollama(base.clone()).await?;
+    // Always record reachability — daemon answered or not — so a
+    // missing-model branch below doesn't lock the reachability
+    // cache into a false negative.
+    record_ping(&state, &base, probe.ok).await;
     if !probe.ok {
         return Ok(OcrStatusReport::Unreachable {
             base_url: base,
@@ -231,7 +259,6 @@ pub async fn ocr_status(state: State<'_, AppState>) -> Result<OcrStatusReport, S
         });
     }
     let model_present = probe.models.iter().any(|m| m == &model);
-    record_ping(&state, &base, model_present).await;
     if model_present {
         Ok(OcrStatusReport::Ready {
             base_url: base,
@@ -246,15 +273,23 @@ pub async fn ocr_status(state: State<'_, AppState>) -> Result<OcrStatusReport, S
     }
 }
 
-async fn record_ping(state: &State<'_, AppState>, base_url: &str, ok: bool) {
+/// Helpers take `&AppState` rather than `State<'_, AppState>` so
+/// the cache semantics are unit-testable without a Tauri runtime.
+/// Tauri's `State<T>` derefs to `&T`, so call sites pass `&state`
+/// from the IPC handlers unchanged.
+async fn record_ping(state: &AppState, base_url: &str, reachable: bool) {
     *state.last_ollama_ping.write().await = Some(OllamaPing {
         at: Instant::now(),
         base_url: base_url.to_string(),
-        ok,
+        reachable,
     });
 }
 
-async fn cached_ping_ok(state: &State<'_, AppState>, base_url: &str) -> Option<bool> {
+/// Returns the cached reachability of the daemon at `base_url`, or
+/// `None` if there's no recent probe to consult. Strictly
+/// reachability — the caller still has to handle "reachable but
+/// model missing" separately.
+async fn cached_reachable(state: &AppState, base_url: &str) -> Option<bool> {
     let guard = state.last_ollama_ping.read().await;
     let p = guard.as_ref()?;
     if p.base_url != base_url {
@@ -263,7 +298,7 @@ async fn cached_ping_ok(state: &State<'_, AppState>, base_url: &str) -> Option<b
     if p.at.elapsed() > OLLAMA_PING_TTL {
         return None;
     }
-    Some(p.ok)
+    Some(p.reachable)
 }
 
 // =====================================================================
@@ -304,7 +339,15 @@ pub async fn transcribe_document(
     // "open Settings → Ollama tab". A miss in the cache falls
     // through to the actual request, which surfaces the same error
     // shape via the backend.
-    if let Some(false) = cached_ping_ok(&state, &ollama.base_url).await {
+    //
+    // CRITICAL: the cache is *strictly* reachability now (see
+    // `OllamaPing::reachable`). Earlier versions overloaded it
+    // with "model present" or "OCR succeeded", which made
+    // failure modes like "wrong model name" poison the cache as
+    // "unreachable" for 30s and leave the user staring at an
+    // error while Settings → Test connection happily said
+    // everything was fine.
+    if let Some(false) = cached_reachable(&state, &ollama.base_url).await {
         return Err(unconfigured_error(
             &ollama.base_url,
             &ollama.model,
@@ -879,5 +922,83 @@ mod ollama_url_tests {
         assert!(validate_ollama_url("").is_err());
         assert!(validate_ollama_url("not a url").is_err());
         assert!(validate_ollama_url("http://").is_err());
+    }
+}
+
+#[cfg(test)]
+mod reachability_cache_tests {
+    //! Cache-semantics regressions. Three bugs cohabited the
+    //! earlier version of this file:
+    //!
+    //! 1. `OllamaPing::ok` was overloaded — `ocr_status` wrote
+    //!    `model_present` into the same field `transcribe_document`
+    //!    later read as "daemon reachable". A missing model thus
+    //!    locked the cache into a false negative for 30 s.
+    //!
+    //! 2. `ping_ollama` (the Settings → Test Connection IPC
+    //!    handler) didn't update the cache at all, so a user
+    //!    verifying the connection in Settings could not clear a
+    //!    stale negative reading.
+    //!
+    //! 3. The cache then short-circuited the next transcribe with
+    //!    "Ollama unreachable" while Settings simultaneously said
+    //!    everything was fine — exactly the symptom the user
+    //!    reported.
+    //!
+    //! These tests pin the contract that prevents the regression.
+    use super::*;
+    use crate::state::AppState;
+
+    #[tokio::test]
+    async fn record_ping_persists_reachable_flag_per_base_url() {
+        let state = AppState::new();
+        assert_eq!(
+            cached_reachable(&state, "http://localhost:11434").await,
+            None
+        );
+
+        record_ping(&state, "http://localhost:11434", true).await;
+        assert_eq!(
+            cached_reachable(&state, "http://localhost:11434").await,
+            Some(true),
+        );
+
+        // Switching base URL invalidates the cached reading — the
+        // user may have edited Settings between probes.
+        assert_eq!(cached_reachable(&state, "http://remote:11434").await, None);
+
+        record_ping(&state, "http://localhost:11434", false).await;
+        assert_eq!(
+            cached_reachable(&state, "http://localhost:11434").await,
+            Some(false),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_probe_clears_a_prior_unreachable_cache() {
+        // Models the user's reported flow: an earlier OCR run wrote
+        // `reachable: false` (network blip, daemon restart, etc.),
+        // then the user hit Settings → Test Connection and saw a
+        // success. The next OCR start must NOT short-circuit on
+        // the stale negative reading — `ping_ollama` is required
+        // to refresh the cache from any call site, which means a
+        // subsequent `record_ping(true)` overwrites the prior
+        // `false`. The bug was that `ping_ollama` never wrote to
+        // the cache, leaving the old `false` in place.
+        let state = AppState::new();
+        record_ping(&state, "http://localhost:11434", false).await;
+        assert_eq!(
+            cached_reachable(&state, "http://localhost:11434").await,
+            Some(false),
+        );
+
+        // Settings' Test Connection now succeeds → must replace
+        // the negative reading, not coexist with it.
+        record_ping(&state, "http://localhost:11434", true).await;
+        assert_eq!(
+            cached_reachable(&state, "http://localhost:11434").await,
+            Some(true),
+            "a fresh successful probe must overwrite a stale negative cache",
+        );
     }
 }
