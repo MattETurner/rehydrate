@@ -722,8 +722,12 @@ pub async fn create_folder(
         .map_err(err)
 }
 
-/// Move and/or reorder a folder in the sidebar. Local-only — folder
-/// order is not represented on the device.
+/// Move and/or reorder a folder in the sidebar. Sort order is
+/// local-only (the tablet has no notion of sibling order), but
+/// reparenting (changing `new_parent`) IS represented on the device
+/// through each folder's `<uuid>.metadata` `parent` field — the
+/// library layer rewrites the cached metadata and flags the folder
+/// for push when the parent actually changes.
 #[tauri::command]
 pub async fn reorder_folder(
     folder_id: String,

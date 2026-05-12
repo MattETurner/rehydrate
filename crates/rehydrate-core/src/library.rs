@@ -1789,6 +1789,16 @@ impl Library {
     /// local-only sidebar ordering — callers compute it as the midpoint
     /// of two adjacent siblings to avoid renumbering on every drag.
     ///
+    /// `sort_index` is local-only (the device has no notion of sibling
+    /// order), but `parent` IS represented on the tablet through the
+    /// `parent` field of each folder's `<uuid>.metadata` file. When the
+    /// parent actually changes we therefore also rewrite the cached
+    /// `metadata_json` and flag the folder for push, mirroring what
+    /// `rename_folder` does. Without that, dragging "BH" under "Journal"
+    /// in the sidebar would update only the local `parent` column —
+    /// the on-device metadata would still say `parent: ""` and the
+    /// next sync would surface BH at the tablet's root.
+    ///
     /// Rejects moving a folder into itself or any of its descendants —
     /// such a move would create a cycle that `list_folders` cannot
     /// untangle and the sidebar tree-builder would silently drop.
@@ -1851,10 +1861,60 @@ impl Library {
             }
         }
 
-        tx.execute(
-            "UPDATE folders SET parent = ?1, sort_index = ?2 WHERE folder_id = ?3",
-            params![new_parent, new_sort_index, folder_id],
+        // Read the current parent + metadata_json so we know whether
+        // this call is a pure reorder (no push needed) or a reparent
+        // (metadata + pending_push must be refreshed).
+        let (current_parent, metadata_json): (Option<String>, String) = tx.query_row(
+            "SELECT parent, metadata_json FROM folders WHERE folder_id = ?1",
+            params![folder_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
+
+        let reparented = current_parent.as_deref() != new_parent;
+
+        if reparented {
+            // Mirror create_folder's metadata shape: `parent` is "" at
+            // root, never a JSON null, because xochitl reads it as a
+            // string. Preserve the rest of the metadata object so we
+            // don't clobber visibleName, pinned, etc. Defensive: if
+            // the cached JSON isn't an object we rebuild a minimal one.
+            let mut value: serde_json::Value =
+                serde_json::from_str(&metadata_json).unwrap_or_else(|_| serde_json::json!({}));
+            if !value.is_object() {
+                value = serde_json::json!({});
+            }
+            let map = value.as_object_mut().expect("ensured above");
+            map.insert(
+                "parent".into(),
+                serde_json::Value::String(new_parent.unwrap_or("").to_string()),
+            );
+            let now_ms =
+                i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+                    .unwrap_or(i64::MAX);
+            map.insert(
+                "lastModified".into(),
+                serde_json::Value::String(now_ms.to_string()),
+            );
+            map.insert("modified".into(), serde_json::Value::Bool(true));
+            map.insert("metadatamodified".into(), serde_json::Value::Bool(true));
+            map.insert("synced".into(), serde_json::Value::Bool(false));
+            map.entry("type".to_string())
+                .or_insert(serde_json::Value::String("CollectionType".into()));
+
+            let updated_json = serde_json::to_string(&value)?;
+            tx.execute(
+                "UPDATE folders \
+                 SET parent = ?1, sort_index = ?2, metadata_json = ?3, pending_push = 1 \
+                 WHERE folder_id = ?4",
+                params![new_parent, new_sort_index, updated_json, folder_id],
+            )?;
+        } else {
+            // Pure reorder — sibling shuffle. No metadata change, no push.
+            tx.execute(
+                "UPDATE folders SET sort_index = ?1 WHERE folder_id = ?2",
+                params![new_sort_index, folder_id],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -2642,6 +2702,60 @@ mod tests {
         let folders = lib.list_folders().unwrap();
         let a_row = folders.iter().find(|f| f.folder_id == a.folder_id).unwrap();
         assert_eq!(a_row.parent.as_deref(), Some(b.folder_id.as_str()));
+    }
+
+    #[test]
+    fn reparenting_a_folder_queues_a_push_with_the_new_parent() {
+        // Regression guard: a user creates two sibling folders at
+        // root and then drags one under the other in the sidebar.
+        // Pre-fix, `reorder_folder` only touched the local `parent`
+        // column — the cached `metadata_json` (and therefore the
+        // file written to the tablet) still said `parent: ""`, so
+        // the next sync surfaced the dragged folder at the tablet's
+        // root. This test locks the contract: after a reparent the
+        // pending push must carry the new parent.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let parent = lib.create_folder("Journal", None).unwrap();
+        let child = lib.create_folder("BH", None).unwrap();
+
+        // Clear the post-create pending pushes so we know the next
+        // pending-push set is purely from the reparent.
+        lib.mark_folder_pushed(&parent.folder_id).unwrap();
+        lib.mark_folder_pushed(&child.folder_id).unwrap();
+        assert!(lib.list_pending_folder_pushes().unwrap().is_empty());
+
+        // Drag BH under Journal.
+        lib.reorder_folder(&child.folder_id, Some(&parent.folder_id), 0.0)
+            .unwrap();
+
+        let pending = lib.list_pending_folder_pushes().unwrap();
+        let (pushed_id, pushed_json) = pending
+            .iter()
+            .find(|(id, _)| id == &child.folder_id)
+            .expect("reparented child must be flagged for push");
+        let v: serde_json::Value = serde_json::from_str(pushed_json).unwrap();
+        assert_eq!(pushed_id, &child.folder_id);
+        assert_eq!(
+            v.get("parent").and_then(|x| x.as_str()),
+            Some(parent.folder_id.as_str()),
+            "push payload must carry the new parent so the device nests correctly",
+        );
+
+        // A pure sibling-shuffle (no parent change) must NOT trigger
+        // a push — flooding the queue with redundant metadata uploads
+        // would slow every drag inside a folder.
+        lib.mark_folder_pushed(&child.folder_id).unwrap();
+        let new_sort = 12345.5;
+        lib.reorder_folder(&child.folder_id, Some(&parent.folder_id), new_sort)
+            .unwrap();
+        assert!(
+            lib.list_pending_folder_pushes()
+                .unwrap()
+                .iter()
+                .all(|(id, _)| id != &child.folder_id),
+            "pure sort-only reorder must not flag pending_push",
+        );
     }
 
     #[test]
