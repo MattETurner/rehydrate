@@ -1241,6 +1241,32 @@ impl Library {
             .ok_or_else(|| CoreError::NotFound(format!("archived document {document_id}")))?
         };
         let (visible_name, doc_type, original_parent) = row;
+        // Dangling-parent fallback. The archive entry remembers the
+        // parent folder uuid the document had at archive time, but
+        // the user may have deleted that folder in the meantime
+        // (`delete_folder` doesn't touch archived docs, by design).
+        // Without this check the unarchived doc lands with a parent
+        // pointing at a folder that no longer exists, becoming a
+        // sidebar orphan that's only visible at root. Resolve by
+        // probing the folders table and falling back to root if the
+        // recorded parent is gone.
+        let original_parent: Option<String> = match original_parent {
+            Some(p) if !p.is_empty() => {
+                let conn = self.db.lock();
+                let parent_exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM folders \
+                     WHERE folder_id = ?1 AND deleted_locally = 0",
+                    params![p],
+                    |r| r.get(0),
+                )?;
+                if parent_exists == 1 {
+                    Some(p)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         let parent_for_meta = original_parent.clone().unwrap_or_default();
 
         // Single tx writes the deleted=false version AND deletes the
@@ -2967,6 +2993,14 @@ mod tests {
     fn archive_roundtrip_preserves_history() {
         let tmp = tempfile::tempdir().unwrap();
         let lib = Library::open(tmp.path()).unwrap();
+        // The folder has to actually exist in the local `folders`
+        // table — `unarchive_document` now validates that the
+        // remembered parent is still around (otherwise it falls
+        // back to root) so that a doc archived under a since-
+        // deleted folder doesn't come back as a sidebar orphan.
+        // Pre-fix the test got away with a fake "folder-A" string.
+        lib.upsert_folder("folder-A", None, "Folder A", "{}")
+            .unwrap();
         let mut m = seed_manifest(&lib, "doc-1", &[("a.rm", b"AAA")]);
         m.parent = Some("folder-A".into());
         if let Some(map) = m.metadata.as_object_mut() {
@@ -3348,6 +3382,41 @@ mod tests {
         assert_eq!(
             still_there, 0,
             "post-push, the tombstone row must be removed so a future re-create with the same UUID doesn't collide",
+        );
+    }
+
+    #[test]
+    fn unarchive_falls_back_to_root_when_original_parent_was_deleted() {
+        // Audit found a dangling-parent bug: `delete_folder` doesn't
+        // touch archived documents (by design, since they're hidden
+        // anyway), so an archive entry can outlive its parent folder.
+        // Pre-fix, unarchiving such a doc restored its `parent` to a
+        // folder uuid that no longer existed, producing a sidebar
+        // orphan that only appeared at root anyway. Lock the
+        // contract: a missing parent silently falls back to root.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let folder = lib.create_folder("Stash", None).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"page")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+        lib.move_document("doc-1", Some(&folder.folder_id)).unwrap();
+        lib.archive_document("doc-1", ArchiveReason::Device)
+            .unwrap();
+
+        // Now delete the folder the archived doc remembers. The
+        // archived row still holds folder.folder_id as its parent.
+        lib.delete_folder(&folder.folder_id).unwrap();
+        // mark_folder_pushed flushes the tombstone the way a real
+        // sync would; without it the dangling-parent check still
+        // passes because deleted_locally = 1 also disqualifies the
+        // row.
+        lib.mark_folder_pushed(&folder.folder_id).unwrap();
+
+        // Unarchive must NOT restore the doc to the dead parent.
+        let restored = lib.unarchive_document("doc-1").unwrap();
+        assert_eq!(
+            restored.parent, None,
+            "unarchive must fall back to root when the original parent no longer exists",
         );
     }
 

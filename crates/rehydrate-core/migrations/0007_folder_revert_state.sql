@@ -14,16 +14,27 @@
 --                     snapshot and clears `pending_push` /
 --                     `deleted_locally`.
 --
--- The column is populated by:
---   * `upsert_folder` (set on every device pull — the device's
---     current state IS the last-synced state)
---   * `rename_folder` / `reorder_folder` / `delete_folder` (set
---     from the current metadata BEFORE mutation, but only if NULL
---     — once captured the snapshot must not be overwritten by
---     further local edits, otherwise the user's "revert" only
---     rolls them back to the most recent local edit instead of
---     to the last sync)
+-- The column is populated by exactly two paths:
+--   * `upsert_folder` (every device pull — the device's current
+--     state IS the last-synced state, so the snapshot tracks
+--     whatever the device just told us regardless of any in-flight
+--     local edit). After the row first appears via a pull the
+--     snapshot is always set, and the local-mutation paths
+--     (`rename_folder`, `reorder_folder`, `delete_folder`) never
+--     touch it — they only mutate `metadata_json` and flip
+--     `pending_push` / `deleted_locally`. The snapshot therefore
+--     stays at the last-pulled view across any sequence of local
+--     edits, which is what makes revert's "roll back to the last
+--     sync" semantics work even after a chain of edits.
 --   * `mark_folder_pushed` (refreshed from `metadata_json` after a
---     successful push — the device now matches our local state)
+--     successful upsert push — the device now matches our local
+--     state, so the snapshot moves forward to the just-pushed
+--     bytes; the next local edit will roll back to *that*, not
+--     to the pre-push state).
+--
+-- A row created via `create_folder` (locally-only, never pulled
+-- and never pushed) keeps its snapshot at NULL until the first
+-- successful push. Revert treats NULL as "no device counterpart"
+-- and drops the row instead of trying to restore it.
 
 ALTER TABLE folders ADD COLUMN last_synced_metadata_json TEXT;

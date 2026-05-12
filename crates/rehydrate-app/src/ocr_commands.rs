@@ -410,10 +410,33 @@ pub async fn transcribe_document(
         blobs.push(lib.read_blob(&f.sha256).map_err(err)?);
     }
     let total_pages = blobs.len();
-    let (pages_png, blank_mask) = tauri::async_runtime::spawn_blocking(
-        move || -> Result<(Vec<Vec<u8>>, Vec<bool>), String> {
+    /// Bundle returned from the per-page rendering pass — keeps the
+    /// `spawn_blocking` closure's signature out of clippy's
+    /// type-complexity bucket and documents what each field is for
+    /// at the call site.
+    struct RenderedPages {
+        /// PNG bytes for every non-blank page, in notebook order.
+        pages_png: Vec<Vec<u8>>,
+        /// One entry per notebook page: true if the page was blank
+        /// and therefore skipped before the model was called.
+        blank_mask: Vec<bool>,
+        /// `slice_to_notebook[i]` = notebook index of the i-th
+        /// element in `pages_png`. Used to remap backend progress
+        /// events from slice-index back to notebook-index.
+        slice_to_notebook: Vec<usize>,
+    }
+    let rendered =
+        tauri::async_runtime::spawn_blocking(move || -> Result<RenderedPages, String> {
             let mut out = Vec::with_capacity(blobs.len());
             let mut blank = Vec::with_capacity(blobs.len());
+            // Backend events index into the post-filter slice, but
+            // the UI counts and reports against the notebook's real
+            // page index. `slice_to_notebook[i]` lets the forwarder
+            // remap a backend event's `page_index` back to the
+            // user-visible position; without this the progress chip
+            // ticks 1, 2, 3 for a 5-page notebook with two blanks
+            // and the user thinks two pages went missing.
+            let mut slice_to_notebook = Vec::new();
             for (idx, bytes) in blobs.iter().enumerate() {
                 if !rehydrate_ocr::rm_page_has_ink(bytes) {
                     blank.push(true);
@@ -423,17 +446,26 @@ pub async fn transcribe_document(
                     Ok(png) => {
                         out.push(png);
                         blank.push(false);
+                        slice_to_notebook.push(idx);
                     }
                     Err(e) => {
                         return Err(format!("page {idx} render failed: {e}"));
                     }
                 }
             }
-            Ok((out, blank))
-        },
-    )
-    .await
-    .map_err(err)??;
+            Ok(RenderedPages {
+                pages_png: out,
+                blank_mask: blank,
+                slice_to_notebook,
+            })
+        })
+        .await
+        .map_err(err)??;
+    let RenderedPages {
+        pages_png,
+        blank_mask,
+        slice_to_notebook,
+    } = rendered;
     let blank_count = blank_mask.iter().filter(|b| **b).count();
     if pages_png.is_empty() {
         // Every page in the notebook is blank. Returning an empty
@@ -475,11 +507,43 @@ pub async fn transcribe_document(
         }
     };
 
-    // Forward backend progress to the renderer.
+    // Emit a `PageDone` event for every blank page upfront so the
+    // progress chip ticks through the full notebook count rather
+    // than stopping at the non-blank subset. The chars: 0 keeps the
+    // running character total honest. Direct emit (rather than
+    // routing through the channel) bypasses the remapper below,
+    // which only applies to backend-originated events with a
+    // slice-index.
+    for (notebook_idx, was_blank) in blank_mask.iter().enumerate() {
+        if *was_blank {
+            let _ = app.emit(
+                "ocr:progress",
+                &OcrProgressEvent::PageDone {
+                    page_index: notebook_idx,
+                    chars: 0,
+                },
+            );
+        }
+    }
+
+    // Forward backend progress to the renderer, remapping the
+    // backend's slice-index `page_index` to the notebook's real
+    // index so events emitted to the UI line up with the synthetic
+    // blank events above.
     let (tx, mut rx) = mpsc::channel::<OcrProgressEvent>(32);
     let app_for_emit = app.clone();
     let forwarder = tauri::async_runtime::spawn(async move {
-        while let Some(ev) = rx.recv().await {
+        while let Some(mut ev) = rx.recv().await {
+            match &mut ev {
+                OcrProgressEvent::PageStarted { page_index }
+                | OcrProgressEvent::PageDone { page_index, .. }
+                | OcrProgressEvent::PageFailed { page_index, .. } => {
+                    if let Some(real) = slice_to_notebook.get(*page_index) {
+                        *page_index = *real;
+                    }
+                }
+                OcrProgressEvent::Done { .. } => {}
+            }
             let _ = app_for_emit.emit("ocr:progress", &ev);
         }
     });

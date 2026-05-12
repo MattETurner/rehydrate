@@ -92,9 +92,19 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
       setOcrJob((cur) => {
         if (!cur || cur.phase !== "running") return cur;
         if (ev.kind === "page_done") {
+          // Count distinct page_done events rather than tracking
+          // `max(page_index) + 1`. The backend reports notebook
+          // indices (remapped from its internal slice-index in
+          // `transcribe_document`), and blank pages are emitted up
+          // front as synthetic page_done events with chars: 0. With
+          // the old max+1 formula a synth event for notebook index
+          // 4 would jump-set pagesDone to 5 even though only one
+          // page was actually processed — counting events keeps the
+          // chip's "X pages" tally honest regardless of arrival
+          // order.
           return {
             ...cur,
-            pagesDone: ev.page_index + 1,
+            pagesDone: cur.pagesDone + 1,
             charCount: cur.charCount + ev.chars,
           };
         }
