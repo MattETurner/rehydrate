@@ -101,6 +101,58 @@ pub struct DeleteFolderOutcome {
     pub documents_moved: usize,
 }
 
+/// Summary of what `revert_unpushed_changes` undid. The UI surfaces
+/// each number in the post-revert toast so the user can confirm the
+/// action did what they expected (e.g. "Restored 1 deleted folder
+/// and rolled back 3 document moves.").
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RevertReport {
+    /// Folders whose local edits were rolled back to the device's
+    /// last-seen state — un-deleted, un-renamed, or un-reparented.
+    pub folders_restored: usize,
+    /// Folders that existed only locally (created via
+    /// `create_folder`, never pushed). Revert deletes them outright.
+    pub folders_dropped: usize,
+    /// Documents whose `current_manifest` was rolled back to the
+    /// `last_seen_manifest` — undoing local moves, renames, and
+    /// metadata changes that hadn't been pushed yet. Imported docs
+    /// (no `last_seen_manifest`) are not touched: the user does not
+    /// expect a "Revert" button to delete the PDF they just dragged
+    /// in.
+    pub documents_rolled_back: usize,
+}
+
+/// One pending folder operation that the push engine has to ship to
+/// the device. Returned by `Library::list_pending_folder_pushes` so
+/// the engine can route renames/reparents/creates through
+/// `Device::put_document_tree` and deletions through
+/// `Device::delete_document_tree`. Without the split, deletions had
+/// to be encoded as a metadata-file upload with `deleted: true`,
+/// which xochitl interprets as "move to Trash" instead of a real
+/// removal.
+#[derive(Debug, Clone)]
+pub enum FolderPushOp {
+    /// Upload the folder's metadata file. Covers brand-new folders,
+    /// renames, and reparents.
+    Upsert {
+        folder_id: String,
+        metadata_json: String,
+    },
+    /// SFTP-remove every `<folder_id>*` artefact on the device.
+    Delete { folder_id: String },
+}
+
+impl FolderPushOp {
+    /// The folder id this op targets. Useful because the push engine
+    /// calls `mark_folder_pushed` after both shapes succeed.
+    pub fn folder_id(&self) -> &str {
+        match self {
+            FolderPushOp::Upsert { folder_id, .. } => folder_id,
+            FolderPushOp::Delete { folder_id } => folder_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionEntry {
     pub id: VersionId,
@@ -1713,14 +1765,22 @@ impl Library {
         // leave `visible_name` / `metadata_json` / `pending_push`
         // alone so the next push picks up the local rename
         // unchanged.
+        // `last_synced_metadata_json` is set on every pull — the
+        // device's current state IS the last-synced state. Even
+        // when there's a pending local edit (we keep its
+        // `metadata_json` intact via the CASE below), the snapshot
+        // updates to whatever the device just sent us; otherwise a
+        // user who edits, pulls, then reverts would roll back to a
+        // stale pre-pull snapshot.
         tx.execute(
-            "INSERT INTO folders(folder_id, parent, visible_name, metadata_json, pending_push, sort_index) \
-             VALUES (?1, ?2, ?3, ?4, 0, ?5) \
+            "INSERT INTO folders(folder_id, parent, visible_name, metadata_json, pending_push, sort_index, last_synced_metadata_json) \
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?4) \
              ON CONFLICT(folder_id) DO UPDATE SET \
                  parent = excluded.parent, \
                  visible_name = CASE WHEN pending_push = 1 THEN visible_name ELSE excluded.visible_name END, \
                  metadata_json = CASE WHEN pending_push = 1 THEN metadata_json ELSE excluded.metadata_json END, \
-                 pending_push = CASE WHEN pending_push = 1 THEN 1 ELSE 0 END",
+                 pending_push = CASE WHEN pending_push = 1 THEN 1 ELSE 0 END, \
+                 last_synced_metadata_json = excluded.metadata_json",
             params![folder_id, parent, visible_name, metadata_json, next_sort],
         )?;
         tx.commit()?;
@@ -2159,30 +2219,194 @@ impl Library {
         })
     }
 
-    /// Folders that have been renamed locally and not yet pushed to
-    /// the device. Each tuple is `(folder_id, metadata_json)` — the
-    /// caller assembles a single `<folder_id>.metadata` file and ships
-    /// it via `Device::put_document_tree`.
-    pub fn list_pending_folder_pushes(&self) -> Result<Vec<(String, String)>> {
+    /// Roll the library back to its state at the last successful
+    /// sync, undoing every local edit that hasn't been pushed to
+    /// the device yet. The user-facing motivation: "I deleted a
+    /// folder by accident and now I'm trapped — I can't sync this
+    /// without losing the folder forever." Revert gets them out
+    /// without forcing them to manually undo each edit.
+    ///
+    /// Scope:
+    ///
+    /// * **Folders** — every row with `pending_push = 1` or
+    ///   `deleted_locally = 1` is touched. If the row has a
+    ///   `last_synced_metadata_json` snapshot (i.e. the device had
+    ///   seen it before), we restore `metadata_json`, `visible_name`,
+    ///   and `parent` from the snapshot and clear `pending_push` /
+    ///   `deleted_locally`. If the snapshot is NULL (locally-
+    ///   created, never pushed), we drop the row.
+    /// * **Documents** — rows whose `current_manifest` differs from
+    ///   `sync_state.last_seen_manifest` (and that have a recorded
+    ///   last-seen at all) get rolled back: `documents.current_manifest`
+    ///   and `current_version_id` are reset to the version whose
+    ///   manifest matches the last-pushed hash. The older version is
+    ///   still in `versions`, so history is preserved — the live
+    ///   pointer just steps backwards.
+    /// * **Imports** (`last_seen_manifest IS NULL` documents) are
+    ///   intentionally left alone. A user who imports a 50-page PDF
+    ///   and then clicks Revert by accident must not lose the PDF;
+    ///   archiving is the explicit "remove from library" flow for
+    ///   those.
+    ///
+    /// Idempotent: re-running on an already-reverted library is a
+    /// no-op (all three counts return 0).
+    pub fn revert_unpushed_changes(&self) -> Result<RevertReport> {
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+
+        // ---- Folders ----
+        let pending_folders: Vec<(String, Option<String>)> = {
+            let mut stmt = tx.prepare(
+                "SELECT folder_id, last_synced_metadata_json FROM folders \
+                 WHERE pending_push = 1 OR deleted_locally = 1",
+            )?;
+            let rows: Vec<(String, Option<String>)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+
+        let mut folders_restored = 0;
+        let mut folders_dropped = 0;
+        for (folder_id, snapshot) in pending_folders {
+            match snapshot {
+                None => {
+                    // Locally-created row, never seen by the device.
+                    // Revert removes it entirely so the sidebar
+                    // returns to its last-synced shape.
+                    tx.execute(
+                        "DELETE FROM folders WHERE folder_id = ?1",
+                        params![folder_id],
+                    )?;
+                    folders_dropped += 1;
+                }
+                Some(snapshot_json) => {
+                    // Restore. We re-extract `visible_name` and
+                    // `parent` from the snapshot rather than keeping
+                    // them around as separate columns — single
+                    // source of truth, and `upsert_folder` already
+                    // sets the snapshot to the same JSON it derives
+                    // those columns from.
+                    let v: serde_json::Value = serde_json::from_str(&snapshot_json)
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    let visible_name = v
+                        .get("visibleName")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("(restored)")
+                        .to_string();
+                    let parent_raw = v.get("parent").and_then(|x| x.as_str()).unwrap_or("");
+                    let parent: Option<&str> = if parent_raw.is_empty() {
+                        None
+                    } else {
+                        Some(parent_raw)
+                    };
+                    tx.execute(
+                        "UPDATE folders \
+                         SET metadata_json = ?1, \
+                             visible_name = ?2, \
+                             parent = ?3, \
+                             pending_push = 0, \
+                             deleted_locally = 0 \
+                         WHERE folder_id = ?4",
+                        params![snapshot_json, visible_name, parent, folder_id],
+                    )?;
+                    folders_restored += 1;
+                }
+            }
+        }
+
+        // ---- Documents ----
+        // Rows where the current manifest has drifted from the last
+        // sync's manifest. The JOIN to `versions` resolves the
+        // version id that owns the last-seen manifest hash; we need
+        // both columns to keep `current_version_id` consistent with
+        // `current_manifest`. We deliberately skip rows where
+        // `last_seen_manifest IS NULL` (imports + first-time pulls
+        // that haven't been observed by the push engine yet).
+        let drifted: Vec<(String, String, i64)> = {
+            let mut stmt = tx.prepare(
+                "SELECT d.document_id, s.last_seen_manifest, v.id \
+                 FROM documents d \
+                 JOIN sync_state s ON s.document_id = d.document_id \
+                 JOIN versions v \
+                   ON v.document_id = d.document_id \
+                  AND v.manifest_hash = s.last_seen_manifest \
+                 WHERE s.last_seen_manifest IS NOT NULL \
+                   AND s.last_seen_manifest <> d.current_manifest",
+            )?;
+            let rows: Vec<(String, String, i64)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        let mut documents_rolled_back = 0;
+        for (document_id, last_seen, version_id) in drifted {
+            tx.execute(
+                "UPDATE documents \
+                 SET current_manifest = ?1, current_version_id = ?2 \
+                 WHERE document_id = ?3",
+                params![last_seen, version_id, document_id],
+            )?;
+            documents_rolled_back += 1;
+        }
+
+        tx.commit()?;
+        Ok(RevertReport {
+            folders_restored,
+            folders_dropped,
+            documents_rolled_back,
+        })
+    }
+
+    /// Folders that have been renamed, reparented, created, or deleted
+    /// locally and not yet pushed to the device. The push engine
+    /// routes each entry by `FolderPushOp` kind: `Upsert` uploads the
+    /// folder's `<uuid>.metadata` file (rename / reparent / create),
+    /// while `Delete` SFTP-removes the folder's files outright. The
+    /// latter shape matters because pushing a metadata file with
+    /// `deleted: true` only sends the folder to xochitl's Trash on
+    /// the device — surprising users who expected "Delete folder" to
+    /// actually delete it. Hard-deleting the files removes the
+    /// folder in one step.
+    pub fn list_pending_folder_pushes(&self) -> Result<Vec<FolderPushOp>> {
         let conn = self.db.lock();
         let mut stmt = conn.prepare(
-            "SELECT folder_id, metadata_json FROM folders \
+            "SELECT folder_id, metadata_json, deleted_locally FROM folders \
              WHERE pending_push = 1 ORDER BY folder_id",
         )?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        let rows: Vec<FolderPushOp> = stmt
+            .query_map([], |r| {
+                let folder_id: String = r.get(0)?;
+                let metadata_json: String = r.get(1)?;
+                let deleted: i64 = r.get(2)?;
+                Ok(if deleted == 1 {
+                    FolderPushOp::Delete { folder_id }
+                } else {
+                    FolderPushOp::Upsert {
+                        folder_id,
+                        metadata_json,
+                    }
+                })
+            })?
             .collect::<rusqlite::Result<_>>()?;
         Ok(rows)
     }
 
     /// Mark a folder's local metadata as flushed to the device. Called
-    /// by the push engine after a successful upload.
+    /// by the push engine after a successful upload (or hard-delete).
     ///
     /// For a tombstoned folder (`deleted_locally = 1`) the successful
-    /// push means xochitl has the `deleted: true` metadata file and
-    /// will remove the folder on its next index refresh — the row's
-    /// job is done, so we drop it entirely. For a regular pending row
-    /// (rename / reparent) we just clear the `pending_push` flag.
+    /// push means xochitl no longer has the folder's files — the
+    /// row's job is done, so we drop it entirely.
+    ///
+    /// For a regular pending row (rename / reparent / fresh create)
+    /// we clear `pending_push` AND refresh `last_synced_metadata_json`
+    /// from the just-pushed `metadata_json`. The latter matters for
+    /// the Revert feature: after a successful push the device's
+    /// state now equals our local state, so the snapshot has to
+    /// move forward too — otherwise the next local edit would still
+    /// roll back to the pre-push state when reverted.
     pub fn mark_folder_pushed(&self, folder_id: &str) -> Result<()> {
         let conn = self.db.lock();
         let was_tombstoned: i64 = conn
@@ -2200,7 +2424,8 @@ impl Library {
             )?;
         } else {
             conn.execute(
-                "UPDATE folders SET pending_push = 0 WHERE folder_id = ?1",
+                "UPDATE folders SET pending_push = 0, last_synced_metadata_json = metadata_json \
+                 WHERE folder_id = ?1",
                 params![folder_id],
             )?;
         }
@@ -2860,7 +3085,13 @@ mod tests {
         // metadata files to the device.
         let pending = lib.list_pending_folder_pushes().unwrap();
         assert_eq!(pending.len(), 2);
-        for (_, json) in pending {
+        for op in pending {
+            let json = match op {
+                FolderPushOp::Upsert { metadata_json, .. } => metadata_json,
+                FolderPushOp::Delete { .. } => {
+                    panic!("create_folder should only enqueue Upsert ops")
+                }
+            };
             let v: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert_eq!(
                 v.get("type").and_then(|x| x.as_str()),
@@ -2927,12 +3158,17 @@ mod tests {
             .unwrap();
 
         let pending = lib.list_pending_folder_pushes().unwrap();
-        let (pushed_id, pushed_json) = pending
+        let pushed_json = pending
             .iter()
-            .find(|(id, _)| id == &child.folder_id)
-            .expect("reparented child must be flagged for push");
-        let v: serde_json::Value = serde_json::from_str(pushed_json).unwrap();
-        assert_eq!(pushed_id, &child.folder_id);
+            .find_map(|op| match op {
+                FolderPushOp::Upsert {
+                    folder_id,
+                    metadata_json,
+                } if folder_id == &child.folder_id => Some(metadata_json.clone()),
+                _ => None,
+            })
+            .expect("reparented child must be flagged for an upsert push");
+        let v: serde_json::Value = serde_json::from_str(&pushed_json).unwrap();
         assert_eq!(
             v.get("parent").and_then(|x| x.as_str()),
             Some(parent.folder_id.as_str()),
@@ -2950,7 +3186,7 @@ mod tests {
             lib.list_pending_folder_pushes()
                 .unwrap()
                 .iter()
-                .all(|(id, _)| id != &child.folder_id),
+                .all(|op| op.folder_id() != child.folder_id),
             "pure sort-only reorder must not flag pending_push",
         );
     }
@@ -3018,27 +3254,34 @@ mod tests {
             "doc should be at root after its folder was deleted",
         );
 
-        // Push queue includes BH (reparent) and Journal (tombstone
-        // with deleted=true). The Journal payload is what makes the
-        // tablet GC the folder.
-        let pending: std::collections::HashMap<_, _> = lib
-            .list_pending_folder_pushes()
-            .unwrap()
-            .into_iter()
-            .collect();
-        let journal_json: serde_json::Value = serde_json::from_str(
-            pending
-                .get(&journal.folder_id)
-                .expect("Journal must be in the pending-push set"),
-        )
-        .unwrap();
-        assert_eq!(
-            journal_json.get("deleted").and_then(|v| v.as_bool()),
-            Some(true),
-            "tombstone payload must mark the folder deleted",
-        );
-        let bh_json: serde_json::Value =
-            serde_json::from_str(pending.get(&bh.folder_id).expect("BH push queued")).unwrap();
+        // Push queue includes BH (Upsert with the new parent) and
+        // Journal (Delete — a hard-remove on the device, not an
+        // upload with `deleted: true`). That distinction matters
+        // because pushing `deleted: true` metadata would only move
+        // the folder to xochitl's Trash; the hard-delete makes it
+        // actually go away.
+        let pending = lib.list_pending_folder_pushes().unwrap();
+        let journal_op = pending
+            .iter()
+            .find(|op| op.folder_id() == journal.folder_id)
+            .expect("Journal must be in the pending-push set");
+        match journal_op {
+            FolderPushOp::Delete { .. } => {}
+            FolderPushOp::Upsert { .. } => {
+                panic!("tombstoned folder must enqueue a hard-Delete, not an Upsert")
+            }
+        }
+        let bh_json = pending
+            .iter()
+            .find_map(|op| match op {
+                FolderPushOp::Upsert {
+                    folder_id,
+                    metadata_json,
+                } if folder_id == &bh.folder_id => Some(metadata_json.clone()),
+                _ => None,
+            })
+            .expect("BH must be in the pending-push set as an Upsert");
+        let bh_json: serde_json::Value = serde_json::from_str(&bh_json).unwrap();
         assert_eq!(
             bh_json.get("parent").and_then(|v| v.as_str()),
             Some(""),
@@ -3106,6 +3349,121 @@ mod tests {
             still_there, 0,
             "post-push, the tombstone row must be removed so a future re-create with the same UUID doesn't collide",
         );
+    }
+
+    #[test]
+    fn revert_undoes_unpushed_folder_and_document_changes() {
+        // User scenario from the bug report: "I delete a folder I
+        // am trapped and will have to sync it." Revert has to:
+        //   * restore deleted (tombstoned) folders that the device
+        //     had previously seen
+        //   * drop folders that the user created locally and never
+        //     pushed (they have no device counterpart to restore)
+        //   * roll back document moves/renames whose new manifest
+        //     hasn't been shipped
+        //   * NOT touch locally-imported documents (no
+        //     `last_seen_manifest`), so the user doesn't lose
+        //     fresh imports when reverting unrelated edits.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+
+        // Folder that the device "already knows about": simulate
+        // by upserting it (the pull path) so it gets a
+        // last_synced_metadata_json snapshot.
+        let device_metadata = r#"{"visibleName":"Journal","parent":"","type":"CollectionType"}"#;
+        lib.upsert_folder("journal-uuid", None, "Journal", device_metadata)
+            .unwrap();
+
+        // User edits Journal locally — rename + delete.
+        lib.rename_folder("journal-uuid", "Journal (renamed)")
+            .unwrap();
+        lib.delete_folder("journal-uuid").unwrap();
+
+        // User also creates a brand-new folder, never pushed.
+        let new_folder = lib.create_folder("Inbox", None).unwrap();
+
+        // Doc that's been pulled and is in sync_state — we move it
+        // locally, which records a new manifest; the row's
+        // current_manifest now diverges from last_seen_manifest.
+        // `record_version(Source::Pulled)` sets `last_seen_manifest`
+        // to the pulled hash, which is exactly the "device confirmed
+        // this version" pointer revert needs.
+        let m = seed_manifest(&lib, "synced-doc", &[("p.rm", b"page")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+        let synced_before = lib
+            .list_documents()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.document_id == "synced-doc")
+            .unwrap();
+        let pre_revert_manifest = synced_before.current_manifest.clone();
+        lib.move_document("synced-doc", Some("journal-uuid"))
+            .unwrap();
+        let drifted = lib
+            .list_documents()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.document_id == "synced-doc")
+            .unwrap();
+        assert_ne!(
+            drifted.current_manifest, pre_revert_manifest,
+            "precondition: move recorded a new manifest",
+        );
+
+        // Locally-imported doc: no last_seen_manifest. Revert must
+        // not touch it.
+        let import = seed_manifest(&lib, "fresh-import", &[("page.rm", b"new")]);
+        lib.record_version(&import, Source::Imported).unwrap();
+
+        // Run revert.
+        let report = lib.revert_unpushed_changes().unwrap();
+        assert_eq!(report.folders_restored, 1, "Journal must be restored");
+        assert_eq!(
+            report.folders_dropped, 1,
+            "Inbox (locally-created) must be dropped"
+        );
+        assert_eq!(
+            report.documents_rolled_back, 1,
+            "synced-doc move must be rolled back"
+        );
+
+        // Post-state checks.
+        let folders = lib.list_folders().unwrap();
+        let journal_after = folders
+            .iter()
+            .find(|f| f.folder_id == "journal-uuid")
+            .expect("Journal must be back in the sidebar");
+        assert_eq!(journal_after.visible_name, "Journal");
+        assert!(
+            folders.iter().all(|f| f.folder_id != new_folder.folder_id),
+            "locally-created folder must be removed by revert",
+        );
+
+        let synced_after = lib
+            .list_documents()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.document_id == "synced-doc")
+            .unwrap();
+        assert_eq!(
+            synced_after.current_manifest, pre_revert_manifest,
+            "synced doc must be back at the last-seen manifest",
+        );
+
+        // The locally-imported doc is still in the library.
+        assert!(
+            lib.list_documents()
+                .unwrap()
+                .iter()
+                .any(|d| d.document_id == "fresh-import"),
+            "Revert must not delete locally-imported docs",
+        );
+
+        // Idempotent — running it again does nothing.
+        let again = lib.revert_unpushed_changes().unwrap();
+        assert_eq!(again.folders_restored, 0);
+        assert_eq!(again.folders_dropped, 0);
+        assert_eq!(again.documents_rolled_back, 0);
     }
 
     #[test]

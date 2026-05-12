@@ -785,6 +785,75 @@ export function App() {
     }
   }
 
+  // ---- Revert unpushed changes ----------------------------------------
+  //
+  // User-facing escape hatch for "I made a local edit I now regret
+  // and I don't want it to sync." Folder deletions in particular
+  // are otherwise unrecoverable — the original bug report ran "if
+  // I for example delete a folder I am trapped and will have to
+  // sync it." Revert rolls every unpushed folder edit AND every
+  // unpushed document move/rename back to the last-synced state.
+  // Locally-imported documents are intentionally NOT touched — the
+  // backend (`Library::revert_unpushed_changes`) leaves them
+  // because a Revert button that silently deleted a fresh PDF
+  // import would be a worse surprise than any of the edits it's
+  // trying to undo.
+  async function revertChanges() {
+    const ok = await confirm({
+      title: "Revert all changes since the last sync?",
+      body: (
+        <>
+          Folder renames, moves, deletions, and new folders go back to
+          their last-synced state. Document moves and renames you
+          haven't synced yet are also undone. Imported PDFs and EPUBs
+          stay put — use Archive to remove those.
+        </>
+      ),
+      confirmLabel: "Revert",
+      destructive: true,
+    });
+    if (!ok) return;
+    setError(null);
+    try {
+      const report = await ipc.revertUnpushedChanges();
+      await refreshLibrary();
+      const total =
+        report.folders_restored +
+        report.folders_dropped +
+        report.documents_rolled_back;
+      if (total === 0) {
+        toast.show({
+          tone: "info",
+          body: "Nothing to revert — the library is already in sync.",
+        });
+        return;
+      }
+      // Build a precise summary so the user can confirm exactly
+      // what was undone. Pieces only appear when their count is
+      // non-zero, which keeps the toast tight on the common
+      // single-action revert.
+      const pieces: string[] = [];
+      if (report.folders_restored > 0) {
+        pieces.push(
+          `${report.folders_restored} folder${report.folders_restored === 1 ? "" : "s"} restored`,
+        );
+      }
+      if (report.folders_dropped > 0) {
+        pieces.push(
+          `${report.folders_dropped} new folder${report.folders_dropped === 1 ? "" : "s"} removed`,
+        );
+      }
+      if (report.documents_rolled_back > 0) {
+        pieces.push(
+          `${report.documents_rolled_back} document${report.documents_rolled_back === 1 ? "" : "s"} rolled back`,
+        );
+      }
+      toast.show({ tone: "ok", body: `Reverted: ${pieces.join(", ")}.` });
+    } catch (e) {
+      setError(formatError(e));
+    }
+  }
+
   function startMoveDocs(ids: string[]) {
     if (ids.length === 0) return;
     setMovingDocs(ids);
@@ -1385,6 +1454,12 @@ export function App() {
             />
             <button onClick={importFile} title="Import a PDF or EPUB (⌘I)">
               <Icon name="import" /> Import
+            </button>
+            <button
+              onClick={revertChanges}
+              title="Revert local folder + document changes since the last sync"
+            >
+              <Icon name="restore" /> Revert
             </button>
             <button
               onClick={openSync}

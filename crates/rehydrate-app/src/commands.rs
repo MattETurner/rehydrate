@@ -722,6 +722,19 @@ pub async fn create_folder(
         .map_err(err)
 }
 
+/// Roll back every local edit since the last successful sync —
+/// folder renames, reparents, deletions, creations, and document
+/// move/rename metadata changes. Imports are intentionally not
+/// touched. Returns a precise tally so the UI can confirm what was
+/// undone. See `Library::revert_unpushed_changes` for the policy.
+#[tauri::command]
+pub async fn revert_unpushed_changes(
+    state: State<'_, AppState>,
+) -> Result<rehydrate_core::RevertReport, String> {
+    let lib = lib_arc(&state).await?;
+    lib.revert_unpushed_changes().map_err(err)
+}
+
 /// Delete a folder from the local library and queue a tombstone
 /// push so the tablet drops it on the next sync. Contents are
 /// preserved: every direct child folder and document is reparented

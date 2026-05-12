@@ -19,6 +19,7 @@ import type {
   OcrStatusReport,
   OllamaConfig,
   PickedLibraryDirectory,
+  RevertReport,
   PingReport,
   ProgressEvent,
   PublishCredentialStatus,
@@ -62,6 +63,8 @@ export const ipc = {
     invoke<FolderEntry>("create_folder", { visibleName, parentId }),
   deleteFolder: (folderId: string) =>
     invoke<DeleteFolderOutcome>("delete_folder", { folderId }),
+  revertUnpushedChanges: () =>
+    invoke<RevertReport>("revert_unpushed_changes"),
   reorderFolder: (
     folderId: string,
     newParent: string | null,

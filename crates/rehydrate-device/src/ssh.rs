@@ -716,6 +716,105 @@ impl Device for SshDevice {
         Ok(())
     }
 
+    async fn delete_document_tree(&self, uuid: &str) -> DeviceResult<()> {
+        let inner = self.inner.lock().await;
+        let dir = self.cfg.xochitl_dir.clone();
+        let prefix = format!("{uuid}.");
+        // Enumerate the xochitl root and collect anything matching
+        // `<uuid>.*`. Files inside the per-uuid subdir are walked
+        // separately by `discard_subtree` below — the directory entry
+        // itself shows up as a `<uuid>` (no extension) in the listing
+        // and is removed last, after its contents.
+        let entries = with_timeout("delete_document_tree.read_dir", async {
+            inner
+                .sftp
+                .read_dir(&dir)
+                .await
+                .map_err(|e| sftp_err("read_dir", &dir, e))
+        })
+        .await?;
+
+        // Gather the leaves first; remove subdir contents before the
+        // subdir itself, otherwise SFTP rmdir fails with ENOTEMPTY.
+        let mut sibling_files: Vec<String> = Vec::new();
+        let mut sibling_dirs: Vec<String> = Vec::new();
+        for e in entries {
+            let name = e.file_name();
+            // Match both the bare uuid (the per-document directory)
+            // and any `<uuid>.<ext>` sidecar (`.metadata`, `.content`,
+            // `.pagedata`, `.local`, `.thumbnails/`, …).
+            if name != uuid && !name.starts_with(&prefix) {
+                continue;
+            }
+            let path = format!("{dir}/{name}");
+            if e.file_type().is_dir() {
+                sibling_dirs.push(path);
+            } else {
+                sibling_files.push(path);
+            }
+        }
+
+        for path in &sibling_files {
+            // Idempotent: a missing file is fine — the tablet may
+            // already have GC'd it, or the row may never have been
+            // pushed in the first place.
+            let _ = with_timeout("delete_document_tree.remove_file", async {
+                inner
+                    .sftp
+                    .remove_file(path)
+                    .await
+                    .map_err(|e| sftp_err("remove_file", path, e))
+            })
+            .await;
+        }
+
+        for dir_path in &sibling_dirs {
+            // Clean the directory's contents, then remove the
+            // directory itself. xochitl per-uuid dirs are typically
+            // one level deep (page files, thumbnails), so a single
+            // read_dir + remove pass is enough. Errors are
+            // swallowed: idempotent delete.
+            // Already-gone or transient errors fall through to the
+            // rmdir attempt below; if the directory is genuinely
+            // missing that'll also fail-soft, so dropping the error
+            // here is fine.
+            let inner_entries = with_timeout("delete_document_tree.read_subdir", async {
+                inner
+                    .sftp
+                    .read_dir(dir_path)
+                    .await
+                    .map_err(|e| sftp_err("read_dir", dir_path, e))
+            })
+            .await
+            .ok();
+            for e in inner_entries.into_iter().flatten() {
+                let name = e.file_name();
+                if name == "." || name == ".." {
+                    continue;
+                }
+                let path = format!("{dir_path}/{name}");
+                let _ = with_timeout("delete_document_tree.remove_subfile", async {
+                    inner
+                        .sftp
+                        .remove_file(&path)
+                        .await
+                        .map_err(|err| sftp_err("remove_file", &path, err))
+                })
+                .await;
+            }
+            let _ = with_timeout("delete_document_tree.remove_dir", async {
+                inner
+                    .sftp
+                    .remove_dir(dir_path)
+                    .await
+                    .map_err(|e| sftp_err("remove_dir", dir_path, e))
+            })
+            .await;
+        }
+
+        Ok(())
+    }
+
     async fn refresh_document_index(&self) -> DeviceResult<()> {
         // The tablet caches the document index in memory; this
         // restart is what makes freshly-pushed files visible on the

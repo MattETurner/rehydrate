@@ -28,6 +28,17 @@ export interface DeleteFolderOutcome {
   documents_moved: number;
 }
 
+/** Summary of what "Revert unpushed changes" undid. Mirrors
+ *  `rehydrate_core::RevertReport`. Imports are NOT counted —
+ *  revert deliberately leaves locally-imported documents alone so
+ *  the user doesn't lose a fresh PDF when reverting an unrelated
+ *  folder edit. */
+export interface RevertReport {
+  folders_restored: number;
+  folders_dropped: number;
+  documents_rolled_back: number;
+}
+
 export type ArchiveReason = "local" | "device";
 
 export interface ArchivedDocument {

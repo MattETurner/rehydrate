@@ -4,8 +4,8 @@ use crate::error::DeviceResult;
 use crate::model::{DeviceInfo, RemoteEntry, RemoteFile};
 
 /// Single seam between the app and the reMarkable tablet. Phase 1
-/// established the read-only surface; Phase 3 added `put_document_tree`.
-/// `delete_document` and `move_document` are deferred to Phase 4.
+/// established the read-only surface; Phase 3 added `put_document_tree`;
+/// Phase 4 (folder delete) added `delete_document_tree`.
 #[async_trait]
 pub trait Device: Send + Sync {
     async fn ping(&self) -> DeviceResult<DeviceInfo>;
@@ -25,6 +25,22 @@ pub trait Device: Send + Sync {
         uuid: &str,
         files: &[crate::model::RemoteFile],
     ) -> DeviceResult<()>;
+
+    /// Hard-delete a document or folder from the device. Removes every
+    /// `<uuid>*` artefact (the `.metadata` file, the `.content` file,
+    /// the per-uuid directory, the `.pagedata` / `.local` / `.thumbnails`
+    /// sidecars). xochitl drops the entry on its next index refresh.
+    ///
+    /// Used for folder deletion: pushing a `<uuid>.metadata` with
+    /// `deleted: true` would only move the folder to xochitl's Trash
+    /// view — a soft delete that still leaves the folder sitting on
+    /// the tablet until the user empties the Trash. Hard-deleting the
+    /// files removes the folder in one step, matching the user's
+    /// expectation that "Delete folder" actually removes it.
+    ///
+    /// Idempotent: missing files are not an error (the device may
+    /// already have GC'd them or never had them).
+    async fn delete_document_tree(&self, uuid: &str) -> DeviceResult<()>;
 
     /// Force the device to re-read its document index so freshly-pushed
     /// changes become visible without a manual reboot. On the

@@ -157,29 +157,45 @@ pub async fn execute_push(
         }
     }
 
-    // After document push, flush any folder renames. A folder push is
-    // a single `<folder_id>.metadata` file uploaded via the same
-    // put_document_tree primitive — the tablet's xochitl picks up the
-    // rename when it next refreshes its file index. Failures here are
-    // logged and counted as skips so a single broken folder doesn't
-    // block the rest of the queue.
-    // Audit fix M3: propagate DB errors instead of treating them as
-    // "no pending folders" — silently skipping a folder rename used
-    // to make the user think the sync succeeded.
-    let pending_folders = library.list_pending_folder_pushes()?;
-    for (folder_id, metadata_json) in pending_folders {
+    // After document push, flush any folder operations. Renames /
+    // reparents / creations upload the folder's `<uuid>.metadata`;
+    // deletions hard-remove every `<uuid>*` artefact on the device
+    // so xochitl drops the folder outright instead of moving it to
+    // its Trash view (which is what `deleted: true` in metadata
+    // would do). Either shape ends with `mark_folder_pushed` so the
+    // local row is reconciled (cleared, or dropped for tombstones).
+    //
+    // Failures here are logged and counted as skips so a single
+    // broken folder doesn't block the rest of the queue. Audit fix
+    // M3: propagate DB errors instead of treating them as "no
+    // pending folders" — silently skipping a folder op used to make
+    // the user think the sync succeeded.
+    let pending_folder_ops = library.list_pending_folder_pushes()?;
+    for op in pending_folder_ops {
         if cancel.is_cancelled() {
             break;
         }
-        let file = rehydrate_device::RemoteFile {
-            path: format!("{folder_id}.metadata"),
-            bytes: metadata_json.into_bytes(),
-            mode: 0o644,
+        let folder_id = op.folder_id().to_string();
+        let push_result = match op {
+            rehydrate_core::FolderPushOp::Upsert {
+                ref folder_id,
+                ref metadata_json,
+            } => {
+                let file = rehydrate_device::RemoteFile {
+                    path: format!("{folder_id}.metadata"),
+                    bytes: metadata_json.clone().into_bytes(),
+                    mode: 0o644,
+                };
+                device.put_document_tree(folder_id, &[file]).await
+            }
+            rehydrate_core::FolderPushOp::Delete { ref folder_id } => {
+                device.delete_document_tree(folder_id).await
+            }
         };
-        match device.put_document_tree(&folder_id, &[file]).await {
+        match push_result {
             Ok(()) => {
                 // Audit fix M2: the mark_folder_pushed failure path
-                // used to log-and-continue, so the same folder rename
+                // used to log-and-continue, so the same folder op
                 // re-pushed forever. Count it as skipped instead so
                 // the user sees a non-zero skip count and the loop
                 // doesn't claim success.

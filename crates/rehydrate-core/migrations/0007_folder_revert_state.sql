@@ -1,0 +1,29 @@
+-- Snapshot column for folder revert.
+--
+-- To support "Revert unpushed changes" the library needs to know
+-- what the device-side state of each folder was at the last sync.
+-- `last_synced_metadata_json` holds that snapshot:
+--
+--   * NULL          → the row exists only locally (created via
+--                     `create_folder` and never pushed). Revert
+--                     deletes the row.
+--   * Some(json)    → the row mirrors a device-side folder; the
+--                     json is the metadata as the tablet last saw
+--                     it (or as we last pulled it from the device).
+--                     Revert restores `metadata_json` from this
+--                     snapshot and clears `pending_push` /
+--                     `deleted_locally`.
+--
+-- The column is populated by:
+--   * `upsert_folder` (set on every device pull — the device's
+--     current state IS the last-synced state)
+--   * `rename_folder` / `reorder_folder` / `delete_folder` (set
+--     from the current metadata BEFORE mutation, but only if NULL
+--     — once captured the snapshot must not be overwritten by
+--     further local edits, otherwise the user's "revert" only
+--     rolls them back to the most recent local edit instead of
+--     to the last sync)
+--   * `mark_folder_pushed` (refreshed from `metadata_json` after a
+--     successful push — the device now matches our local state)
+
+ALTER TABLE folders ADD COLUMN last_synced_metadata_json TEXT;

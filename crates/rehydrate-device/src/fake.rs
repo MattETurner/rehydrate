@@ -143,6 +143,37 @@ impl Device for FakeDevice {
         Ok(())
     }
 
+    async fn delete_document_tree(&self, uuid: &str) -> DeviceResult<()> {
+        // Mirror the SshDevice impl: idempotently remove every
+        // `<uuid>*` artefact at the root, recursing into per-uuid
+        // directories first so their parent's rmdir succeeds.
+        let prefix = format!("{uuid}.");
+        let mut read = match tokio::fs::read_dir(&self.root).await {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = read.next_entry().await? {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str != uuid && !name_str.starts_with(&prefix) {
+                continue;
+            }
+            let path = entry.path();
+            let meta = match tokio::fs::symlink_metadata(&path).await {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            if meta.is_dir() {
+                let _ = tokio::fs::remove_dir_all(&path).await;
+            } else {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
+        Ok(())
+    }
+
     async fn fetch_document_tree(&self, uuid: &str) -> DeviceResult<Vec<RemoteFile>> {
         let metadata_path = self.metadata_path(uuid);
         if !metadata_path.exists() {
