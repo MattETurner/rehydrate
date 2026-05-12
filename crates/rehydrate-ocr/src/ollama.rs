@@ -25,20 +25,32 @@ use crate::backend::{OcrBackend, OcrCancel, OcrError, PageTranscript, Transcribe
 use crate::http::{AgentError, RestrictedAgent};
 use crate::progress::OcrProgressEvent;
 
-/// Per-CHUNK read timeout for `/api/generate`. With `stream: true`
-/// the daemon sends one NDJSON line per generation step, so this is
-/// "no token in N seconds" rather than "no whole response in N
-/// seconds." 120s is comfortable for the largest curated model
-/// (`qwen3.5:9b`) on CPU; tokens at that tier land every few seconds
-/// once the first token does, so a 120s gap signals a real stall
-/// rather than just slow inference.
+/// Per-read timeout for `/api/generate`. ureq applies this to
+/// every blocking `read()` on the response socket, so it caps:
 ///
-/// The earlier non-streaming path used a 600s budget because the
-/// entire generation had to finish before *any* byte arrived;
-/// switching to streaming made that ceiling meaningless and a
-/// shorter one safer (a wedged daemon is detected sooner without
-/// hurting healthy slow runs).
-const GENERATE_TIMEOUT: Duration = Duration::from_secs(120);
+/// 1. **Time to first byte** — covers the daemon's
+///    `prompt_eval` phase. Measured empirically against
+///    `qwen3.5:4b` on Apple Silicon with our actual render size
+///    (1280-px long edge): the daemon stays silent for ~158s
+///    while it tokenises the image, then flushes headers + the
+///    first NDJSON line together. The earlier 120s ceiling was
+///    *below* that, which is exactly the user-visible
+///    "Error encountered in the status line: timed out reading
+///    response" we kept seeing. Streaming the response body
+///    doesn't help here — it's the request-to-headers gap that
+///    blows past 120s, not the inter-token gap.
+///
+/// 2. **Inter-token gap** during generation. Once the daemon
+///    starts streaming, NDJSON lines arrive every few hundred
+///    ms even on CPU, so the budget is dominated by (1).
+///
+/// 600s gives a comfortable headroom for prompt_eval on a slow
+/// Apple Silicon laptop or a CPU-only Ollama box (qwen3.5:9b
+/// images can take ~5 min of prompt_eval) while still detecting
+/// a genuinely wedged daemon in a bounded window. Anything
+/// tighter starts shipping false-positive "Ollama unreachable"
+/// errors to the user mid-page.
+const GENERATE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// `OcrBackend` impl that talks to a user-provided Ollama daemon.
 pub struct OllamaBackend {
@@ -106,17 +118,27 @@ impl OllamaBackend {
     ///
     /// Uses Ollama's NDJSON streaming response (`stream: true`):
     /// one JSON line per generation step, concatenated client-side.
-    /// The earlier non-streaming version reliably timed out on
-    /// `qwen3.5:9b` on CPU because the daemon buffered the entire
-    /// generation (often >10 minutes) before sending any byte —
-    /// the per-read timeout fired waiting for the status line and
-    /// the page failed with "Network Error: Error encountered in
-    /// the status line: timed out reading response." Streaming
-    /// flushes headers immediately and ships tokens as they're
-    /// produced, so the timeout now bounds "no token in N seconds"
-    /// instead of "no response in N seconds total." Side effects:
-    /// the UI starts seeing progress within a second of dispatch,
-    /// and a wedged daemon is detected in 2 minutes instead of 10.
+    /// Streaming is necessary but not sufficient for the user-
+    /// visible reliability story:
+    ///
+    /// * `stream: false` buffers the entire response so the
+    ///   client can't even see HTTP headers until generation is
+    ///   over — every page took a 10+ minute timeout on
+    ///   `qwen3.5:9b` on CPU.
+    /// * `stream: true` flushes headers *and* the first NDJSON
+    ///   line as soon as the daemon has its first generated
+    ///   token. That fixed the worst case but left a smaller
+    ///   one: the `prompt_eval` phase (vision tokenisation) is
+    ///   still buffered, so for a normal notebook page on CPU
+    ///   the daemon stays silent for ~2-3 minutes before any
+    ///   byte arrives. The 120s read timeout used to fire inside
+    ///   that gap and surface as "Error encountered in the
+    ///   status line: timed out reading response" — see the
+    ///   `GENERATE_TIMEOUT` doc for the empirical numbers and
+    ///   why 600s is the right ceiling.
+    ///
+    /// Net: stream the response, but size the timeout for the
+    /// pre-stream silence, not for the inter-token gap.
     fn transcribe_one_blocking(&self, png_bytes: &[u8], prompt: &str) -> Result<String, OcrError> {
         // `think: false` disables the Qwen3 / Qwen3.5 family's
         // chain-of-thought trace. Without it the model is free to

@@ -131,10 +131,16 @@ impl RestrictedAgent {
     /// can take 10+ minutes; ureq's per-read timeout fires before
     /// any byte arrives and the request fails with
     /// `Error encountered in the status line: timed out reading
-    /// response`. Streaming flips the timeout's reference frame:
-    /// the per-read cap now applies to "no token in N seconds"
-    /// rather than "no response in total in N seconds", and the
-    /// model's headers arrive immediately.
+    /// response`. Streaming flips the timeout's reference frame
+    /// for the *generation* phase: the per-read cap covers
+    /// "no token in N seconds" once tokens start flowing.
+    ///
+    /// Note that the daemon still buffers headers across its
+    /// `prompt_eval` (image tokenisation) phase — `stream: true`
+    /// is not "headers immediately". For vision OCR the caller's
+    /// `timeout_read` must be sized to cover prompt_eval, not
+    /// just the inter-token gap; the OCR backend's
+    /// `GENERATE_TIMEOUT` is 600s for that reason.
     ///
     /// `on_line` is called for every non-empty line. Return `Ok(())`
     /// to continue, or `Err(HttpError)` to abort the read early
