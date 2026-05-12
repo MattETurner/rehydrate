@@ -722,6 +722,21 @@ pub async fn create_folder(
         .map_err(err)
 }
 
+/// Delete a folder from the local library and queue a tombstone
+/// push so the tablet drops it on the next sync. Contents are
+/// preserved: every direct child folder and document is reparented
+/// to the deleted folder's parent (root if it was already at root).
+/// Returns the count of moved children so the UI can word the
+/// confirmation toast precisely.
+#[tauri::command]
+pub async fn delete_folder(
+    folder_id: String,
+    state: State<'_, AppState>,
+) -> Result<rehydrate_core::DeleteFolderOutcome, String> {
+    let lib = lib_arc(&state).await?;
+    lib.delete_folder(&folder_id).map_err(err)
+}
+
 /// Move and/or reorder a folder in the sidebar. Sort order is
 /// local-only (the tablet has no notion of sibling order), but
 /// reparenting (changing `new_parent`) IS represented on the device

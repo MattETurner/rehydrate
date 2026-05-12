@@ -48,6 +48,7 @@ pub fn run() {
             commands::rename_document,
             commands::rename_folder,
             commands::create_folder,
+            commands::delete_folder,
             commands::reorder_folder,
             commands::archive_document,
             commands::unarchive_document,

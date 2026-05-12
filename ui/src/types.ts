@@ -20,6 +20,14 @@ export interface FolderEntry {
   sort_index: number;
 }
 
+/** Tally of children that were lifted out of a deleted folder.
+ *  Mirrors `rehydrate_core::DeleteFolderOutcome`. The UI uses this
+ *  to phrase the post-delete toast precisely. */
+export interface DeleteFolderOutcome {
+  folders_moved: number;
+  documents_moved: number;
+}
+
 export type ArchiveReason = "local" | "device";
 
 export interface ArchivedDocument {

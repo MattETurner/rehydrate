@@ -23,8 +23,8 @@ pub use blob::PutOutcome;
 pub use error::{CoreError, Result};
 pub use hash::Sha256Hex;
 pub use library::{
-    ArchiveReason, ArchivedDocument, DocumentSummary, FolderEntry, GarbageCollectReport,
-    ImportKind, Library, LibraryPathKind, ReconstructOptions, RecordOutcome, Source, VerifyReport,
-    VersionEntry, VersionId,
+    ArchiveReason, ArchivedDocument, DeleteFolderOutcome, DocumentSummary, FolderEntry,
+    GarbageCollectReport, ImportKind, Library, LibraryPathKind, ReconstructOptions, RecordOutcome,
+    Source, VerifyReport, VersionEntry, VersionId,
 };
 pub use manifest::{Manifest, ManifestFile};

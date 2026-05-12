@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ArchivedDocument,
   CuratedOllamaModel,
+  DeleteFolderOutcome,
   DeviceInfo,
   DeviceState,
   DocumentSummary,
@@ -59,6 +60,8 @@ export const ipc = {
     invoke<void>("rename_folder", { folderId, newName }),
   createFolder: (visibleName: string, parentId: string | null) =>
     invoke<FolderEntry>("create_folder", { visibleName, parentId }),
+  deleteFolder: (folderId: string) =>
+    invoke<DeleteFolderOutcome>("delete_folder", { folderId }),
   reorderFolder: (
     folderId: string,
     newParent: string | null,

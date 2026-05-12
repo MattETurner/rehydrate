@@ -33,6 +33,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0005_folder_sort_index",
         include_str!("../migrations/0005_folder_sort_index.sql"),
     ),
+    (
+        "0006_folder_local_deletion",
+        include_str!("../migrations/0006_folder_local_deletion.sql"),
+    ),
 ];
 
 pub struct Db {

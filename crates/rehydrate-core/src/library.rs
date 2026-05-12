@@ -91,6 +91,16 @@ pub struct FolderEntry {
     pub sort_index: f64,
 }
 
+/// Tally of children that were lifted out of a deleted folder.
+/// Returned from `Library::delete_folder` so the UI can word the
+/// confirmation toast precisely ("Journal removed — BH and test
+/// moved up.")
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteFolderOutcome {
+    pub folders_moved: usize,
+    pub documents_moved: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionEntry {
     pub id: VersionId,
@@ -1649,8 +1659,13 @@ impl Library {
     /// land alphabetically.
     pub fn list_folders(&self) -> Result<Vec<FolderEntry>> {
         let conn = self.db.lock();
+        // Tombstoned rows (`deleted_locally = 1`) are still in the
+        // table because the next sync has to ship their
+        // `<uuid>.metadata` with `deleted: true` so the tablet GCs
+        // them; the sidebar shouldn't show them in the meantime.
         let mut stmt = conn.prepare(
             "SELECT folder_id, parent, visible_name, sort_index FROM folders \
+             WHERE deleted_locally = 0 \
              ORDER BY sort_index ASC, visible_name ASC",
         )?;
         let rows: Vec<FolderEntry> = stmt
@@ -1984,6 +1999,166 @@ impl Library {
         Ok(())
     }
 
+    /// Delete a folder from the local library and queue a tombstone
+    /// push so the tablet drops it on the next sync. Contents are
+    /// preserved: every direct child (folders and documents) is
+    /// reparented to the deleted folder's parent (or to the root
+    /// if the folder was already at root). This matches the user
+    /// expectation that "remove folder" leaves the notebooks intact
+    /// — analogous to Finder's "Remove from folder" rather than
+    /// "Move to Trash".
+    ///
+    /// Returns the number of (folders, documents) that were lifted
+    /// out, so the UI can confirm the action with a precise
+    /// "BH and test moved to <parent>" toast.
+    ///
+    /// Sequencing notes:
+    /// * Direct child folders are reparented via `reorder_folder` so
+    ///   each one's cached `metadata_json` gets its `parent` field
+    ///   rewritten and its `pending_push` flagged — without that
+    ///   the next sync would surface the children under the
+    ///   deleted parent (the bug fixed in commit 49e935b).
+    /// * Direct child documents go through `move_document`, which
+    ///   records a fresh version with the updated `parent` so the
+    ///   push engine ships the rewired metadata.
+    /// * Only THEN is the folder itself tombstoned: cached metadata
+    ///   gets `deleted: true` + the standard `lastModified` /
+    ///   `modified` flags, `deleted_locally = 1`, and
+    ///   `pending_push = 1`. The push engine ships that file and
+    ///   `mark_folder_pushed` drops the row.
+    /// * Each step calls a public API that takes its own write
+    ///   lock; we don't hold one big tx because `move_document`
+    ///   touches the blob store and creating a nested write lock
+    ///   would deadlock. Failure partway is recoverable: every step
+    ///   is idempotent, so re-invoking `delete_folder` on the same
+    ///   id finishes the job.
+    ///
+    /// Archived documents are intentionally left alone — they're
+    /// invisible to the user and not part of the sidebar tree, so
+    /// their stored `parent` pointing at a tombstoned folder is
+    /// harmless. If the user ever restores one, the restore path
+    /// already handles dangling-parent fallback to root.
+    pub fn delete_folder(&self, folder_id: &str) -> Result<DeleteFolderOutcome> {
+        // 1. Resolve the folder's current parent (the "new home" for
+        //    every direct child) and confirm the row exists + isn't
+        //    already tombstoned. Done in a short read-only scope so
+        //    the per-child API calls below don't fight for the
+        //    write lock.
+        let (current_parent, already_deleted): (Option<String>, i64) = {
+            let conn = self.db.lock();
+            conn.query_row(
+                "SELECT parent, deleted_locally FROM folders WHERE folder_id = ?1",
+                params![folder_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound(format!("folder {folder_id}")))?
+        };
+        if already_deleted == 1 {
+            // Idempotent on retry — caller can re-trigger after a
+            // partial failure and we won't double-tombstone.
+            return Ok(DeleteFolderOutcome {
+                folders_moved: 0,
+                documents_moved: 0,
+            });
+        }
+        let new_parent = current_parent
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        // 2. Collect direct child folders. Snapshot their ids +
+        //    sort_indexes outside the write tx so we can iterate
+        //    via the public reparent API.
+        let child_folder_ids: Vec<(String, f64)> = {
+            let conn = self.db.lock();
+            let mut stmt = conn.prepare(
+                "SELECT folder_id, sort_index FROM folders \
+                 WHERE COALESCE(parent,'') = ?1 \
+                   AND folder_id <> ?2 \
+                   AND deleted_locally = 0",
+            )?;
+            let rows: Vec<(String, f64)> = stmt
+                .query_map(params![folder_id, folder_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        let folders_moved = child_folder_ids.len();
+        for (child_id, sort) in &child_folder_ids {
+            // reorder_folder treats a parent-change as a reparent and
+            // queues a push with the rewritten metadata. Reuses sort
+            // so the visible position doesn't snap to the end of the
+            // list.
+            self.reorder_folder(child_id, new_parent.as_deref(), *sort)?;
+        }
+
+        // 3. Documents currently in this folder. The parent lives in
+        //    the manifest blob rather than a SQL column, so we have
+        //    to read each one — but `list_documents` already streams
+        //    them and the count is small in practice.
+        let child_documents: Vec<String> = self
+            .list_documents()?
+            .into_iter()
+            .filter(|d| d.parent.as_deref() == Some(folder_id))
+            .map(|d| d.document_id)
+            .collect();
+        let documents_moved = child_documents.len();
+        for doc_id in &child_documents {
+            self.move_document(doc_id, new_parent.as_deref())?;
+        }
+
+        // 4. Tombstone the folder itself. Mirrors `rename_folder`'s
+        //    metadata mutation, but flips `deleted: true` instead of
+        //    rewriting `visibleName`. Holding the write_lock across
+        //    the read+write keeps a concurrent rename from racing
+        //    in between.
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+
+        let metadata_json: String = tx.query_row(
+            "SELECT metadata_json FROM folders WHERE folder_id = ?1",
+            params![folder_id],
+            |r| r.get(0),
+        )?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(&metadata_json).unwrap_or_else(|_| serde_json::json!({}));
+        if !value.is_object() {
+            value = serde_json::json!({});
+        }
+        let map = value.as_object_mut().expect("ensured above");
+        map.insert("deleted".into(), serde_json::Value::Bool(true));
+        let now_ms = i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+            .unwrap_or(i64::MAX);
+        map.insert(
+            "lastModified".into(),
+            serde_json::Value::String(now_ms.to_string()),
+        );
+        map.insert("modified".into(), serde_json::Value::Bool(true));
+        map.insert("metadatamodified".into(), serde_json::Value::Bool(true));
+        map.insert("synced".into(), serde_json::Value::Bool(false));
+        // Defensive: keep the CollectionType marker so the device
+        // still recognises the tombstone as targeting a folder.
+        map.entry("type".to_string())
+            .or_insert(serde_json::Value::String("CollectionType".into()));
+        let updated_json = serde_json::to_string(&value)?;
+
+        tx.execute(
+            "UPDATE folders \
+             SET metadata_json = ?1, pending_push = 1, deleted_locally = 1 \
+             WHERE folder_id = ?2",
+            params![updated_json, folder_id],
+        )?;
+        tx.commit()?;
+
+        Ok(DeleteFolderOutcome {
+            folders_moved,
+            documents_moved,
+        })
+    }
+
     /// Folders that have been renamed locally and not yet pushed to
     /// the device. Each tuple is `(folder_id, metadata_json)` — the
     /// caller assembles a single `<folder_id>.metadata` file and ships
@@ -2002,11 +2177,33 @@ impl Library {
 
     /// Mark a folder's local metadata as flushed to the device. Called
     /// by the push engine after a successful upload.
+    ///
+    /// For a tombstoned folder (`deleted_locally = 1`) the successful
+    /// push means xochitl has the `deleted: true` metadata file and
+    /// will remove the folder on its next index refresh — the row's
+    /// job is done, so we drop it entirely. For a regular pending row
+    /// (rename / reparent) we just clear the `pending_push` flag.
     pub fn mark_folder_pushed(&self, folder_id: &str) -> Result<()> {
-        self.db.lock().execute(
-            "UPDATE folders SET pending_push = 0 WHERE folder_id = ?1",
-            params![folder_id],
-        )?;
+        let conn = self.db.lock();
+        let was_tombstoned: i64 = conn
+            .query_row(
+                "SELECT deleted_locally FROM folders WHERE folder_id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        if was_tombstoned == 1 {
+            conn.execute(
+                "DELETE FROM folders WHERE folder_id = ?1",
+                params![folder_id],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE folders SET pending_push = 0 WHERE folder_id = ?1",
+                params![folder_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -2755,6 +2952,159 @@ mod tests {
                 .iter()
                 .all(|(id, _)| id != &child.folder_id),
             "pure sort-only reorder must not flag pending_push",
+        );
+    }
+
+    #[test]
+    fn delete_folder_keeps_children_and_tombstones_for_push() {
+        // User flow: a "Journal" folder at root contains a "BH"
+        // subfolder and a "test" document. Hitting "Delete folder"
+        // on Journal must:
+        //   1. lift BH up to root (folder still alive, push queued
+        //      with parent = "")
+        //   2. lift the doc up to root (move_document records a new
+        //      version with the new parent)
+        //   3. tombstone Journal: metadata.deleted = true, row
+        //      hidden from list_folders, pending_push queued so the
+        //      device drops it on next sync
+        //   4. NOT remove the row from the table — the push engine
+        //      needs to ship the tombstone first.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+
+        let journal = lib.create_folder("Journal", None).unwrap();
+        let bh = lib.create_folder("BH", Some(&journal.folder_id)).unwrap();
+        let m = seed_manifest(&lib, "test-doc", &[("a.rm", b"page")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+        lib.move_document("test-doc", Some(&journal.folder_id))
+            .unwrap();
+
+        // Clear the create-time pending pushes so we can read the
+        // deletion's push payload in isolation.
+        lib.mark_folder_pushed(&journal.folder_id).unwrap();
+        lib.mark_folder_pushed(&bh.folder_id).unwrap();
+        assert!(lib.list_pending_folder_pushes().unwrap().is_empty());
+
+        let outcome = lib.delete_folder(&journal.folder_id).unwrap();
+        assert_eq!(outcome.folders_moved, 1);
+        assert_eq!(outcome.documents_moved, 1);
+
+        // BH is still in the library, now at root (parent = None).
+        let folders = lib.list_folders().unwrap();
+        let bh_after = folders
+            .iter()
+            .find(|f| f.folder_id == bh.folder_id)
+            .expect("BH must remain after parent's deletion");
+        assert!(
+            bh_after.parent.is_none(),
+            "BH should be at root after Journal removed",
+        );
+        // Journal is hidden from the sidebar even though the row
+        // still exists for the upcoming push.
+        assert!(
+            folders.iter().all(|f| f.folder_id != journal.folder_id),
+            "deleted folder must vanish from list_folders before sync",
+        );
+
+        // Document was lifted up.
+        let doc = lib
+            .list_documents()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.document_id == "test-doc")
+            .expect("doc still live");
+        assert!(
+            doc.parent.is_none(),
+            "doc should be at root after its folder was deleted",
+        );
+
+        // Push queue includes BH (reparent) and Journal (tombstone
+        // with deleted=true). The Journal payload is what makes the
+        // tablet GC the folder.
+        let pending: std::collections::HashMap<_, _> = lib
+            .list_pending_folder_pushes()
+            .unwrap()
+            .into_iter()
+            .collect();
+        let journal_json: serde_json::Value = serde_json::from_str(
+            pending
+                .get(&journal.folder_id)
+                .expect("Journal must be in the pending-push set"),
+        )
+        .unwrap();
+        assert_eq!(
+            journal_json.get("deleted").and_then(|v| v.as_bool()),
+            Some(true),
+            "tombstone payload must mark the folder deleted",
+        );
+        let bh_json: serde_json::Value =
+            serde_json::from_str(pending.get(&bh.folder_id).expect("BH push queued")).unwrap();
+        assert_eq!(
+            bh_json.get("parent").and_then(|v| v.as_str()),
+            Some(""),
+            "BH's new parent should be the root (empty string on device)",
+        );
+    }
+
+    #[test]
+    fn delete_folder_preserves_grandchildren_under_the_lifted_subfolder() {
+        // Three-level chain: Outer → Mid → Leaf. Delete Mid: Leaf
+        // should keep its parent = Outer (not jump to root) because
+        // we lift Mid's *direct* children only.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let outer = lib.create_folder("Outer", None).unwrap();
+        let mid = lib.create_folder("Mid", Some(&outer.folder_id)).unwrap();
+        let leaf = lib.create_folder("Leaf", Some(&mid.folder_id)).unwrap();
+
+        lib.delete_folder(&mid.folder_id).unwrap();
+
+        let folders = lib.list_folders().unwrap();
+        let leaf_after = folders
+            .iter()
+            .find(|f| f.folder_id == leaf.folder_id)
+            .unwrap();
+        assert_eq!(
+            leaf_after.parent.as_deref(),
+            Some(outer.folder_id.as_str()),
+            "Leaf should reparent to Outer when Mid is removed, not jump to root",
+        );
+    }
+
+    #[test]
+    fn mark_folder_pushed_drops_tombstoned_rows() {
+        // After the sync ships the tombstone, the row's job is done
+        // and `mark_folder_pushed` removes it. Live (non-tombstoned)
+        // rows keep being touched in place. Locks the contract that
+        // makes the deleted-locally state transient by design.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let live = lib.create_folder("Stays", None).unwrap();
+        let doomed = lib.create_folder("Goes", None).unwrap();
+
+        // Live rename → still present after push.
+        lib.rename_folder(&live.folder_id, "Stays Renamed").unwrap();
+        lib.mark_folder_pushed(&live.folder_id).unwrap();
+        assert!(lib
+            .list_folders()
+            .unwrap()
+            .iter()
+            .any(|f| f.folder_id == live.folder_id));
+
+        // Tombstoned → gone after push.
+        lib.delete_folder(&doomed.folder_id).unwrap();
+        lib.mark_folder_pushed(&doomed.folder_id).unwrap();
+        let conn = lib.db.lock();
+        let still_there: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM folders WHERE folder_id = ?1",
+                params![doomed.folder_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            still_there, 0,
+            "post-push, the tombstone row must be removed so a future re-create with the same UUID doesn't collide",
         );
     }
 

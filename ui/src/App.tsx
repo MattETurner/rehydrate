@@ -708,6 +708,83 @@ export function App() {
     });
   }
 
+  async function startDeleteFolder(f: FolderEntry) {
+    // Word the confirm body around where the children land so the
+    // user isn't surprised by what happens to BH and test inside
+    // "Journal" — the historical worry that drove this feature.
+    const parent =
+      f.parent && folders?.find((x) => x.folder_id === f.parent);
+    const destination = parent ? (
+      <>
+        the parent folder <strong>{parent.visible_name}</strong>
+      </>
+    ) : (
+      <>the top level</>
+    );
+    const ok = await confirm({
+      title: `Delete folder "${f.visible_name}"?`,
+      body: (
+        <>
+          Notebooks and subfolders inside it move to {destination}.
+          Nothing is deleted from your library. The folder is also
+          removed from the tablet on the next sync.
+        </>
+      ),
+      confirmLabel: "Delete folder",
+      destructive: true,
+    });
+    if (!ok) return;
+    setError(null);
+    try {
+      const outcome = await ipc.deleteFolder(f.folder_id);
+      // If the user happens to be looking at the deleted folder,
+      // bounce them out of the dead view so they don't see an
+      // empty "this folder no longer exists" screen.
+      if (
+        typeof view === "object" &&
+        view.kind === "folder" &&
+        view.id === f.folder_id
+      ) {
+        setView("all");
+      }
+      await refreshLibrary();
+      const moved =
+        outcome.folders_moved + outcome.documents_moved;
+      toast.show({
+        tone: "ok",
+        body:
+          moved === 0 ? (
+            <>
+              Deleted folder <strong>{f.visible_name}</strong>. It is
+              removed from the tablet on the next sync.
+            </>
+          ) : (
+            <>
+              Deleted folder <strong>{f.visible_name}</strong>.{" "}
+              {outcome.documents_moved > 0 && (
+                <>
+                  {outcome.documents_moved} document
+                  {outcome.documents_moved === 1 ? "" : "s"}
+                </>
+              )}
+              {outcome.documents_moved > 0 && outcome.folders_moved > 0
+                ? " and "
+                : ""}
+              {outcome.folders_moved > 0 && (
+                <>
+                  {outcome.folders_moved} subfolder
+                  {outcome.folders_moved === 1 ? "" : "s"}
+                </>
+              )}{" "}
+              moved up.
+            </>
+          ),
+      });
+    } catch (e) {
+      setError(formatError(e));
+    }
+  }
+
   function startMoveDocs(ids: string[]) {
     if (ids.length === 0) return;
     setMovingDocs(ids);
@@ -1440,6 +1517,7 @@ export function App() {
                   onDocumentDrop={handleDocumentDrop}
                   onRenameFolder={startRenameFolder}
                   onCreateSubfolder={(parentId) => startCreateFolder(parentId)}
+                  onDeleteFolder={startDeleteFolder}
                   onReorderFolder={(draggedId, newParent, beforeId, afterId) => {
                     const newSort = computeReorderSortIndex(
                       folders,
@@ -2022,6 +2100,7 @@ function FolderTree({
   onDocumentDrop,
   onRenameFolder,
   onCreateSubfolder,
+  onDeleteFolder,
   onReorderFolder,
 }: {
   folders: FolderEntry[];
@@ -2033,6 +2112,7 @@ function FolderTree({
   onDocumentDrop: (documentId: string, target: string | null | "archive", batch?: string[]) => void;
   onRenameFolder: (f: FolderEntry) => void;
   onCreateSubfolder: (parentId: string) => void;
+  onDeleteFolder: (f: FolderEntry) => void;
   onReorderFolder: FolderReorder;
 }) {
   const roots = buildFolderTree(folders, documents);
@@ -2056,6 +2136,7 @@ function FolderTree({
           onDocumentDrop={onDocumentDrop}
           onRenameFolder={onRenameFolder}
           onCreateSubfolder={onCreateSubfolder}
+          onDeleteFolder={onDeleteFolder}
           onReorderFolder={onReorderFolder}
           allFolders={folders}
           siblings={roots.map((n) => n.folder.folder_id)}
@@ -2077,6 +2158,7 @@ function FolderRow({
   onDocumentDrop,
   onRenameFolder,
   onCreateSubfolder,
+  onDeleteFolder,
   onReorderFolder,
   allFolders,
   siblings,
@@ -2092,6 +2174,7 @@ function FolderRow({
   onDocumentDrop: (documentId: string, target: string | null | "archive", batch?: string[]) => void;
   onRenameFolder: (f: FolderEntry) => void;
   onCreateSubfolder: (parentId: string) => void;
+  onDeleteFolder: (f: FolderEntry) => void;
   onReorderFolder: FolderReorder;
   allFolders: FolderEntry[];
   /** Ordered ids of this row's siblings under `parentId`, including
@@ -2283,6 +2366,12 @@ function FolderRow({
                 icon: <Icon name="folder" />,
                 onClick: () => onRenameFolder(node.folder),
               },
+              {
+                label: "Delete folder…",
+                icon: <Icon name="trash" />,
+                onClick: () => onDeleteFolder(node.folder),
+                separatorBefore: true,
+              },
             ]}
           />
         </span>
@@ -2301,6 +2390,7 @@ function FolderRow({
             onDocumentDrop={onDocumentDrop}
             onRenameFolder={onRenameFolder}
             onCreateSubfolder={onCreateSubfolder}
+            onDeleteFolder={onDeleteFolder}
             onReorderFolder={onReorderFolder}
             allFolders={allFolders}
             siblings={node.children.map((c) => c.folder.folder_id)}
