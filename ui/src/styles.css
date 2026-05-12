@@ -1403,14 +1403,25 @@ input[type="search"]:focus {
 }
 .transcript-scroll {
   overflow-y: auto;
-  padding: var(--space-3) var(--space-5);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  /* Tight top padding (`space-2` = 8 px) so the body sits close
+   * to the meta block's bottom border — the previous `space-3`
+   * (12 px) + the body's own 12 px inner padding stacked to a
+   * 24 px visual gap, which read as "extra empty space between
+   * title and body" even though nothing was misaligned. Bottom
+   * padding stays generous so a long transcript doesn't kiss the
+   * footer's top border. Plain block flow: only one child
+   * (`.transcript-body` + an optional inline error pill) — flex
+   * machinery here bought nothing and obscured intent. */
+  padding: var(--space-2) var(--space-5) var(--space-3);
 }
 .transcript-empty {
-  margin: var(--space-3) 0 0;
+  margin: 0;
   font-size: var(--text-sm);
+}
+/* Inline error pill, when shown, separates from the body
+ * naturally without needing flex/gap wiring on the parent. */
+.transcript-scroll .error.inline {
+  margin-top: var(--space-3);
 }
 .transcript-body {
   white-space: pre-wrap;
