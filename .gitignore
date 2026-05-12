@@ -16,6 +16,7 @@ crates/rehydrate-app/target/
 .DS_Store
 .idea/
 .vscode/
+.claude/
 *.swp
 
 # Local config
