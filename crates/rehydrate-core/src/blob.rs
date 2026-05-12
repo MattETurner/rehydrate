@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use crate::error::{Error, Result};
+use crate::error::{CoreError, Result};
 use crate::hash::{Sha256Hex, StreamingHasher};
 use crate::paths::LibraryPaths;
 
@@ -75,7 +75,7 @@ impl BlobStore {
         writer.flush()?;
         let inner = writer
             .into_inner()
-            .map_err(|e| Error::Io(io::Error::other(e.to_string())))?;
+            .map_err(|e| CoreError::Io(io::Error::other(e.to_string())))?;
         inner.sync_all()?;
         drop(inner);
 
@@ -133,8 +133,8 @@ impl BlobStore {
     pub fn open(&self, hash: &Sha256Hex) -> Result<File> {
         let p = self.paths.blob_path(hash);
         File::open(&p).map_err(|e| match e.kind() {
-            io::ErrorKind::NotFound => Error::MissingBlob(hash.to_string()),
-            _ => Error::Io(e),
+            io::ErrorKind::NotFound => CoreError::MissingBlob(hash.to_string()),
+            _ => CoreError::Io(e),
         })
     }
 

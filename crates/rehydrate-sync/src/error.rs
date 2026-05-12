@@ -6,7 +6,7 @@ pub enum SyncError {
     Device(#[from] rehydrate_device::DeviceError),
 
     #[error("library: {0}")]
-    Library(#[from] rehydrate_core::Error),
+    Library(#[from] rehydrate_core::CoreError),
 
     #[error("cancelled")]
     Cancelled,

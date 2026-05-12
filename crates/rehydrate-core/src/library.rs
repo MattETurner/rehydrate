@@ -15,7 +15,7 @@ use time::OffsetDateTime;
 
 use crate::blob::BlobStore;
 use crate::db::Db;
-use crate::error::{Error, Result};
+use crate::error::{CoreError, Result};
 use crate::hash::Sha256Hex;
 use crate::manifest::{Manifest, ManifestFile};
 use crate::paths::LibraryPaths;
@@ -266,7 +266,7 @@ pub struct VerifyReport {
 /// tell the user before attempting to open the path. `Empty` means
 /// safe-to-create-here; `Existing` means a stamped library is
 /// already there. The error case (a foreign non-empty directory)
-/// surfaces as [`Error::InvalidPath`].
+/// surfaces as [`CoreError::InvalidPath`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LibraryPathKind {
@@ -338,7 +338,7 @@ impl Library {
             .truncate(false)
             .open(&lock_path)?;
         if lock_file.try_lock_exclusive().is_err() {
-            return Err(Error::AlreadyOpen(paths.root.display().to_string()));
+            return Err(CoreError::AlreadyOpen(paths.root.display().to_string()));
         }
 
         if !paths.library_json.exists() {
@@ -382,19 +382,19 @@ impl Library {
         if paths.library_json.exists() {
             // Existing library — verify the stamp is sane.
             let bytes = fs::read(&paths.library_json).map_err(|e| {
-                Error::InvalidPath(format!(
+                CoreError::InvalidPath(format!(
                     "could not read {}: {e}",
                     paths.library_json.display()
                 ))
             })?;
             let meta: LibraryMeta = serde_json::from_slice(&bytes).map_err(|e| {
-                Error::InvalidPath(format!(
+                CoreError::InvalidPath(format!(
                     "{} has a malformed library.json: {e}",
                     paths.root.display()
                 ))
             })?;
             if meta.schema != LIBRARY_SCHEMA {
-                return Err(Error::InvalidPath(format!(
+                return Err(CoreError::InvalidPath(format!(
                     "{} has library schema {} (expected {})",
                     paths.root.display(),
                     meta.schema,
@@ -402,7 +402,7 @@ impl Library {
                 )));
             }
             if uuid::Uuid::parse_str(&meta.library_id).is_err() {
-                return Err(Error::InvalidPath(format!(
+                return Err(CoreError::InvalidPath(format!(
                     "{} has an invalid library_id stamp",
                     paths.root.display()
                 )));
@@ -420,7 +420,7 @@ impl Library {
             })
             .collect();
         if !foreign.is_empty() {
-            return Err(Error::InvalidPath(format!(
+            return Err(CoreError::InvalidPath(format!(
                 "{} is not empty and is not a reHydrate library (no library.json)",
                 paths.root.display()
             )));
@@ -464,7 +464,7 @@ impl Library {
         if foreign.is_empty() {
             Ok(LibraryPathKind::Empty)
         } else {
-            Err(Error::InvalidPath(format!(
+            Err(CoreError::InvalidPath(format!(
                 "{} is not empty and is not a reHydrate library (no library.json)",
                 paths.root.display()
             )))
@@ -652,7 +652,7 @@ impl Library {
 
         let mut out = Vec::with_capacity(rows.len());
         for (document_id, manifest_hex, version_id, observed_at, last_seen_manifest) in rows {
-            let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+            let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| CoreError::Corrupt {
                 path: self.paths.db.display().to_string(),
                 reason: format!("bad manifest hash for {document_id}"),
             })?;
@@ -689,7 +689,7 @@ impl Library {
 
     pub fn get_history(&self, document_id: &str) -> Result<Vec<VersionEntry>> {
         // Pull raw rows first; defer hash validation so a single corrupt
-        // row produces a typed `Error::Corrupt` instead of getting
+        // row produces a typed `CoreError::Corrupt` instead of getting
         // wrapped through rusqlite's error type or — worse, before
         // the H4 fix — silently fabricated.
         type RawRow = (
@@ -725,7 +725,7 @@ impl Library {
         let mut rows: Vec<VersionEntry> = Vec::with_capacity(raw.len());
         for (id, doc_id, manifest_hex, parent, observed_at, source_str, note) in raw {
             let manifest_hash =
-                Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+                Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| CoreError::Corrupt {
                     path: self.paths.db.display().to_string(),
                     reason: format!("bad manifest hash for version {id}"),
                 })?;
@@ -809,11 +809,11 @@ impl Library {
                     |r| r.get(0),
                 )
                 .optional()?
-                .ok_or_else(|| Error::NotFound(format!("document {document_id}")))?
+                .ok_or_else(|| CoreError::NotFound(format!("document {document_id}")))?
             }
         };
 
-        let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+        let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| CoreError::Corrupt {
             path: self.paths.db.display().to_string(),
             reason: format!("bad manifest hash for {document_id}"),
         })?;
@@ -824,16 +824,18 @@ impl Library {
             .files
             .iter()
             .position(|f| f.path.ends_with(".metadata"))
-            .ok_or_else(|| Error::Corrupt {
+            .ok_or_else(|| CoreError::Corrupt {
                 path: "<manifest>".into(),
                 reason: format!("document {document_id} has no .metadata file"),
             })?;
         let meta_bytes = self.blobs.read_to_vec(&manifest.files[meta_idx].sha256)?;
         let mut meta_value: serde_json::Value = serde_json::from_slice(&meta_bytes)?;
-        let map = meta_value.as_object_mut().ok_or_else(|| Error::Corrupt {
-            path: "<manifest>".into(),
-            reason: format!("metadata for {document_id} is not a JSON object"),
-        })?;
+        let map = meta_value
+            .as_object_mut()
+            .ok_or_else(|| CoreError::Corrupt {
+                path: "<manifest>".into(),
+                reason: format!("metadata for {document_id} is not a JSON object"),
+            })?;
 
         mutate(map)?;
 
@@ -936,7 +938,7 @@ impl Library {
     pub fn rename_document(&self, document_id: &str, new_name: &str) -> Result<RecordOutcome> {
         let trimmed = new_name.trim().to_string();
         if trimmed.is_empty() {
-            return Err(Error::InvalidArgument(
+            return Err(CoreError::InvalidArgument(
                 "document name must not be empty".into(),
             ));
         }
@@ -994,7 +996,7 @@ impl Library {
             // Defence: keep the derived namespace tightly scoped so a
             // future caller can't shadow legitimate device files via
             // this back-door.
-            return Err(Error::InvalidArgument(format!(
+            return Err(CoreError::InvalidArgument(format!(
                 "derived artefact path must live under `ocr/`, got {path:?}"
             )));
         }
@@ -1009,9 +1011,9 @@ impl Library {
                 |r| r.get(0),
             )
             .optional()?
-            .ok_or_else(|| Error::NotFound(format!("document {document_id}")))?
+            .ok_or_else(|| CoreError::NotFound(format!("document {document_id}")))?
         };
-        let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+        let hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| CoreError::Corrupt {
             path: self.paths.db.display().to_string(),
             reason: format!("bad manifest hash for {document_id}"),
         })?;
@@ -1125,9 +1127,9 @@ impl Library {
                     |r| r.get(0),
                 )
                 .optional()?
-                .ok_or_else(|| Error::NotFound(format!("document {document_id}")))?;
+                .ok_or_else(|| CoreError::NotFound(format!("document {document_id}")))?;
             drop(conn);
-            let hash = Sha256Hex::from_hex(&h).ok_or_else(|| Error::Corrupt {
+            let hash = Sha256Hex::from_hex(&h).ok_or_else(|| CoreError::Corrupt {
                 path: self.paths.db.display().to_string(),
                 reason: format!("bad manifest hash for {document_id}"),
             })?;
@@ -1174,7 +1176,7 @@ impl Library {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?
-            .ok_or_else(|| Error::NotFound(format!("archived document {document_id}")))?
+            .ok_or_else(|| CoreError::NotFound(format!("archived document {document_id}")))?
         };
         let (visible_name, doc_type, original_parent) = row;
         let parent_for_meta = original_parent.clone().unwrap_or_default();
@@ -1239,7 +1241,9 @@ impl Library {
             )
             .optional()?;
         if exists.is_none() {
-            return Err(Error::NotFound(format!("archived document {document_id}")));
+            return Err(CoreError::NotFound(format!(
+                "archived document {document_id}"
+            )));
         }
 
         tx.execute(
@@ -1307,7 +1311,7 @@ impl Library {
         ) in raw
         {
             let manifest_hash =
-                Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
+                Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| CoreError::Corrupt {
                     path: self.paths.db.display().to_string(),
                     reason: format!("bad manifest hash for archived document {document_id}"),
                 })?;
@@ -1433,11 +1437,12 @@ impl Library {
             observed_at,
             source_str,
             note,
-        } = row.ok_or_else(|| Error::NotFound(format!("version {version_id}")))?;
-        let manifest_hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
-            path: self.paths.db.display().to_string(),
-            reason: format!("bad manifest hash for version {version_id}"),
-        })?;
+        } = row.ok_or_else(|| CoreError::NotFound(format!("version {version_id}")))?;
+        let manifest_hash =
+            Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| CoreError::Corrupt {
+                path: self.paths.db.display().to_string(),
+                reason: format!("bad manifest hash for version {version_id}"),
+            })?;
         let mut entry = VersionEntry {
             id: version_id,
             document_id,
@@ -1581,7 +1586,7 @@ impl Library {
             params![note, version_id],
         )?;
         if n == 0 {
-            return Err(Error::NotFound(format!("version {version_id}")));
+            return Err(CoreError::NotFound(format!("version {version_id}")));
         }
         Ok(())
     }
@@ -1715,7 +1720,7 @@ impl Library {
     pub fn create_folder(&self, visible_name: &str, parent: Option<&str>) -> Result<FolderEntry> {
         let trimmed = visible_name.trim().to_string();
         if trimmed.is_empty() {
-            return Err(Error::InvalidArgument(
+            return Err(CoreError::InvalidArgument(
                 "folder name must not be empty".into(),
             ));
         }
@@ -1755,7 +1760,7 @@ impl Library {
                 |r| r.get(0),
             )?;
             if exists == 0 {
-                return Err(Error::NotFound(format!("folder {p}")));
+                return Err(CoreError::NotFound(format!("folder {p}")));
             }
         }
         // Slot at the end of the sibling list.
@@ -1794,10 +1799,12 @@ impl Library {
         new_sort_index: f64,
     ) -> Result<()> {
         if !new_sort_index.is_finite() {
-            return Err(Error::InvalidArgument("sort_index must be finite".into()));
+            return Err(CoreError::InvalidArgument(
+                "sort_index must be finite".into(),
+            ));
         }
         if new_parent == Some(folder_id) {
-            return Err(Error::InvalidArgument(
+            return Err(CoreError::InvalidArgument(
                 "cannot move a folder into itself".into(),
             ));
         }
@@ -1813,7 +1820,7 @@ impl Library {
             |r| r.get(0),
         )?;
         if exists == 0 {
-            return Err(Error::NotFound(format!("folder {folder_id}")));
+            return Err(CoreError::NotFound(format!("folder {folder_id}")));
         }
 
         // Cycle check: walk up from `new_parent` toward the root; if
@@ -1825,7 +1832,7 @@ impl Library {
                 tx.query_row("SELECT COUNT(*) FROM folders", [], |r| r.get(0))?;
             for _ in 0..folder_count.max(1) {
                 if cur == folder_id {
-                    return Err(Error::InvalidArgument(
+                    return Err(CoreError::InvalidArgument(
                         "cannot move a folder into one of its descendants".into(),
                     ));
                 }
@@ -1859,7 +1866,7 @@ impl Library {
     pub fn rename_folder(&self, folder_id: &str, new_name: &str) -> Result<()> {
         let trimmed = new_name.trim().to_string();
         if trimmed.is_empty() {
-            return Err(Error::InvalidArgument(
+            return Err(CoreError::InvalidArgument(
                 "folder name must not be empty".into(),
             ));
         }
@@ -1874,7 +1881,8 @@ impl Library {
                 |r| r.get(0),
             )
             .optional()?;
-        let metadata_json = row.ok_or_else(|| Error::NotFound(format!("folder {folder_id}")))?;
+        let metadata_json =
+            row.ok_or_else(|| CoreError::NotFound(format!("folder {folder_id}")))?;
 
         // Mutate the metadata JSON in place so we keep every device
         // field (parent, lastOpened, etc.) intact. If it isn't an
@@ -2162,11 +2170,12 @@ impl Library {
                 |r| r.get(0),
             )
             .optional()?
-            .ok_or_else(|| Error::NotFound(format!("version {version_id}")))?;
-        let manifest_hash = Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| Error::Corrupt {
-            path: self.paths.db.display().to_string(),
-            reason: format!("bad manifest hash for version {version_id}"),
-        })?;
+            .ok_or_else(|| CoreError::NotFound(format!("version {version_id}")))?;
+        let manifest_hash =
+            Sha256Hex::from_hex(&manifest_hex).ok_or_else(|| CoreError::Corrupt {
+                path: self.paths.db.display().to_string(),
+                reason: format!("bad manifest hash for version {version_id}"),
+            })?;
         let manifest_bytes = self.blobs.read_to_vec(&manifest_hash)?;
         let manifest = Manifest::from_canonical_json(&manifest_bytes)?;
 
@@ -2174,7 +2183,7 @@ impl Library {
         for f in &manifest.files {
             let target = dest.join(&f.path);
             if !opts.allow_overwrite && target.exists() {
-                return Err(Error::AlreadyExists(target.display().to_string()));
+                return Err(CoreError::AlreadyExists(target.display().to_string()));
             }
         }
         for f in &manifest.files {
@@ -2194,7 +2203,7 @@ impl Library {
 pub struct ReconstructOptions {
     /// When `true`, files already present at the destination paths are
     /// silently replaced. When `false` (the default), reconstruct
-    /// aborts with `Error::AlreadyExists` on the first collision and
+    /// aborts with `CoreError::AlreadyExists` on the first collision and
     /// does not write any blobs — the caller can pick a different
     /// destination or pass `allow_overwrite` deliberately.
     pub allow_overwrite: bool,
@@ -2704,7 +2713,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let lib = Library::open(tmp.path()).unwrap();
         let err = lib.purge_archived_document("never-existed").unwrap_err();
-        assert!(matches!(err, Error::NotFound(_)));
+        assert!(matches!(err, CoreError::NotFound(_)));
     }
 
     #[test]
@@ -2836,7 +2845,7 @@ mod tests {
         let m = seed_manifest(&lib, "doc-1", &[("doc-1.content", b"{}")]);
         lib.record_version(&m, Source::Pulled).unwrap();
         let r = lib.record_derived_artefact("doc-1", "evil/exec.sh", b"#!/bin/sh");
-        assert!(matches!(r, Err(Error::InvalidArgument(_))));
+        assert!(matches!(r, Err(CoreError::InvalidArgument(_))));
     }
 
     #[test]
@@ -2869,7 +2878,7 @@ mod tests {
         std::fs::write(foreign.path().join("notes.txt"), b"hi").unwrap();
         assert!(matches!(
             Library::probe_path(foreign.path()),
-            Err(Error::InvalidPath(_))
+            Err(CoreError::InvalidPath(_))
         ));
     }
 
@@ -2881,7 +2890,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("foreign.txt"), b"hello").unwrap();
         let result = Library::open(tmp.path());
-        assert!(matches!(result, Err(Error::InvalidPath(_))));
+        assert!(matches!(result, Err(CoreError::InvalidPath(_))));
     }
 
     #[test]
@@ -2889,7 +2898,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("library.json"), b"{not valid json").unwrap();
         let result = Library::open(tmp.path());
-        assert!(matches!(result, Err(Error::InvalidPath(_))));
+        assert!(matches!(result, Err(CoreError::InvalidPath(_))));
     }
 
     #[test]
@@ -2899,7 +2908,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _first = Library::open(tmp.path()).unwrap();
         let second = Library::open(tmp.path());
-        assert!(matches!(second, Err(Error::AlreadyOpen(_))));
+        assert!(matches!(second, Err(CoreError::AlreadyOpen(_))));
         // After dropping the first, the lock is released.
         drop(_first);
         let _third = Library::open(tmp.path()).unwrap();

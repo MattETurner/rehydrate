@@ -1,7 +1,13 @@
 use thiserror::Error;
 
+/// The crate's error type. Named `CoreError` (rather than bare
+/// `Error`) so the prefix matches the workspace convention used by
+/// every other crate (`SyncError`, `DeviceError`, `OcrError`,
+/// `PublishError`, `HttpError`, `ParseError`). Call sites that
+/// import a list of error types from across the workspace can then
+/// see at a glance which crate each came from.
 #[derive(Debug, Error)]
-pub enum Error {
+pub enum CoreError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
@@ -36,4 +42,4 @@ pub enum Error {
     AlreadyExists(String),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, CoreError>;

@@ -123,25 +123,25 @@ impl Manifest {
 ///   (Windows silently strips those, leading to silent corruption)
 fn validate_one_path(p: &str) -> Result<()> {
     if p.is_empty() {
-        return Err(crate::Error::Corrupt {
+        return Err(crate::CoreError::Corrupt {
             path: "<manifest>".into(),
             reason: "empty file path".into(),
         });
     }
     if p.contains('\\') {
-        return Err(crate::Error::Corrupt {
+        return Err(crate::CoreError::Corrupt {
             path: "<manifest>".into(),
             reason: format!("backslash not allowed in path: {p:?}"),
         });
     }
     if p.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
-        return Err(crate::Error::Corrupt {
+        return Err(crate::CoreError::Corrupt {
             path: "<manifest>".into(),
             reason: format!("control character in path: {p:?}"),
         });
     }
     if p.starts_with('/') || p.starts_with('~') {
-        return Err(crate::Error::Corrupt {
+        return Err(crate::CoreError::Corrupt {
             path: "<manifest>".into(),
             reason: format!("absolute file path not allowed: {p:?}"),
         });
@@ -150,20 +150,20 @@ fn validate_one_path(p: &str) -> Result<()> {
     // alternate data stream `file.txt:hidden`). Manifest paths from
     // a posix device should never contain one.
     if p.contains(':') {
-        return Err(crate::Error::Corrupt {
+        return Err(crate::CoreError::Corrupt {
             path: "<manifest>".into(),
             reason: format!("colon not allowed in path: {p:?}"),
         });
     }
     for component in p.split('/') {
         if component == ".." {
-            return Err(crate::Error::Corrupt {
+            return Err(crate::CoreError::Corrupt {
                 path: "<manifest>".into(),
                 reason: format!("parent-directory traversal in path: {p:?}"),
             });
         }
         if is_windows_reserved_component(component) {
-            return Err(crate::Error::Corrupt {
+            return Err(crate::CoreError::Corrupt {
                 path: "<manifest>".into(),
                 reason: format!("Windows-reserved name in path: {p:?}"),
             });
@@ -175,7 +175,7 @@ fn validate_one_path(p: &str) -> Result<()> {
         // reMarkable filenames never have trailing dots/spaces.
         if let Some(last) = component.chars().last() {
             if last == '.' || last == ' ' {
-                return Err(crate::Error::Corrupt {
+                return Err(crate::CoreError::Corrupt {
                     path: "<manifest>".into(),
                     reason: format!("trailing dot or space in path component: {p:?}"),
                 });

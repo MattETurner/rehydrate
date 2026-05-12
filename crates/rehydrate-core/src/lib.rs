@@ -20,7 +20,7 @@ pub(crate) mod paths;
 mod library;
 
 pub use blob::PutOutcome;
-pub use error::{Error, Result};
+pub use error::{CoreError, Result};
 pub use hash::Sha256Hex;
 pub use library::{
     ArchiveReason, ArchivedDocument, DocumentSummary, FolderEntry, GarbageCollectReport,
