@@ -98,7 +98,12 @@ function DevicePopover({
 }) {
   const [busy, setBusy] = useState(false);
   return (
-    <div className="popover" onClick={(e) => e.stopPropagation()}>
+    // `popover-start` anchors the popover to the left edge of the
+    // pill. The default `.popover` rule flares leftward (right for
+    // the kebab on the toolbar's right edge), but this pill sits
+    // on the LEFT of the toolbar so the default would overflow
+    // the window — see the matching CSS comment.
+    <div className="popover popover-start" onClick={(e) => e.stopPropagation()}>
       <div style={{ marginBottom: "var(--space-3)" }}>
         <div style={{ fontWeight: 600, marginBottom: 2 }}>
           {state.info?.model ?? "reMarkable"}

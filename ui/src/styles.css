@@ -1728,6 +1728,16 @@ input[type="search"]:focus {
   z-index: 50;
   animation: slideInUp var(--motion-base) var(--ease-out);
 }
+/* Left-anchored variant. The default rule above flares the
+ * popover leftward from its trigger, which is right for toolbar
+ * actions on the right edge (kebab, etc.) but wrong for triggers
+ * that live on the LEFT side of the toolbar — those overflow the
+ * window. Triggers near the left edge should opt into
+ * `popover-start` so the popover flares rightward instead. */
+.popover.popover-start {
+  right: auto;
+  left: 0;
+}
 .popover.menu {
   padding: 4px;
   min-width: 220px;
