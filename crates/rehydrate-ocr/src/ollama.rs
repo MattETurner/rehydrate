@@ -25,11 +25,20 @@ use crate::backend::{OcrBackend, OcrCancel, OcrError, PageTranscript, Transcribe
 use crate::http::{AgentError, RestrictedAgent};
 use crate::progress::OcrProgressEvent;
 
-/// Hard per-page read timeout for `/api/generate`. CPU-only inference
-/// of a single notebook page through `qwen3.5:9b` can take a couple
-/// of minutes on a laptop; give the user a wide budget rather than
-/// dropping a slow-but-progressing run.
-const GENERATE_TIMEOUT: Duration = Duration::from_secs(600);
+/// Per-CHUNK read timeout for `/api/generate`. With `stream: true`
+/// the daemon sends one NDJSON line per generation step, so this is
+/// "no token in N seconds" rather than "no whole response in N
+/// seconds." 120s is comfortable for the largest curated model
+/// (`qwen3.5:9b`) on CPU; tokens at that tier land every few seconds
+/// once the first token does, so a 120s gap signals a real stall
+/// rather than just slow inference.
+///
+/// The earlier non-streaming path used a 600s budget because the
+/// entire generation had to finish before *any* byte arrived;
+/// switching to streaming made that ceiling meaningless and a
+/// shorter one safer (a wedged daemon is detected sooner without
+/// hurting healthy slow runs).
+const GENERATE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// `OcrBackend` impl that talks to a user-provided Ollama daemon.
 pub struct OllamaBackend {
@@ -94,6 +103,20 @@ impl OllamaBackend {
 
     /// Single-page request. Synchronous (blocking) because ureq is
     /// blocking; callers run this inside `spawn_blocking`.
+    ///
+    /// Uses Ollama's NDJSON streaming response (`stream: true`):
+    /// one JSON line per generation step, concatenated client-side.
+    /// The earlier non-streaming version reliably timed out on
+    /// `qwen3.5:9b` on CPU because the daemon buffered the entire
+    /// generation (often >10 minutes) before sending any byte —
+    /// the per-read timeout fired waiting for the status line and
+    /// the page failed with "Network Error: Error encountered in
+    /// the status line: timed out reading response." Streaming
+    /// flushes headers immediately and ships tokens as they're
+    /// produced, so the timeout now bounds "no token in N seconds"
+    /// instead of "no response in N seconds total." Side effects:
+    /// the UI starts seeing progress within a second of dispatch,
+    /// and a wedged daemon is detected in 2 minutes instead of 10.
     fn transcribe_one_blocking(&self, png_bytes: &[u8], prompt: &str) -> Result<String, OcrError> {
         // `think: false` disables the Qwen3 / Qwen3.5 family's
         // chain-of-thought trace. Without it the model is free to
@@ -110,24 +133,60 @@ impl OllamaBackend {
             "model": self.model,
             "prompt": prompt,
             "images": [STANDARD.encode(png_bytes)],
-            "stream": false,
+            "stream": true,
             "think": false,
             "options": { "temperature": 0.1 },
         });
         let url = format!("{}/api/generate", self.base_url);
-        let resp = self
+
+        let mut full = String::new();
+        let mut error_body: Option<String> = None;
+        let mut saw_done = false;
+        let status = self
             .agent
-            .post_json(&url, &[], &payload)
+            .post_json_streaming(&url, &[], &payload, |line| {
+                // Non-200 responses arrive as a single buffered line
+                // (the shared agent calls the callback once with the
+                // body, then returns the status code). We can't tell
+                // status from inside the callback without changing
+                // the agent's signature, so we always try to parse
+                // each line — failures stash the raw body for the
+                // post-call status branch to surface.
+                let v: serde_json::Value = match serde_json::from_str(line) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        // Not JSON — probably an error body from a
+                        // non-2xx. Remember it; the status check
+                        // below decides whether to surface it.
+                        if error_body.is_none() {
+                            error_body = Some(line.to_string());
+                        }
+                        return Ok(());
+                    }
+                };
+                if let Some(chunk) = v.get("response").and_then(|s| s.as_str()) {
+                    full.push_str(chunk);
+                }
+                // The daemon emits `{"done": true, ...}` as its
+                // final line. Capture that so we can distinguish
+                // "stream completed cleanly" from "connection died
+                // mid-generation" — the latter is a network issue
+                // we want to surface rather than silently truncate.
+                if v.get("done").and_then(|d| d.as_bool()) == Some(true) {
+                    saw_done = true;
+                }
+                Ok(())
+            })
             .map_err(map_agent_error)?;
-        match resp.status {
-            200 => {
-                let v: serde_json::Value = serde_json::from_str(&resp.body)
-                    .map_err(|e| OcrError::Backend(format!("malformed JSON from ollama: {e}")))?;
-                let raw = v.get("response").and_then(|s| s.as_str()).ok_or_else(|| {
-                    OcrError::Backend("ollama response missing `response` field".into())
-                })?;
-                Ok(strip_thinking(raw))
-            }
+
+        match status {
+            200 if saw_done => Ok(strip_thinking(&full)),
+            200 => Err(OcrError::Backend(
+                "ollama stream ended before the model signalled \
+                 `done: true` — the connection likely dropped \
+                 mid-generation. Try again."
+                    .into(),
+            )),
             // A 404 from `/api/generate` is overwhelmingly "model not
             // pulled" — Ollama always serves the endpoint itself, so
             // there's no realistic "route not found" miss here. The
@@ -143,12 +202,12 @@ impl OllamaBackend {
             ))),
             500..=599 => Err(OcrError::Backend(format!(
                 "ollama returned HTTP {}: {}",
-                resp.status,
-                truncate(&resp.body, 240)
+                status,
+                truncate(&error_body.unwrap_or_default(), 240)
             ))),
             other => Err(OcrError::Backend(format!(
                 "ollama returned HTTP {other}: {}",
-                truncate(&resp.body, 240)
+                truncate(&error_body.unwrap_or_default(), 240)
             ))),
         }
     }

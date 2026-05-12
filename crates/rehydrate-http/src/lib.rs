@@ -119,6 +119,66 @@ impl RestrictedAgent {
         }
     }
 
+    /// POST a JSON body and stream the response line by line through
+    /// `on_line`. Designed for NDJSON / line-delimited-JSON endpoints
+    /// like Ollama's `/api/generate?stream=true`, where each line is a
+    /// generation step and the connection stays open until the model
+    /// finishes.
+    ///
+    /// Why this exists instead of `post_json` returning bytes: with
+    /// `stream: false`, Ollama buffers the entire response before
+    /// sending it. On a 9B vision model running on CPU, that buffer
+    /// can take 10+ minutes; ureq's per-read timeout fires before
+    /// any byte arrives and the request fails with
+    /// `Error encountered in the status line: timed out reading
+    /// response`. Streaming flips the timeout's reference frame:
+    /// the per-read cap now applies to "no token in N seconds"
+    /// rather than "no response in total in N seconds", and the
+    /// model's headers arrive immediately.
+    ///
+    /// `on_line` is called for every non-empty line. Return `Ok(())`
+    /// to continue, or `Err(HttpError)` to abort the read early
+    /// (the caller's error is propagated up).
+    pub fn post_json_streaming(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &serde_json::Value,
+        mut on_line: impl FnMut(&str) -> Result<(), HttpError>,
+    ) -> Result<u16, HttpError> {
+        use std::io::{BufRead, BufReader};
+
+        self.guard(url)?;
+        let mut req = self.inner.post(url);
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        let resp = match req.send_json(body.clone()) {
+            Ok(r) => r,
+            // Non-2xx status — return the status + buffered body
+            // unchanged via the line callback's first call (which
+            // also lets the caller surface the body to the user).
+            Err(ureq::Error::Status(code, r)) => {
+                let body_str = redact_credentials(&r.into_string().unwrap_or_default());
+                if !body_str.is_empty() {
+                    on_line(&body_str)?;
+                }
+                return Ok(code);
+            }
+            Err(ureq::Error::Transport(t)) => return Err(HttpError::Network(t.to_string())),
+        };
+        let status = resp.status();
+        let reader = BufReader::new(resp.into_reader());
+        for line in reader.lines() {
+            let line = line.map_err(|e| HttpError::Network(e.to_string()))?;
+            if line.is_empty() {
+                continue;
+            }
+            on_line(&line)?;
+        }
+        Ok(status)
+    }
+
     /// GET — same host-pin rules.
     pub fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
         self.guard(url)?;
