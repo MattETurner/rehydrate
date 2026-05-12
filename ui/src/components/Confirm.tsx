@@ -10,6 +10,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { useDialogA11y } from "../dialogA11y";
+
 export interface ConfirmOptions {
   title: string;
   body?: ReactNode;
@@ -56,30 +58,6 @@ export function ConfirmHost({ children }: { children: ReactNode }) {
     [pending],
   );
 
-  // Capture-phase window listener so Esc/Enter handle the topmost
-  // Confirm BEFORE the App's bubble-phase global cascade fires. Without
-  // this, pressing Esc with a Confirm-on-top-of-Drawer would close the
-  // drawer underneath as well as the Confirm. `stopImmediatePropagation`
-  // also prevents anything else listening on `window` (e.g. dialog
-  // local handlers) from firing — which is what we want; the Confirm
-  // is unambiguously the top of the modal stack.
-  useEffect(() => {
-    if (!pending) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        close(false);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        close(true);
-      }
-    }
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [pending, close]);
-
   const ctx = useMemo<ConfirmContextValue>(() => ({ confirm }), [confirm]);
 
   return (
@@ -109,16 +87,67 @@ function ConfirmDialog({
   // `dialog`. The two roles differ in how screen readers announce
   // them — `alertdialog` is read more assertively, matching the
   // higher-stakes nature of "delete forever / archive bulk / etc."
-  const titleId = useId();
   const bodyId = useId();
   const role = pending.destructive ? "alertdialog" : "dialog";
+
+  // Route Tab focus-trap, Escape, and focus-restoration through the
+  // shared a11y hook. Critical for stacked-modal correctness: the
+  // hook pushes this dialog onto its module-local stack so a
+  // Confirm-on-top-of-Settings cascade keeps Tab confined to the
+  // Confirm rather than letting the underlying Settings handler
+  // yank focus back. The previous bespoke window-keydown handler
+  // worked for Escape (via `stopImmediatePropagation`) but not for
+  // Tab, which the audit caught as the focus-leak regression.
+  const { dialogProps, rootRef, titleId } = useDialogA11y({
+    onEscape: () => onClose(false),
+  });
+
+  // Enter-to-confirm is the only key the shared hook doesn't
+  // handle. Stack-aware via capture-phase listening — the deeper
+  // dialog's `useDialogA11y` push means we're guaranteed to be the
+  // topmost when this fires. `stopImmediatePropagation` so any
+  // accidental App-level Enter binding doesn't double-fire.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Enter") return;
+      // Don't grab Enter when the focus is inside a form field that
+      // owns it (textarea, contenteditable). The two buttons are
+      // the focused element via initialFocusRef → `confirmBtnRef`
+      // (auto-focus on mount) and Tab moves focus among them; no
+      // text input lives in the Confirm body today, but guard for
+      // future additions.
+      const active = document.activeElement as HTMLElement | null;
+      if (active && (active.tagName === "TEXTAREA" || active.isContentEditable)) {
+        return;
+      }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      onClose(true);
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose]);
+
+  // Override the hook's auto-focus to target the confirm button
+  // specifically — Enter-to-confirm is the dominant flow, so the
+  // primary action gets the keyboard focus on mount. The hook's
+  // default behavior would auto-focus the first focusable
+  // descendant (Cancel, in our DOM order), which would be wrong.
+  useEffect(() => {
+    confirmBtnRef.current?.focus();
+  }, [confirmBtnRef]);
+
   return (
     <div className="modal-backdrop" onClick={() => onClose(false)}>
       <div
         className="modal"
         onClick={(e) => e.stopPropagation()}
+        ref={rootRef}
+        {...dialogProps}
+        // Override the `role` from dialogProps so destructive
+        // confirms get `alertdialog` semantics (assertive screen-
+        // reader announcement) while the rest stay as `dialog`.
         role={role}
-        aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={pending.body ? bodyId : undefined}
       >
@@ -135,7 +164,6 @@ function ConfirmDialog({
           <button
             ref={(el) => {
               confirmBtnRef.current = el;
-              if (el) el.focus();
             }}
             className={pending.destructive ? "primary danger" : "primary"}
             onClick={() => onClose(true)}

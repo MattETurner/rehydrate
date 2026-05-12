@@ -65,7 +65,14 @@ export interface UseOcrResult {
 }
 
 export function useOcr(injections: UseOcrInjections): UseOcrResult {
-  const { refreshLibrary, toast, openSettings, openTranscript } = injections;
+  // Stash injections in a ref. App-side callers pass inline arrows
+  // for `openSettings` / `openTranscript` / the `refreshLibrary`
+  // re-export that change identity each render; without the ref,
+  // every `useCallback` below would be re-created per render and
+  // defeat the entire point of memoization. See `useLibrary` for
+  // the same pattern.
+  const injectionsRef = useRef(injections);
+  injectionsRef.current = injections;
 
   const [ocrJob, setOcrJob] = useState<OcrJob | null>(null);
   const [ocrJobElapsed, setOcrJobElapsed] = useState(0);
@@ -120,11 +127,12 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
 
   const startOcrJob = useCallback(
     (doc: DocumentSummary, language?: string) => {
+      const { toast } = injectionsRef.current;
       setOcrJob((cur) => {
         if (cur && cur.phase === "running") {
           toast.show({
             tone: "warn",
-            body: `Already transcribing "${cur.visibleName}". Try again once it's done.`,
+            body: `Already transcribing "${cur.visibleName}" — wait for that to finish first.`,
           });
           return cur;
         }
@@ -155,11 +163,25 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
                 }
               : cur,
           );
+          const { refreshLibrary, toast, openTranscript } =
+            injectionsRef.current;
           await refreshLibrary();
+          // Render the doc name in `<strong>` so the visual anchor
+          // of the toast survives — `styles.css .toast .toast-body
+          // strong` restores full-strength text against the muted
+          // body. The earlier hook extraction had collapsed this
+          // to a plain template string and dropped the styling.
           toast.show({
             tone: "ok",
             duration: 8000,
-            body: `Transcribed "${doc.visible_name}" — ${summary.page_count} ${summary.page_count === 1 ? "page" : "pages"}, ${summary.char_count.toLocaleString()} characters.`,
+            body: (
+              <>
+                Transcribed <strong>{doc.visible_name}</strong> —{" "}
+                {summary.page_count}{" "}
+                {summary.page_count === 1 ? "page" : "pages"},{" "}
+                {summary.char_count.toLocaleString()} characters.
+              </>
+            ),
             action: {
               label: "View",
               onClick: () => openTranscript(doc),
@@ -170,7 +192,7 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
           const unconfigured = parseOllamaUnconfigured(e);
           if (unconfigured) {
             setOcrJob(null);
-            openSettings("ollama", unconfigured.message);
+            injectionsRef.current.openSettings("ollama", unconfigured.message);
             return;
           }
           setOcrJob((cur) =>
@@ -178,16 +200,21 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
               ? { ...cur, phase: "error", error: formatError(e) }
               : cur,
           );
-          toast.show({
+          injectionsRef.current.toast.show({
             tone: "err",
             duration: 0,
-            body: `OCR failed for "${doc.visible_name}": ${formatError(e)}`,
+            body: (
+              <>
+                OCR failed for <strong>{doc.visible_name}</strong>:{" "}
+                {formatError(e)}
+              </>
+            ),
           });
           setOcrJob(null);
         }
       })();
     },
-    [openSettings, openTranscript, refreshLibrary, toast],
+    [],
   );
 
   const sweepTokenRef = useRef(0);
@@ -267,6 +294,7 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
     if (!stillOurs()) return;
     setOcrJob(null);
     setAutoOcrSweep(null);
+    const { refreshLibrary, toast } = injectionsRef.current;
     if (transcribed > 0 || skipped > 0) {
       await refreshLibrary();
       toast.show({
@@ -284,7 +312,7 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
         body: "Auto-OCR couldn't reach Ollama. Open Settings → Ollama to test the connection.",
       });
     }
-  }, [refreshLibrary, toast]);
+  }, []);
 
   // Chip × button: invalidates the sweep token (universal "stop any
   // in-flight sweep" lever) and clears local state. Single-job mode

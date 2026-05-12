@@ -18,7 +18,7 @@
 // batches that with the library + recent-libraries hydrate so all
 // three land before the first render commits.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { formatError } from "../formatError";
 import { ipc, onDeviceReachable } from "../ipc";
@@ -45,7 +45,11 @@ export interface UseDeviceSyncResult {
 export function useDeviceSync(
   injections: UseDeviceSyncInjections,
 ): UseDeviceSyncResult {
-  const { setError, openPasswordDialog, closePasswordDialog } = injections;
+  // Stash injections in a ref so callbacks below don't have to
+  // re-memoize when the App passes inline arrows that change
+  // identity every render. See `useLibrary` for the same pattern.
+  const injectionsRef = useRef(injections);
+  injectionsRef.current = injections;
   const [device, setDevice] = useState<DeviceState | null>(null);
 
   // Single subscription to the Tauri-emitted reachability event.
@@ -70,6 +74,7 @@ export function useDeviceSync(
   }, []);
 
   const tryConnect = useCallback(async () => {
+    const { setError, openPasswordDialog } = injectionsRef.current;
     setError(null);
     try {
       if (device?.has_stored_password) {
@@ -79,9 +84,9 @@ export function useDeviceSync(
         openPasswordDialog();
       }
     } catch (e) {
-      setError(formatError(e));
+      injectionsRef.current.setError(formatError(e));
     }
-  }, [device?.has_stored_password, openPasswordDialog, setError]);
+  }, [device?.has_stored_password]);
 
   const disconnect = useCallback(async () => {
     await ipc.disconnectDevice();
@@ -92,9 +97,9 @@ export function useDeviceSync(
     async (password: string, remember: boolean) => {
       await ipc.connectDevice(password, remember);
       setDevice(await ipc.deviceState());
-      closePasswordDialog();
+      injectionsRef.current.closePasswordDialog();
     },
-    [closePasswordDialog],
+    [],
   );
 
   return { device, setDevice, tryConnect, disconnect, submitPassword };

@@ -69,7 +69,14 @@ export interface UseLibraryResult {
 }
 
 export function useLibrary(injections: UseLibraryInjections): UseLibraryResult {
-  const { setError } = injections;
+  // Stash the injections in a ref so the callbacks below don't have
+  // to declare them in `useCallback` deps. App-side callers tend to
+  // pass inline arrows for the `setError` adapter (`(msg) =>
+  // setError(msg)`) which change identity every render; without the
+  // ref, every memoized callback in this hook would be re-created
+  // on every render, defeating the entire point of memoization.
+  const injectionsRef = useRef(injections);
+  injectionsRef.current = injections;
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryPath, setLibraryPath] = useState<string | null>(null);
   const [recentLibraries, setRecentLibraries] = useState<RecentLibraryEntry[]>(
@@ -97,11 +104,11 @@ export function useLibrary(injections: UseLibraryInjections): UseLibraryResult {
       setFolders(f);
       setArchived(a);
     } catch (e) {
-      setError(formatError(e));
+      injectionsRef.current.setError(formatError(e));
     } finally {
       refreshing.current = false;
     }
-  }, [setError]);
+  }, []);
 
   const refreshRecentLibraries = useCallback(async () => {
     try {

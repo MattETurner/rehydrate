@@ -16,6 +16,18 @@
 // close). A hook lets each component place the role props on
 // whichever node is conceptually the dialog without forcing a
 // particular DOM shape.
+//
+// Stacking model
+// --------------
+// When two modals are open at once (typical: a Confirm-on-top-of-
+// Settings cascade), only the topmost one should hear Tab and
+// Escape. The hook tracks a module-local stack of mounted instances
+// and gates its document-level handler on "am I the top?". Without
+// this, a Tab keypress while the Confirm was open would call
+// `preventDefault()` and `focus()` in *both* handlers — the lower
+// modal's handler would yank focus back out of the Confirm and
+// onto whatever was at the bottom of the lower dialog. The audit
+// caught this exact regression.
 
 import { useEffect, useId, useRef } from "react";
 
@@ -40,12 +52,38 @@ export interface DialogA11yResult {
   titleId: string;
 }
 
+// Module-local stack of dialog instance ids. Each `useDialogA11y`
+// instance pushes an id at mount and pops at unmount. The
+// document-level keydown handler only runs its trap/escape logic
+// when its own id is at the top of the stack — i.e. it's the
+// most-recently-mounted live dialog.
+let dialogStack: number[] = [];
+let nextDialogId = 1;
+
 export function useDialogA11y(opts: DialogA11yOptions = {}): DialogA11yResult {
   const titleId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
+  const myId = useRef<number>(0);
+  if (myId.current === 0) {
+    myId.current = nextDialogId++;
+  }
+
+  // Hold `onEscape` in a ref so the keydown effect doesn't churn
+  // on every render. Callers commonly pass an inline arrow
+  // (`{ onEscape: () => onClose() }`) which changes identity each
+  // render; without the ref, the keydown listener was re-bound on
+  // every keystroke while a dialog was open. The ref lets the
+  // listener subscribe once at mount and always read the latest
+  // closure when it fires.
+  const onEscapeRef = useRef(opts.onEscape);
+  onEscapeRef.current = opts.onEscape;
 
   useEffect(() => {
+    // Push our id; remember the previously-focused element so we
+    // can restore it on unmount.
+    const id = myId.current;
+    dialogStack.push(id);
     previouslyFocused.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -60,6 +98,7 @@ export function useDialogA11y(opts: DialogA11yOptions = {}): DialogA11yResult {
       first?.focus();
     }
     return () => {
+      dialogStack = dialogStack.filter((x) => x !== id);
       const el = previouslyFocused.current;
       if (el && el !== document.body && document.contains(el)) {
         el.focus();
@@ -69,11 +108,22 @@ export function useDialogA11y(opts: DialogA11yOptions = {}): DialogA11yResult {
   }, []);
 
   useEffect(() => {
+    function isTopmost(): boolean {
+      return dialogStack[dialogStack.length - 1] === myId.current;
+    }
     function onKey(e: KeyboardEvent) {
+      // Only the topmost mounted dialog handles Tab / Escape. A
+      // Confirm rendered on top of Settings is itself the topmost
+      // dialog (assuming the Confirm uses `useDialogA11y` — which
+      // it does via its own `useDialogA11y` instance inside
+      // `Confirm.tsx`); the Settings instance silently ignores
+      // these keys until the Confirm unmounts.
+      if (!isTopmost()) return;
       if (e.key === "Escape") {
-        if (opts.onEscape) {
+        const cb = onEscapeRef.current;
+        if (cb) {
           e.preventDefault();
-          opts.onEscape();
+          cb();
         }
         return;
       }
@@ -94,8 +144,8 @@ export function useDialogA11y(opts: DialogA11yOptions = {}): DialogA11yResult {
       const active = document.activeElement as HTMLElement | null;
       if (!root.contains(active)) {
         // Focus escaped (browser quirk after backdrop click etc.).
-        // Snap it back onto the dialog and let the next Tab proceed
-        // normally.
+        // Snap it back onto the dialog and let the next Tab
+        // proceed normally.
         e.preventDefault();
         first.focus();
         return;
@@ -110,8 +160,10 @@ export function useDialogA11y(opts: DialogA11yOptions = {}): DialogA11yResult {
     }
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opts.onEscape]);
+    // The handler reads `onEscape` via the ref, and `isTopmost`
+    // closes over `myId.current` (stable from mount). No deps to
+    // declare — this effect runs exactly once per mounted dialog.
+  }, []);
 
   return {
     dialogProps: {
