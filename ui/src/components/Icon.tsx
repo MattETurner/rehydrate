@@ -231,11 +231,13 @@ export function Icon({ name, size = 14, className, ...rest }: Props) {
         </svg>
       );
     case "settings":
-      // Simple gear: 8 teeth + central hole.
+      // Cogwheel: 8-tooth gear outline + central hole. The path
+      // traces alternating tip/valley vertices around a circle
+      // (tip radius 6.2, valley radius 4.7) — 24 points, closed.
       return (
         <svg {...common}>
-          <circle cx="8" cy="8" r="2.5" />
-          <path d="M8 1 V3 M8 13 V15 M1 8 H3 M13 8 H15 M3.2 3.2 L4.6 4.6 M11.4 11.4 L12.8 12.8 M3.2 12.8 L4.6 11.4 M11.4 4.6 L12.8 3.2" />
+          <path d="M14.1 6.8 L14.1 9.2 L12.3 9.8 L13.2 11.5 L11.5 13.2 L9.8 12.3 L9.2 14.1 L6.8 14.1 L6.2 12.3 L4.5 13.2 L2.8 11.5 L3.7 9.8 L1.9 9.2 L1.9 6.8 L3.7 6.2 L2.8 4.5 L4.5 2.8 L6.2 3.7 L6.8 1.9 L9.2 1.9 L9.8 3.7 L11.5 2.8 L13.2 4.5 L12.3 6.2 Z" />
+          <circle cx="8" cy="8" r="2" />
         </svg>
       );
     case "x":

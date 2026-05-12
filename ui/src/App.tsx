@@ -1319,14 +1319,6 @@ export function App() {
             </button>
           </>
         )}
-        <button
-          className="icon ghost"
-          aria-label="Settings"
-          title="Settings — Ollama (OCR) and Publishing"
-          onClick={() => setSettings({ tab: "ollama", banner: null })}
-        >
-          <Icon name="settings" />
-        </button>
         <Menu
           trigger={
             <button className="icon ghost" aria-label="More actions">
