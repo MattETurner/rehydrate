@@ -117,7 +117,7 @@ impl OllamaBackend {
         let url = format!("{}/api/generate", self.base_url);
         let resp = self
             .agent
-            .post_json(&url, &payload)
+            .post_json(&url, &[], &payload)
             .map_err(map_agent_error)?;
         match resp.status {
             200 => {

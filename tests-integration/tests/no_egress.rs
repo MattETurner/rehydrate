@@ -105,57 +105,72 @@ fn rehydrate_business_crates_have_no_http_clients() {
 }
 
 #[test]
-fn sanctioned_egress_crates_pin_to_one_host() {
-    // The two crates that legitimately make outbound HTTP requests
-    // (`rehydrate-ocr` for Ollama, `rehydrate-publish` for
-    // Ghost/WordPress) must both expose a `RestrictedAgent` that
-    // pins each request to the host the user explicitly configured.
-    // A future refactor that bypasses the wrapper — e.g. by
-    // calling `ureq::Agent::new()` directly — would defeat the
-    // privacy story, so this positive-control assertion locks the
-    // invariant in CI.
+fn sanctioned_egress_lives_in_rehydrate_http() {
+    // After the rehydrate-http extraction, `RestrictedAgent` lives in a
+    // single shared crate and the two sanctioned-egress callers
+    // (`rehydrate-ocr`, `rehydrate-publish`) re-export it from
+    // their own `http.rs` shims. The privacy invariant is:
+    //
+    // 1. The shared crate defines `RestrictedAgent` + `host_of`.
+    // 2. The two caller crates re-export from `rehydrate_http`
+    //    rather than defining their own ureq agents.
+    // 3. No file in *either* caller crate constructs a bare ureq
+    //    agent directly. The only place `ureq::AgentBuilder::new()`
+    //    may appear is inside the shared crate.
+    //
+    // A refactor that bypasses the wrapper — e.g. by calling
+    // `ureq::Agent::new()` from a new module in the caller crate —
+    // would fail this test. CI catches the regression before merge.
     let root = workspace_root_path();
+
+    let shared = root.join("crates/rehydrate-http/src/lib.rs");
+    let shared_body = fs::read_to_string(&shared)
+        .unwrap_or_else(|e| panic!("expected shared HTTP wrapper at {} ({e})", shared.display()));
+    assert!(
+        shared_body.contains("pub struct RestrictedAgent"),
+        "{} must define `pub struct RestrictedAgent`: the wrapper is the \
+         only sanctioned way to obtain a ureq agent in the workspace.",
+        shared.display()
+    );
+    assert!(
+        shared_body.contains("host_of("),
+        "{} must use `host_of(...)` to compare request hosts against the \
+         pinned base — bypassing it would let a redirect or malicious \
+         config exfiltrate to a different host.",
+        shared.display()
+    );
+
+    // The two caller-side shims must re-export from `rehydrate_http`
+    // rather than rolling their own.
     for path in [
         root.join("crates/rehydrate-ocr/src/http.rs"),
         root.join("crates/rehydrate-publish/src/http.rs"),
     ] {
         let body = fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!(
-                "expected sanctioned-egress wrapper at {} ({e})",
+                "expected sanctioned-egress shim at {} ({e})",
                 path.display()
             )
         });
         assert!(
-            body.contains("pub struct RestrictedAgent"),
-            "{} must define `pub struct RestrictedAgent`: the wrapper is the \
-             only sanctioned way to obtain a ureq agent inside the crate.",
+            body.contains("rehydrate_http::"),
+            "{} must re-export `RestrictedAgent` from the shared `rehydrate-http` \
+             crate. Defining a local copy would re-introduce the drift the audit \
+             flagged.",
             path.display()
         );
         assert!(
-            body.contains("host_of("),
-            "{} must use `host_of(...)` to compare request hosts against the \
-             pinned base — bypassing it would let a redirect or malicious \
-             config exfiltrate to a different host.",
+            !body.contains("ureq::AgentBuilder") && !body.contains("ureq::Agent::new"),
+            "{} must not construct ureq agents directly — re-export the shared \
+             `RestrictedAgent` instead.",
             path.display()
         );
     }
-    // Same files must not call the un-pinned `ureq::Agent::new()`
-    // constructor — that would bypass the host pin entirely.
-    // `AgentBuilder::new()` is fine, since `for_base_with_timeout`
-    // builds the pinned agent through it; we ban it only outside
-    // those constructor paths via grep — which is impossible
-    // without a real parser, so we rely on the broader assertion
-    // that the file uses the host-pin pattern.
-    //
-    // The narrower check: no file in these crates *outside* http.rs
-    // should reference `ureq::Agent::new` or `ureq::AgentBuilder::new`.
-    // The wrappers themselves call `AgentBuilder::new()` inside
-    // `for_base_with_timeout`; anything else routing around the
-    // wrapper would have to do so here.
-    for (crate_dir, allowed_file) in &[
-        ("crates/rehydrate-ocr/src", "http.rs"),
-        ("crates/rehydrate-publish/src", "http.rs"),
-    ] {
+
+    // No file in either caller crate's `src/` should reach for the
+    // un-pinned `ureq::Agent::new` / `AgentBuilder::new` constructors.
+    // Walk both source trees and fail on any direct construction.
+    for crate_dir in ["crates/rehydrate-ocr/src", "crates/rehydrate-publish/src"] {
         let dir = root.join(crate_dir);
         let entries =
             fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {} ({e})", dir.display()));
@@ -164,19 +179,16 @@ fn sanctioned_egress_crates_pin_to_one_host() {
             if p.extension().and_then(|e| e.to_str()) != Some("rs") {
                 continue;
             }
-            if p.file_name().and_then(|n| n.to_str()) == Some(*allowed_file) {
-                continue;
-            }
             let body = fs::read_to_string(&p).unwrap_or_default();
             assert!(
                 !body.contains("ureq::Agent::new")
                     && !body.contains("ureq::AgentBuilder::new")
                     && !body.contains("AgentBuilder::new()"),
-                "{} must construct ureq agents only through {}::RestrictedAgent — \
-                 calling ureq::Agent::new() / AgentBuilder::new() directly bypasses \
+                "{} must construct ureq agents only through \
+                 rehydrate_http::RestrictedAgent — calling \
+                 ureq::Agent::new() / AgentBuilder::new() directly bypasses \
                  the host pin.",
-                p.display(),
-                allowed_file
+                p.display()
             );
         }
     }

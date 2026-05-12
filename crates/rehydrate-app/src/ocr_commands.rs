@@ -16,10 +16,9 @@
 //! reload step.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Instant;
 
-use rehydrate_core::{Library, Manifest, VersionId};
+use rehydrate_core::{Manifest, VersionId};
 use rehydrate_ocr::{
     default_model_id, OcrBackend, OcrCancel, OcrError, OcrProgressEvent, OllamaBackend,
     TranscribeOptions,
@@ -38,22 +37,9 @@ use crate::keychain;
 use crate::state::{
     AppState, OllamaPing, KEYRING_GHOST_CREDS, KEYRING_WORDPRESS_CREDS, OLLAMA_PING_TTL,
 };
+use crate::util::{err, lib_arc};
 
 const TRANSCRIPT_PATH: &str = "ocr/transcript.md";
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
-
-async fn lib_arc(state: &State<'_, AppState>) -> Result<Arc<Library>, String> {
-    state
-        .library
-        .lock()
-        .await
-        .as_ref()
-        .map(Arc::clone)
-        .ok_or_else(|| "no library is open".to_string())
-}
 
 // =====================================================================
 //   Ollama config + reachability
@@ -143,7 +129,7 @@ pub async fn ping_ollama(base_url: String) -> Result<PingReport, String> {
             }
         };
         let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
-        match agent.get(&url) {
+        match agent.get(&url, &[]) {
             Ok(resp) if resp.status == 200 => {
                 match serde_json::from_str::<TagsResponse>(&resp.body) {
                     Ok(parsed) => PingReport {

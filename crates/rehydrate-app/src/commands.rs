@@ -22,10 +22,7 @@ use crate::config;
 use crate::keychain;
 use crate::logging;
 use crate::state::{default_library_dir, AppState, KEYRING_DEVICE_USER};
-
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
-}
+use crate::util::{err, lib_arc};
 
 /// Resolve the per-user known-hosts store for SSH host-key pinning.
 /// Falls back to a cwd-relative path if the OS doesn't expose a
@@ -37,20 +34,6 @@ fn known_hosts_for_app() -> KnownHosts {
         .map(|d| d.config_dir().to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     KnownHosts::new(dir.join("known_hosts.json"))
-}
-
-/// Clone the `Arc<Library>` out of the mutex briefly and drop the guard.
-/// The returned Arc keeps the Library alive; long operations against the
-/// library can then run without holding the AppState mutex, so other
-/// commands aren't blocked while a sync or open_document is in flight.
-async fn lib_arc(state: &State<'_, AppState>) -> Result<Arc<Library>, String> {
-    state
-        .library
-        .lock()
-        .await
-        .as_ref()
-        .map(Arc::clone)
-        .ok_or_else(|| "no library is open".to_string())
 }
 
 #[tauri::command]

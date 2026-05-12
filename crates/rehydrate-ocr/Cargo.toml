@@ -13,19 +13,17 @@ hex = { workspace = true }
 image = { workspace = true }
 imageproc = "0.25"
 rm-parser = { path = "../rm-parser" }
+# Host-pinned, redirect-refusing ureq agent + URL safety check.
+# Lives in its own crate so the privacy invariants are enforced in
+# one place; the `no_egress.rs` integration test treats this crate
+# as the single sanctioned egress path.
+rehydrate-http = { path = "../rehydrate-http" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-# Sync HTTP via ureq, host-pinned through the crate's own
-# `RestrictedAgent` (see `src/http.rs`). The `no_egress.rs` integration
-# test treats this crate as a sanctioned egress path; new files added
-# here must continue to route through the agent rather than calling
-# `ureq::Agent::new` directly.
-ureq = { version = "2", default-features = false, features = ["tls", "json"] }
-url = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

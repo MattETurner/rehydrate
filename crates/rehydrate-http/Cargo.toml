@@ -1,0 +1,15 @@
+[package]
+name = "rehydrate-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "reHydrate's host-pinned, redirect-refusing ureq agent shared by the OCR and publish layers."
+
+[dependencies]
+thiserror = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+url = "2"
+serde_json = { workspace = true }
+
+[dev-dependencies]

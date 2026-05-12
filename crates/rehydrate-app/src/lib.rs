@@ -10,6 +10,7 @@ mod logging;
 mod notebook_pdf;
 mod ocr_commands;
 mod state;
+mod util;
 
 pub use state::AppState;
 

@@ -10,13 +10,14 @@ description = "reHydrate publish layer: post OCR transcripts as drafts to Ghost 
 base64 = "0.22"
 hex = { workspace = true }
 jsonwebtoken = { version = "9", default-features = false }
+# Host-pinned, redirect-refusing ureq agent + URL safety check.
+# See `rehydrate-ocr/Cargo.toml` for the rationale.
+rehydrate-http = { path = "../rehydrate-http" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }
-ureq = { version = "2", default-features = false, features = ["tls", "json"] }
-url = "2"
 
 [dev-dependencies]
 tiny_http = "0.12"
