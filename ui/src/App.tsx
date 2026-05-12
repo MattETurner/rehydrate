@@ -12,7 +12,6 @@ import {
   onDeviceReachable,
   onKeyringWarning,
   onLegacyFormatWarning,
-  onOcrProgress,
 } from "./ipc";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LogDrawer } from "./components/LogDrawer";
@@ -26,7 +25,7 @@ import { Skeleton } from "./components/Skeleton";
 import { useToast } from "./components/Toast";
 import { useConfirm } from "./components/Confirm";
 import { Cheatsheet } from "./components/Cheatsheet";
-import { SettingsModal, parseOllamaUnconfigured } from "./components/SettingsModal";
+import { SettingsModal } from "./components/SettingsModal";
 import { TranscriptDrawer } from "./components/TranscriptDrawer";
 import { OcrJobChip } from "./components/OcrJobChip";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
@@ -56,9 +55,9 @@ import type {
   DocumentSummary,
   FolderEntry,
   LibrarySummary,
-  OcrJob,
   RecentLibraryEntry,
 } from "./types";
+import { useOcr } from "./hooks/useOcr";
 import {
   countByKind,
   emptyHintFor,
@@ -145,24 +144,12 @@ export function App() {
   const [transcriptDoc, setTranscriptDoc] = useState<DocumentSummary | null>(
     null,
   );
-  // OCR job state — used by `OcrJobChip` to show "transcribing page
-  // X of Y" feedback for a long-running background transcription.
-  const [ocrJob, setOcrJob] = useState<OcrJob | null>(null);
-  const [ocrJobElapsed, setOcrJobElapsed] = useState(0);
-  // Auto-OCR sweep state. `queue` is the FIFO of remaining
-  // doc ids; `totalAtStart` keeps the original size for the
-  // "N of M" badge in the chip. `null` = no sweep active.
-  const [autoOcrSweep, setAutoOcrSweep] = useState<
-    | {
-        queue: { documentId: string; visibleName: string }[];
-        totalAtStart: number;
-        done: number;
-      }
-    | null
-  >(null);
-  // Idempotency guard: stores the library path the sweep effect
-  // has already kicked off for. Library switches change the path,
-  // which lets the effect fire again for the new library.
+  // OCR + auto-OCR sweep state, listener, and the start/dismiss
+  // actions live in the `useOcr` hook (see `./hooks/useOcr.ts`).
+  // It's instantiated below, after `refreshLibrary` is defined.
+  // Idempotency guard for the per-library-open sweep effect: stores
+  // the library path that's already been kicked off so a re-render
+  // doesn't re-fire the sweep for the same library.
   const autoOcrInitialised = useRef<string | null>(null);
   const refreshing = useRef(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -264,50 +251,6 @@ export function App() {
       if (unlisten) unlisten();
     };
   }, [toast]);
-
-  // ---- Background OCR progress ----------------------------------------
-  // Single global listener for `ocr:progress`. Updates the App-level
-  // `ocrJob` whenever a job is in flight. Stays mounted for the App's
-  // lifetime so the chip keeps updating no matter which dialog/drawer
-  // the user has open.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    onOcrProgress((ev) => {
-      setOcrJob((cur) => {
-        if (!cur || cur.phase !== "running") return cur;
-        if (ev.kind === "page_done") {
-          return {
-            ...cur,
-            pagesDone: ev.page_index + 1,
-            charCount: cur.charCount + ev.chars,
-          };
-        }
-        if (ev.kind === "page_failed") {
-          // Don't abort the chip — the run continues with the rest
-          // of the pages. Just record the failure for the toast at
-          // the end (the chip itself stays in "running" until the
-          // IPC promise settles).
-          return cur;
-        }
-        return cur;
-      });
-    }).then((u) => {
-      unlisten = u;
-    });
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, []);
-
-  // Tick the elapsed-time counter while a job is running.
-  useEffect(() => {
-    if (!ocrJob || ocrJob.phase !== "running") return;
-    const tick = () =>
-      setOcrJobElapsed((Date.now() - ocrJob.startedAt) / 1000);
-    tick();
-    const id = window.setInterval(tick, 500);
-    return () => window.clearInterval(id);
-  }, [ocrJob]);
 
   // ---- Refresh ---------------------------------------------------------
   const refreshLibrary = useCallback(async () => {
@@ -973,234 +916,25 @@ export function App() {
     [refreshLibrary],
   );
 
-  // ---- OCR background job ---------------------------------------------
-  // Kicks off `transcribe_document`, tracks the run in the App-level
-  // chip, and surfaces the result via toast. On the Ollama-pivot,
-  // the most common first-time failure is "Ollama isn't running" —
-  // we detect the tagged error and route the user to Settings →
-  // Ollama instead of spamming them with a raw error string.
-  const startOcrJob = useCallback(
-    (doc: DocumentSummary, language?: string) => {
-      setOcrJob((cur) => {
-        if (cur && cur.phase === "running") {
-          toast.show({
-            tone: "warn",
-            body: `Already transcribing "${cur.visibleName}" — wait for that to finish first.`,
-          });
-          return cur;
-        }
-        return {
-          documentId: doc.document_id,
-          visibleName: doc.visible_name,
-          phase: "running",
-          pagesDone: 0,
-          charCount: 0,
-          startedAt: Date.now(),
-        };
-      });
-
-      void (async () => {
-        try {
-          const summary = await ipc.transcribeDocument(
-            doc.document_id,
-            language ?? null,
-          );
-          setOcrJob((cur) =>
-            cur && cur.documentId === doc.document_id
-              ? {
-                  ...cur,
-                  phase: "done",
-                  pagesDone: summary.page_count,
-                  charCount: summary.char_count,
-                  totalPages: summary.page_count,
-                }
-              : cur,
-          );
-          await refreshLibrary();
-          toast.show({
-            tone: "ok",
-            duration: 8000,
-            body: (
-              <>
-                Transcribed <strong>{doc.visible_name}</strong> —{" "}
-                {summary.page_count}{" "}
-                {summary.page_count === 1 ? "page" : "pages"},{" "}
-                {summary.char_count.toLocaleString()} characters.
-              </>
-            ),
-            action: {
-              label: "View",
-              onClick: () => setTranscriptDoc(doc),
-            },
-          });
-          setOcrJob(null);
-        } catch (e) {
-          // Tagged "Ollama unconfigured" → route into Settings.
-          const unconfigured = parseOllamaUnconfigured(e);
-          if (unconfigured) {
-            setOcrJob(null);
-            setSettings({ tab: "ollama", banner: unconfigured.message });
-            return;
-          }
-          setOcrJob((cur) =>
-            cur && cur.documentId === doc.document_id
-              ? { ...cur, phase: "error", error: formatError(e) }
-              : cur,
-          );
-          toast.show({
-            tone: "err",
-            duration: 0,
-            body: (
-              <>
-                OCR failed for <strong>{doc.visible_name}</strong>: {formatError(e)}
-              </>
-            ),
-          });
-          setOcrJob(null);
-        }
-      })();
-    },
-    [refreshLibrary, toast],
-  );
-
-  // ---- Auto-OCR sweep --------------------------------------------------
-  // When the user has opted in via Settings → Ollama, every notebook
-  // without an existing transcript gets OCRed sequentially after
-  // the library opens. The sweep:
-  //
-  // * silently aborts if Ollama is unreachable — we don't auto-open
-  //   the Settings modal at launch the way the manual OCR action
-  //   does, because that's hostile (the app launches, immediately
-  //   opens a modal) and the user already opted in by checking the
-  //   box;
-  // * uses the same `OcrJobChip` for visibility (clicking × cancels
-  //   the whole sweep, not just the in-flight doc);
-  // * skips per-doc failures and keeps going (a single bad page
-  //   shouldn't strand 49 others); a final summary toast reports
-  //   total transcribed.
-  //
-  // Token-based cancellation. Each sweep captures an incrementing
-  // integer at entry; the loop and the finalizer check that the
-  // token is still current before touching state. A new sweep
-  // (library switch) bumps the token, which silently invalidates
-  // any in-flight sweep — no two sweeps ever race for `ocrJob` /
-  // `autoOcrSweep` state. A `useRef` boolean would have left a
-  // window where the new sweep flips the flag back to true after
-  // the previous sweep had already short-circuited.
-  const sweepTokenRef = useRef(0);
-  const startAutoOcrSweep = useCallback(async () => {
-    const myToken = ++sweepTokenRef.current;
-    const stillOurs = () => sweepTokenRef.current === myToken;
-
-    const cfg = await ipc.getOllamaConfig();
-    if (!cfg.auto_ocr_on_startup) return;
-    // Pre-flight ping. Silent on failure — daemon not running
-    // at launch is a normal-life state, not a thing to nag about.
-    const probe = await ipc.pingOllama(cfg.base_url);
-    if (!stillOurs()) return;
-    if (!probe.ok) {
-      // eslint-disable-next-line no-console
-      console.info(
-        `Auto-OCR sweep skipped: Ollama not reachable at ${cfg.base_url}`,
-      );
-      return;
-    }
-    const raw = await ipc.listDocumentsNeedingOcr();
-    if (!stillOurs()) return;
-    if (raw.length === 0) return;
-    const candidates = raw.map((c) => ({
-      documentId: c.document_id,
-      visibleName: c.visible_name,
-    }));
-    setAutoOcrSweep({
-      queue: candidates,
-      totalAtStart: candidates.length,
-      done: 0,
-    });
-    let transcribed = 0;
-    let skipped = 0;
-    let abortedMidSweep = false;
-    for (let i = 0; i < candidates.length; i++) {
-      if (!stillOurs()) return;
-      const c = candidates[i];
-      setOcrJob({
-        documentId: c.documentId,
-        visibleName: c.visibleName,
-        phase: "running",
-        pagesDone: 0,
-        charCount: 0,
-        startedAt: Date.now(),
-      });
-      try {
-        await ipc.transcribeDocument(c.documentId, null);
-        transcribed += 1;
-      } catch (e) {
-        if (!stillOurs()) return;
-        const unconfigured = parseOllamaUnconfigured(e);
-        if (unconfigured) {
-          // Ollama went away mid-sweep — stop quietly.
-          // eslint-disable-next-line no-console
-          console.info(
-            `Auto-OCR sweep aborted mid-pass: ${unconfigured.message}`,
-          );
-          abortedMidSweep = true;
-          break;
-        }
-        // Per-doc failure (render error, etc.) — skip and continue.
-        // Note: we deliberately don't log the visible name here so
-        // a future logging dump can't leak document titles. The id
-        // is enough to locate the doc in the library.
-        // eslint-disable-next-line no-console
-        console.warn(`Auto-OCR skipped doc ${c.documentId}: ${e}`);
-        skipped += 1;
-      }
-      if (!stillOurs()) return;
-      setAutoOcrSweep((prev) =>
-        prev
-          ? {
-              ...prev,
-              done: prev.done + 1,
-              queue: prev.queue.slice(1),
-            }
-          : null,
-      );
-    }
-    // We're done. Only commit final state if our token is still
-    // current — otherwise a fresh sweep is mid-flight and owns
-    // these fields.
-    if (!stillOurs()) return;
-    setOcrJob(null);
-    setAutoOcrSweep(null);
-    if (transcribed > 0 || skipped > 0) {
-      await refreshLibrary();
-      toast.show({
-        tone: "ok",
-        duration: 8000,
-        body:
-          skipped === 0
-            ? `Auto-OCR finished — transcribed ${transcribed} notebook${transcribed === 1 ? "" : "s"}.`
-            : `Auto-OCR finished — transcribed ${transcribed}, skipped ${skipped}.`,
-      });
-    } else if (abortedMidSweep) {
-      // The sweep broke on the first doc because Ollama went
-      // unreachable. The user enabled auto-OCR but is seeing the
-      // app do nothing; surface a soft warning so they can fix it.
-      toast.show({
-        tone: "warn",
-        duration: 9000,
-        body: "Auto-OCR couldn't reach Ollama. Open Settings → Ollama to test the connection.",
-      });
-    }
-  }, [refreshLibrary, toast]);
-
-  // Cancel-on-dismiss for the chip: when a sweep is active, the
-  // chip's × button stops the queue *and* hides the chip.
-  // Bumping the token is the universal "invalidate any sweep" lever.
-  const dismissOcrChip = useCallback(() => {
-    sweepTokenRef.current += 1;
-    setOcrJob(null);
-    setAutoOcrSweep(null);
-  }, []);
+  // ---- OCR + auto-OCR sweep -------------------------------------------
+  // The OCR sub-system (chip state, listener, elapsed timer, single-job
+  // start, sweep start, dismiss) lives in `useOcr` — see
+  // `./hooks/useOcr.ts` for the rationale and the token-based
+  // cancellation contract.
+  const {
+    ocrJob,
+    ocrJobElapsed,
+    autoOcrSweep,
+    startOcrJob,
+    startAutoOcrSweep,
+    dismissOcrChip,
+  } = useOcr({
+    refreshLibrary,
+    toast,
+    openSettings: (tab, banner) =>
+      setSettings({ tab, banner: banner ?? null }),
+    openTranscript: setTranscriptDoc,
+  });
 
   // Fire the sweep when the library is open. `libraryPath` as a dep
   // gives us one sweep per library-open transition; the token
