@@ -20,6 +20,18 @@
 //! Highlighter is one wide constant-width polyline with butt caps and a
 //! ~0.39 alpha applied through an ExtGState; rendered before pens so it
 //! sits underneath the ink, matching the device.
+//!
+//! ## Cache-busting contract
+//!
+//! [`PREVIEW_LAYOUT_VERSION`] is part of the per-document preview cache
+//! key in `rehydrate-app::commands::open_document`. The constant lives
+//! here, next to the renderer, so the same edit that changes the
+//! renderer's visual output is the edit that bumps the version. The
+//! field is co-located *on purpose* — a previous regression cached
+//! blurry thumbnail-fallback PDFs while the parser was broken, and
+//! recovering required a manual bump from the app crate. With the
+//! constant next door, "I changed the renderer, I should bump this"
+//! is a single-file decision.
 
 use std::collections::{HashMap, HashSet};
 
@@ -36,6 +48,24 @@ use rm_parser::v6::scene_item::line::Line;
 use rm_parser::v6::scene_item::point::Point as RmPoint;
 use rm_parser::v6::scene_item::text::{Text, TextItem as RmTextItem};
 use rm_parser::RemarkableFile;
+
+/// Version suffix included in the per-document preview cache key.
+///
+/// **Bump this whenever any change to this crate alters the visual
+/// output of `build_pdf_from_rm_files` / `build_pdf_from_pngs`.**
+/// The app's `open_document` command keys cached preview PDFs as
+/// `<safe_name>-<document_id>-<manifest_hash>-<PREVIEW_LAYOUT_VERSION>.pdf`,
+/// so a change to the renderer that doesn't bump this constant
+/// will silently serve stale PDFs forever.
+///
+/// Version history (each entry: short reason, commit prefix):
+/// - `ink-v16` — original public version after the audit refactor.
+/// - `ink-v17` — invalidate fallback PDFs cached during the
+///   phase-4 bitreader regression (`0d78c9a`).
+///
+/// The constant is the single source of truth; do not redeclare it
+/// elsewhere in the workspace.
+pub const PREVIEW_LAYOUT_VERSION: &str = "ink-v17";
 
 const PAGE_W_MM: f32 = 210.0;
 const PAGE_H_MM: f32 = 297.0;

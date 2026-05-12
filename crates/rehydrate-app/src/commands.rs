@@ -597,28 +597,22 @@ pub async fn open_document(
         //   1) `.rm` ink files → vector PDF (sharp at any zoom).
         //   2) Fallback: stitch per-page thumbnail PNGs (low-fidelity
         //      preview, used only if a page has no parseable ink data).
-        // Cache key includes a layout version suffix so bumping the
-        // assembly logic invalidates stale previews automatically.
-        // Bump this when the renderer changes shape (filtering,
-        // layout, font metrics, …) — or when a parser regression
-        // causes cached fallbacks to be written for notebooks that
-        // should render correctly.
         //
-        // v17 (this bump): the phase-4 bitreader bounds guard
-        // returned `ParseErrorKind::InvalidInput` instead of `Io`,
-        // breaking `Bitreader::eof()` and causing every notebook
-        // parse to error out. The render path caught the error and
-        // wrote a blurry thumbnail-fallback PDF to cache. Fixing
-        // the parser alone wouldn't recover those notebooks because
-        // the cache file still held the old fallback; the version
-        // suffix change invalidates every previously-cached preview
-        // so the freshly-fixed parser actually gets to run.
-        const PREVIEW_LAYOUT_VERSION: &str = "ink-v17";
+        // The cache key includes a layout-version suffix exported by
+        // `rehydrate-render::PREVIEW_LAYOUT_VERSION`. The constant
+        // lives next to the renderer (not here) so the edit that
+        // changes visual output is the edit that bumps the version
+        // — that co-location is itself the lesson from the phase-4
+        // parser regression: when the cache-bust lever and the code
+        // it guards live in different crates, a contributor will
+        // forget to pull both.
+        //
         // Full manifest hash + document_id in the key — see the
         // PDF/EPUB branch above for why we no longer truncate.
         let p = cache_root.join(format!(
-            "{safe_name}-{document_id}-{}-{PREVIEW_LAYOUT_VERSION}.pdf",
-            doc.current_manifest.as_str()
+            "{safe_name}-{document_id}-{}-{}.pdf",
+            doc.current_manifest.as_str(),
+            rehydrate_render::PREVIEW_LAYOUT_VERSION,
         ));
         if !p.exists() {
             let mut rm_pages: Vec<_> = manifest

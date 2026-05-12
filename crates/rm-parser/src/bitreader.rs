@@ -29,7 +29,27 @@ impl<N: Readable> Bitreader<N> {
         }
     }
 
-    /// End Of File, returns true if not more bytes can be read
+    /// End Of File, returns true if not more bytes can be read.
+    ///
+    /// **Load-bearing invariant** (see also: `eof_error` at the top
+    /// of this file and the `read_bytes_overshoot_is_io_kind_so_eof_idiom_works`
+    /// regression test below): this function decides "no more bytes"
+    /// by reading exactly one byte and checking whether the read
+    /// failed with `ParseErrorKind::Io`. Every parser loop in this
+    /// crate (`lib.rs` block-parse, the v6 sub-parsers, the v3-5
+    /// page loop) calls `eof()` to know when to stop.
+    ///
+    /// History: a phase-4 audit added bounds checks to `read_bytes`
+    /// / `skip_bytes` that returned `ParseErrorKind::InvalidInput`
+    /// on overshoot. That broke `eof()` for every valid `.rm` file
+    /// — the EOF check started treating a normal end-of-stream as a
+    /// malformed-input error. Symptom: notebook OCR failed on every
+    /// document; the render path's fallback wrote a blurry
+    /// thumbnail-stitch PDF and cached it. Fix in `3f67ec3`
+    /// restored the `Io` kind via `eof_error`; lesson: any change
+    /// to the error kinds produced by `read_bytes`/`skip_bytes`
+    /// MUST keep the "EOF means Io" contract or update both call
+    /// sites here together.
     pub fn eof(&mut self) -> Result<bool, ParseError> {
         let pos = self.position();
         match self.read_bytes(1) {
