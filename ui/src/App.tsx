@@ -37,6 +37,18 @@ import { NamePrompt } from "./components/NamePrompt";
 import { ChooseFolderDialog } from "./components/ChooseFolderDialog";
 import { Thumbnail, invalidateThumbnail } from "./components/Thumbnail";
 import { DRAG_ICON_SVG, setCustomDragImage } from "./dragImage";
+import {
+  activeFolderDragIdSnapshot,
+  clearActiveFolderDrag,
+  computeReorderSortIndex,
+  descendantIds,
+  hasDocumentDragData,
+  hasFolderDragData,
+  readDocumentDragData,
+  readFolderDragData,
+  setDocumentDragData,
+  setFolderDragData,
+} from "./drag";
 import { formatError } from "./formatError";
 import type {
   ArchivedDocument,
@@ -47,6 +59,22 @@ import type {
   OcrJob,
   RecentLibraryEntry,
 } from "./types";
+import {
+  countByKind,
+  emptyHintFor,
+  filterDocuments,
+  loadPersistedView,
+  loadPersistedViewMode,
+  persistView,
+  persistViewMode,
+  recentCount,
+  summaryHealth,
+  unsyncedCount,
+  type View,
+  viewKey,
+  viewSubtitle,
+  viewTitle,
+} from "./views";
 
 export function App() {
   const [defaultPath, setDefaultPath] = useState<string | null>(null);
@@ -2197,313 +2225,13 @@ export function App() {
   );
 }
 
-// =====================================================================
-// Drag & drop helpers
-// =====================================================================
-
-const DOC_DRAG_MIME = "application/x-rehydrate-doc";
-const DOC_DRAG_BATCH_MIME = "application/x-rehydrate-doc-batch";
-const FOLDER_DRAG_MIME = "application/x-rehydrate-folder";
-
-function setDocumentDragData(
-  e: ReactDragEvent,
-  documentId: string,
-  batch: string[] = [documentId],
-) {
-  e.dataTransfer.setData(DOC_DRAG_MIME, documentId);
-  if (batch.length > 1) {
-    e.dataTransfer.setData(DOC_DRAG_BATCH_MIME, batch.join(","));
-  }
-  e.dataTransfer.setData("text/plain", documentId);
-  e.dataTransfer.effectAllowed = "move";
-}
-function readDocumentDragData(
-  e: ReactDragEvent,
-): { id: string; batch: string[] } | null {
-  const id = e.dataTransfer.getData(DOC_DRAG_MIME);
-  if (!id) return null;
-  const batchRaw = e.dataTransfer.getData(DOC_DRAG_BATCH_MIME);
-  const batch = batchRaw ? batchRaw.split(",").filter(Boolean) : [id];
-  return { id, batch };
-}
-function hasDocumentDragData(e: ReactDragEvent): boolean {
-  return e.dataTransfer.types.includes(DOC_DRAG_MIME);
-}
-
-// HTML5 drag-and-drop puts the DataTransfer into "protected mode" during
-// `dragover`, so `getData(...)` returns "" until the user actually drops.
-// We need the dragged folder id during `dragover` (to size the drop zones,
-// to short-circuit invalid targets so the browser shows a "no entry"
-// cursor, and crucially to call `preventDefault()` only when the drop
-// would be valid). Stash the id in a module-local on `dragstart` and
-// clear it on `dragend` — same pattern several DnD libs use.
-let activeFolderDragId: string | null = null;
-
-function setFolderDragData(e: ReactDragEvent, folderId: string) {
-  e.dataTransfer.setData(FOLDER_DRAG_MIME, folderId);
-  e.dataTransfer.setData("text/plain", folderId);
-  e.dataTransfer.effectAllowed = "move";
-  activeFolderDragId = folderId;
-}
-function readFolderDragData(e: ReactDragEvent): string | null {
-  const id = e.dataTransfer.getData(FOLDER_DRAG_MIME);
-  return id || null;
-}
-function hasFolderDragData(e: ReactDragEvent): boolean {
-  return e.dataTransfer.types.includes(FOLDER_DRAG_MIME);
-}
-
-/// Returns the set of folder ids that include `rootId` and every
-/// folder transitively parented by it. Used to forbid moving a folder
-/// into its own subtree (which would create a cycle the backend
-/// would reject anyway, but we filter at the UI to avoid the round
-/// trip and an error toast).
-function descendantIds(folders: FolderEntry[], rootId: string): Set<string> {
-  const childrenOf = new Map<string, string[]>();
-  for (const f of folders) {
-    if (!f.parent) continue;
-    const list = childrenOf.get(f.parent) ?? [];
-    list.push(f.folder_id);
-    childrenOf.set(f.parent, list);
-  }
-  const out = new Set<string>([rootId]);
-  const stack = [rootId];
-  while (stack.length > 0) {
-    const cur = stack.pop()!;
-    for (const child of childrenOf.get(cur) ?? []) {
-      if (!out.has(child)) {
-        out.add(child);
-        stack.push(child);
-      }
-    }
-  }
-  return out;
-}
-
-/// Compute the sort_index needed to slot `dragged` adjacent to
-/// `target` (or at end of `parent`'s children for `into`) inside the
-/// existing folder list. Uses midpoints of float keys so we don't have
-/// to renumber siblings on every drag.
-function computeReorderSortIndex(
-  folders: FolderEntry[],
-  draggedId: string,
-  newParent: string | null,
-  beforeId: string | null,
-  afterId: string | null,
-): number {
-  // Snapshot siblings under newParent, excluding the dragged folder
-  // itself (it'll move to its new home; treating it as a sibling here
-  // would skew the midpoint calculation).
-  const siblings = folders
-    .filter(
-      (f) =>
-        (f.parent ?? null) === newParent && f.folder_id !== draggedId,
-    )
-    .slice()
-    .sort((a, b) => {
-      const cmp = (a.sort_index ?? 0) - (b.sort_index ?? 0);
-      if (cmp !== 0) return cmp;
-      return a.visible_name.localeCompare(b.visible_name);
-    });
-  const before = beforeId
-    ? siblings.find((f) => f.folder_id === beforeId)
-    : null;
-  const after = afterId
-    ? siblings.find((f) => f.folder_id === afterId)
-    : null;
-  if (before && after) return (before.sort_index + after.sort_index) / 2;
-  if (before) return before.sort_index + 1;
-  if (after) return after.sort_index - 1;
-  // Empty parent: anchor at 0.
-  return 0;
-}
-
-// =====================================================================
-// Views
-// =====================================================================
-
-type View =
-  | "all"
-  | "recent"
-  | "unsynced"
-  | "notebooks"
-  | "pdfs"
-  | "epubs"
-  | "archive"
-  | { kind: "folder"; id: string };
-
-function viewKey(v: View): string {
-  if (typeof v === "string") return v;
-  return `folder:${v.id}`;
-}
-
-function viewTitle(v: View, folders: FolderEntry[]): string {
-  if (typeof v === "object") {
-    return folders.find((f) => f.folder_id === v.id)?.visible_name ?? "Folder";
-  }
-  switch (v) {
-    case "all": return "All Documents";
-    case "recent": return "Recently Synced";
-    case "unsynced": return "Pending Sync";
-    case "notebooks": return "Notebooks";
-    case "pdfs": return "PDFs";
-    case "epubs": return "EPUBs";
-    case "archive": return "Archive";
-  }
-}
-
-function viewSubtitle(v: View): string {
-  if (typeof v === "object") return "Folder";
-  switch (v) {
-    case "all": return "Everything in your library";
-    case "recent": return "Synced in the last 24 hours";
-    case "unsynced": return "Will upload to the tablet on next sync";
-    case "notebooks": return "Handwritten and template-based";
-    case "pdfs": return "Imported PDFs";
-    case "epubs": return "Imported EPUBs";
-    case "archive": return "Items pending deletion · restore at any time";
-  }
-}
-
-const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-function recentCount(docs: DocumentSummary[]): number {
-  return filterRecent(docs).length;
-}
-function countByKind(docs: DocumentSummary[], kindMatch: string): number {
-  return docs.filter((d) => d.doc_type === kindMatch).length;
-}
-function filterRecent(docs: DocumentSummary[]): DocumentSummary[] {
-  const cutoff = Date.now() - RECENT_WINDOW_MS;
-  return docs
-    .filter((d) => {
-      const t = Date.parse(d.last_observed_at);
-      return Number.isFinite(t) && t >= cutoff;
-    })
-    .sort((a, b) => b.last_observed_at.localeCompare(a.last_observed_at));
-}
-function filterDocuments(docs: DocumentSummary[], view: View): DocumentSummary[] {
-  if (typeof view === "object") {
-    return docs.filter((d) => d.parent === view.id);
-  }
-  switch (view) {
-    case "all":       return docs;
-    case "recent":    return filterRecent(docs);
-    case "unsynced":  return docs.filter((d) => d.has_unpushed_changes);
-    case "notebooks": return docs.filter((d) => d.doc_type === "Notebook");
-    case "pdfs":      return docs.filter((d) => d.doc_type === "DocumentType.Pdf");
-    case "epubs":     return docs.filter((d) => d.doc_type === "DocumentType.Epub");
-    case "archive":   return [];
-  }
-}
-
-function unsyncedCount(docs: DocumentSummary[]): number {
-  return docs.filter((d) => d.has_unpushed_changes).length;
-}
-
-function emptyHintFor(view: View): { title: string; body: string } {
-  if (typeof view === "object") {
-    return {
-      title: "Empty folder",
-      body: "Drop documents here to move them in.",
-    };
-  }
-  switch (view) {
-    case "all":
-      return {
-        title: "No documents yet",
-        body: "Connect your reMarkable and tap Sync, or import a PDF.",
-      };
-    case "recent":
-      return {
-        title: "Nothing synced recently",
-        body: "Documents synced in the last 24 hours appear here.",
-      };
-    case "notebooks":
-      return {
-        title: "No notebooks",
-        body: "reMarkable notebooks (handwritten or imported templates) appear here.",
-      };
-    case "pdfs":
-      return {
-        title: "No PDFs",
-        body: "Drop a PDF on Import or sync one from the tablet.",
-      };
-    case "epubs":
-      return {
-        title: "No EPUBs",
-        body: "Drop an EPUB on Import or sync one from the tablet.",
-      };
-    case "archive":
-      return {
-        title: "Archive is empty",
-        body: "Documents you delete (here or on the tablet) land here so you can change your mind.",
-      };
-    case "unsynced":
-      return {
-        title: "Everything is synced",
-        body: "When you import or edit, items waiting to upload will appear here.",
-      };
-  }
-}
-
-function summaryHealth(s: LibrarySummary): string {
-  void s;
-  // Without an integrated verify result, treat as healthy by default;
-  // proper health colouring lives in a future phase.
-  return "";
-}
-
-// localStorage round-trip for the last view + viewMode the user was
-// on. Folder views (`{kind: "folder", id}`) are skipped on read because
-// the folder may not exist after a library switch; we'd rather drop
-// the user on "All Documents" than show a phantom empty folder.
-const LS_VIEW_KEY = "rh.view";
-const LS_VIEW_MODE_KEY = "rh.viewMode";
-const TOP_LEVEL_VIEWS: ReadonlySet<string> = new Set([
-  "all",
-  "recent",
-  "unsynced",
-  "notebooks",
-  "pdfs",
-  "epubs",
-  "archive",
-]);
-
-function loadPersistedView(): View {
-  try {
-    const raw = window.localStorage.getItem(LS_VIEW_KEY);
-    if (raw && TOP_LEVEL_VIEWS.has(raw)) return raw as View;
-  } catch {
-    // localStorage may throw in private mode or corrupted profiles —
-    // fall back to default rather than crash on launch.
-  }
-  return "all";
-}
-function persistView(v: View): void {
-  try {
-    if (typeof v === "string") window.localStorage.setItem(LS_VIEW_KEY, v);
-    // Folder views are intentionally not persisted (see comment above).
-  } catch {
-    /* ignore */
-  }
-}
-function loadPersistedViewMode(): "list" | "grid" {
-  try {
-    const raw = window.localStorage.getItem(LS_VIEW_MODE_KEY);
-    if (raw === "list" || raw === "grid") return raw;
-  } catch {
-    /* ignore */
-  }
-  return "list";
-}
-function persistViewMode(m: "list" | "grid"): void {
-  try {
-    window.localStorage.setItem(LS_VIEW_MODE_KEY, m);
-  } catch {
-    /* ignore */
-  }
-}
+// Drag-and-drop helpers + the per-view label/filter/persist helpers
+// they reference live in dedicated files:
+//   - `./drag`  — DataTransfer wire formats, descendant computation,
+//                 reorder-sort-index midpoints.
+//   - `./views` — `View` type, viewTitle/viewSubtitle, filterDocuments,
+//                 localStorage round-trip.
+// Both are imported at the top of this file.
 
 // =====================================================================
 // Welcome empty state
@@ -2771,7 +2499,7 @@ function FolderRow({
       // when the dragged folder *is* this row (no-op move) or when
       // this row lives inside the dragged folder's subtree (would
       // create a cycle).
-      const draggedId = activeFolderDragId;
+      const draggedId = activeFolderDragIdSnapshot();
       if (!draggedId) return;
       const subtree = descendantIds(allFolders, draggedId);
       if (subtree.has(node.folder.folder_id)) return;
@@ -2830,7 +2558,7 @@ function FolderRow({
         onDragEnd={() => {
           // Always clear the module-local stash so a follow-up drag
           // doesn't see the previous folder id.
-          activeFolderDragId = null;
+          clearActiveFolderDrag();
         }}
         onClick={() => setView(v)}
         style={{ paddingLeft: 22 + depth * 14 }}
@@ -2839,7 +2567,7 @@ function FolderRow({
         onDragLeave={clearDropState}
         onDrop={(e) => {
           // Folder reorder takes priority — its MIME is more specific.
-          const folderId = readFolderDragData(e) ?? activeFolderDragId;
+          const folderId = readFolderDragData(e) ?? activeFolderDragIdSnapshot();
           // Reject self-drops and drops that would push the folder
           // into its own subtree (cycle).
           const subtree = folderId
@@ -2852,7 +2580,7 @@ function FolderRow({
           ) {
             const zone = folderDropZone ?? "into";
             clearDropState();
-            activeFolderDragId = null;
+            clearActiveFolderDrag();
             e.preventDefault();
             e.stopPropagation();
             if (zone === "into") {
