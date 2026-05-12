@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   ipc,
+  onHostKeyWarning,
   onKeyringWarning,
   onLegacyFormatWarning,
 } from "./ipc";
@@ -250,6 +251,23 @@ export function App() {
     let unlisten: (() => void) | undefined;
     onKeyringWarning((msg) => {
       toast.show({ tone: "warn", body: msg, duration: 9000 });
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [toast]);
+
+  // ---- Host-key warnings -----------------------------------------------
+  // The TOFU layer accepted a first-seen host key but couldn't write
+  // it to the on-disk known-hosts store. Connection works; the next
+  // reconnect just won't have a fingerprint to compare against until
+  // the underlying FS/permissions issue is fixed.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onHostKeyWarning((msg) => {
+      toast.show({ tone: "warn", body: msg, duration: 12000 });
     }).then((u) => {
       unlisten = u;
     });

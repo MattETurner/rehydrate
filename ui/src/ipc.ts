@@ -191,6 +191,19 @@ export function onKeyringWarning(
   return listen<string>("keyring:warning", (e) => cb(e.payload));
 }
 
+/// Fired when the SSH connect path accepted a first-seen host key
+/// but couldn't persist it to the local known-hosts store —
+/// typically a read-only / sandboxed config dir. The connection
+/// works; subsequent reconnects just won't have a pinned fingerprint
+/// to compare against. The app surfaces this as a toast so the
+/// user knows the TOFU defence is degraded until they fix the
+/// underlying FS / permissions issue.
+export function onHostKeyWarning(
+  cb: (message: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("host-key:warning", (e) => cb(e.payload));
+}
+
 export function onLegacyFormatWarning(
   cb: (message: string) => void,
 ): Promise<UnlistenFn> {

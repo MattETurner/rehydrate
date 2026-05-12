@@ -1079,6 +1079,17 @@ pub async fn connect_device(
         .map_err(err)?;
     let info = dev.ping().await.map_err(err)?;
 
+    // Surface any one-shot warnings the connect path collected.
+    // Today the only case is "TOFU host-key write failed" — see
+    // `SshDevice::take_pending_warning`. The connection is fine to
+    // use; the warning tells the user that subsequent reconnects
+    // won't have a pinned fingerprint to compare against until
+    // they fix the underlying FS / permissions issue.
+    if let Some(msg) = dev.take_pending_warning() {
+        tracing::warn!("device pending warning: {msg}");
+        let _ = app.emit("host-key:warning", msg);
+    }
+
     // Connection succeeded — persist only if the renderer explicitly
     // asked for it. If the OS keyring is unavailable (most often on
     // minimal Linux installs without `secret-service` /

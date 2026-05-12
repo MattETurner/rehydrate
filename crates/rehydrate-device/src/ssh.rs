@@ -50,23 +50,47 @@ const MAX_REMOTE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 /// loop that slipped past the symlink filter.
 const MAX_SUBTREE_DEPTH: usize = 16;
 
-/// Per-operation SFTP timeout. The session-level `inactivity_timeout`
-/// already covers "the whole TCP connection went quiet"; this cap is
-/// stricter — a single `read_dir`, `open`, or `read_to_end` that
-/// stalls for two minutes is almost certainly stuck (the reMarkable
-/// SFTP server tops out around 5 MB/s, so even a 512 MB file should
-/// land well inside this budget). Without this, a stuck SFTP read
-/// would hold the device-wide mutex indefinitely.
+/// Per-operation SFTP timeout for "should be quick" calls — opens,
+/// stats, directory listings, single chunk writes. 120s is generous;
+/// these usually complete in milliseconds and only stall when the
+/// SFTP server itself wedges, in which case we'd rather report a
+/// typed `Timeout` than hold the device-wide mutex indefinitely.
 const SFTP_OP_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Wrap an SFTP-shaped future in a per-operation timeout. Used by every
-/// `inner.sftp.*` call site so a single misbehaving read can never
-/// hold the device-wide mutex past the timeout budget.
+/// Per-operation SFTP timeout for full body reads. The reMarkable's
+/// USB-ethernet SFTP throughput is typically 2–4 MB/s in practice
+/// (the previous "5 MB/s" doc string was optimistic — user reports
+/// settle nearer 3 MB/s on real devices). At the lower end, a 512 MB
+/// notebook PDF needs ~3 minutes to transfer cleanly. 10 minutes
+/// leaves comfortable headroom for a 500 MB file at half the typical
+/// rate while still bounding the worst case so a wedged read can't
+/// hang the app forever. We deliberately do NOT use `SFTP_OP_TIMEOUT`
+/// for body reads — that 120s cap clipped legitimate large-file
+/// pulls mid-transfer and was an audit regression.
+const SFTP_BODY_READ_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Wrap an SFTP-shaped future in a per-operation timeout. Used by
+/// every `inner.sftp.*` open/stat/read_dir call so a single
+/// misbehaving call can never hold the device-wide mutex past the
+/// budget. Use [`with_body_timeout`] for the full-file body read
+/// because that one is naturally long-running on big PDFs.
 async fn with_timeout<T, F>(label: &str, fut: F) -> DeviceResult<T>
 where
     F: std::future::Future<Output = DeviceResult<T>>,
 {
     match tokio::time::timeout(SFTP_OP_TIMEOUT, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(DeviceError::Timeout(label.to_string())),
+    }
+}
+
+/// As [`with_timeout`] but with [`SFTP_BODY_READ_TIMEOUT`] — the
+/// longer budget appropriate for "stream the whole file" operations.
+async fn with_body_timeout<T, F>(label: &str, fut: F) -> DeviceResult<T>
+where
+    F: std::future::Future<Output = DeviceResult<T>>,
+{
+    match tokio::time::timeout(SFTP_BODY_READ_TIMEOUT, fut).await {
         Ok(r) => r,
         Err(_) => Err(DeviceError::Timeout(label.to_string())),
     }
@@ -165,6 +189,16 @@ impl Handler for ClientHandler {
 pub struct SshDevice {
     cfg: SshConfig,
     inner: Mutex<Inner>,
+    /// One-shot warning collected at connect time. Set when the
+    /// TOFU layer accepted the handshake (first-seen host) but the
+    /// `known_hosts` write failed afterwards — typically a
+    /// read-only / sandboxed config dir. The connection succeeds
+    /// either way, but the next reconnect won't have a pinned
+    /// fingerprint to compare against, so the security guarantee
+    /// the audit added is silently absent. The app layer reads
+    /// this via [`Self::take_pending_warning`] and surfaces it as
+    /// a Tauri `host-key:warning` event so the user can act on it.
+    pending_warning: std::sync::Mutex<Option<String>>,
 }
 
 struct Inner {
@@ -232,10 +266,21 @@ impl SshDevice {
         // password silently overwrite the pinned key. Doing it after
         // means a successful login is also a confirmation that this
         // is the device the user expected.
+        let mut pending_warning: Option<String> = None;
         if let Ok(guard) = outcome.lock() {
             if let HostKeyOutcome::PendingRecord { fingerprint } = &*guard {
                 if let Err(e) = known_hosts.record(&endpoint, fingerprint) {
                     tracing::warn!("could not persist pinned host key: {e}");
+                    // Surface to the UI: a record() failure means
+                    // we accepted this key but won't recognise the
+                    // device on reconnect, so the TOFU defence is
+                    // disabled until the user fixes the underlying
+                    // FS / permission issue.
+                    pending_warning = Some(format!(
+                        "Couldn't pin the tablet's host key — \
+                         host-key change detection is OFF until this is fixed. \
+                         Reason: {e}"
+                    ));
                 }
             }
         }
@@ -245,6 +290,7 @@ impl SshDevice {
         let device = Self {
             cfg,
             inner: Mutex::new(Inner { handle, sftp }),
+            pending_warning: std::sync::Mutex::new(pending_warning),
         };
         // Surface stranded `.rehydrate-bak` files in the xochitl
         // directory — these mean a previous push hit a double-fault
@@ -306,6 +352,21 @@ impl SshDevice {
         &self.cfg
     }
 
+    /// Consume and return the at-most-one warning collected at
+    /// connect time. Currently fires when [`KnownHosts::record`]
+    /// failed after a successful first-seen handshake, which means
+    /// TOFU detection is OFF until the user fixes the underlying
+    /// FS / permissions issue. App layer surfaces the message as a
+    /// `host-key:warning` Tauri event. Returns `None` on a normal
+    /// happy-path connect.
+    ///
+    /// "Take" rather than "peek" because the warning is a one-shot
+    /// event tied to the connect call; subsequent reconnects
+    /// produce their own state.
+    pub fn take_pending_warning(&self) -> Option<String> {
+        self.pending_warning.lock().ok().and_then(|mut g| g.take())
+    }
+
     /// Run `cmd` and capture stdout. Used for the device-info probe; SFTP is
     /// preferred for everything else.
     async fn exec(&self, cmd: &str) -> DeviceResult<String> {
@@ -342,7 +403,7 @@ impl SshDevice {
             sftp.open(path).await.map_err(|e| sftp_err("open", path, e))
         })
         .await?;
-        with_timeout("read_file.body", read_capped(f, path)).await
+        with_body_timeout("read_file.body", read_capped(f, path)).await
     }
 
     /// Stage a file's bytes to `<path>.rehydrate-tmp`. Does NOT touch the
@@ -800,7 +861,7 @@ async fn read_path(sftp: &SftpSession, path: &str) -> DeviceResult<Vec<u8>> {
         sftp.open(path).await.map_err(|e| sftp_err("open", path, e))
     })
     .await?;
-    with_timeout("read_path.body", read_capped(f, path)).await
+    with_body_timeout("read_path.body", read_capped(f, path)).await
 }
 
 /// Read an SFTP file with a hard size limit. `take(MAX_REMOTE_FILE_BYTES + 1)`

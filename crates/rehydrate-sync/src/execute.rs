@@ -157,25 +157,35 @@ pub async fn execute_pull(
     // from the tablet (intentionally or otherwise).
     //
     // Safety guard: SFTP `read_dir` is page-based, and we have no
-    // contract that says a short page = end-of-stream. A truncated
-    // listing would otherwise read as "almost everything was deleted"
-    // and trigger a mass-archive. Refuse to sweep if the device
-    // returned drastically fewer documents than we previously knew
-    // about — the user can re-sync to pick up real bulk deletes,
-    // but a transient SFTP hiccup won't shred their library.
+    // contract that says a short page = end-of-stream. A *fully*
+    // empty listing (zero documents) on a library that previously
+    // had many is the realistic signature of a truncated read — a
+    // server bug, a TCP hiccup, or auth that lost the
+    // directory-handle. Refuse to sweep in that specific case so a
+    // bad listing can't shred the library. ANY non-zero listing
+    // proceeds normally; a real bulk-delete still archives cleanly.
+    //
+    // The earlier "<50%" heuristic was overly defensive — a user
+    // who legitimately deletes 60% of their tablet library would
+    // see the guard fire forever (the library state doesn't update
+    // until the sweep runs, so the same ratio repeats on every
+    // subsequent sync) and have no way to reflect those deletes
+    // short of a manual archive. Narrowing to "zero results on a
+    // previously-populated library" keeps the truncation defence
+    // while letting every real-world delete pattern through.
     if !cancel.is_cancelled() {
         match library.previously_synced_ids() {
             Ok(known) => {
                 let prior_count = known.len();
                 let device_doc_count = device_ids.len();
-                let suspicious_truncation = prior_count >= 4 && device_doc_count * 2 < prior_count;
-                if suspicious_truncation {
+                let looks_like_truncated_listing = device_doc_count == 0 && prior_count >= 4;
+                if looks_like_truncated_listing {
                     tracing::warn!(
                         prior_count,
-                        device_doc_count,
-                        "device listing returned <50% of previously-synced docs; \
-                         skipping the device-deletion sweep to avoid mass-archiving \
-                         on a truncated read"
+                        "device listing returned zero documents but library \
+                         expected {prior_count}; skipping the device-deletion \
+                         sweep to avoid mass-archiving on a truncated read. \
+                         Re-sync to retry."
                     );
                 } else {
                     for doc_id in known {
