@@ -134,8 +134,10 @@ impl TypeParse for Block {
             )));
         }
         if end_offset < expected_offset {
+            // Skip the trailing tail without allocating — `read_bytes`
+            // would needlessly grow a Vec we'd then drop.
             let to_skip = (expected_offset - end_offset) as usize;
-            let _ = reader.bit_reader.read_bytes(to_skip)?;
+            reader.bit_reader.skip_bytes(to_skip)?;
         }
 
         return Ok(block);

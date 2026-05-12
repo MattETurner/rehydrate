@@ -27,6 +27,7 @@
 
 use std::time::Instant;
 
+use rehydrate_device::known_hosts::KnownHosts;
 use rehydrate_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rehydrate_device::{Device, RemoteEntryKind};
 use secrecy::SecretString;
@@ -59,7 +60,9 @@ async fn ssh_smoke_against_real_device() {
 
     println!("=== connect ===");
     let t0 = Instant::now();
-    let dev = SshDevice::connect(cfg.clone(), SecretString::from(password))
+    let kh_dir = tempfile::tempdir().expect("tempdir for known_hosts");
+    let kh = KnownHosts::new(kh_dir.path().join("known_hosts.json"));
+    let dev = SshDevice::connect(cfg.clone(), SecretString::from(password), kh)
         .await
         .expect("ssh connect failed");
     println!("connected in {:?}", t0.elapsed());

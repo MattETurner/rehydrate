@@ -21,4 +21,6 @@ tracing = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 secrecy = { workspace = true }
-rehydrate-device = { path = "../rehydrate-device", features = ["ssh"] }
+# Tests reach for `FakeDevice` via the `fake` feature, plus `ssh` for
+# the smoke test against a real tablet.
+rehydrate-device = { path = "../rehydrate-device", features = ["ssh", "fake"] }

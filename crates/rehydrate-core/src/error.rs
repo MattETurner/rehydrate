@@ -28,6 +28,12 @@ pub enum Error {
 
     #[error("library at {0} is already open by another process")]
     AlreadyOpen(String),
+
+    /// A reconstruction/export was asked to write to a path that
+    /// already exists, with `allow_overwrite = false`. The library
+    /// returns this rather than silently clobbering the file.
+    #[error("destination already exists: {0}")]
+    AlreadyExists(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

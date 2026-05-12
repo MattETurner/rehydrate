@@ -157,7 +157,7 @@ impl OllamaBackend {
 fn map_agent_error(err: AgentError) -> OcrError {
     match err {
         AgentError::Network(msg) => OcrError::Unreachable(msg),
-        AgentError::InvalidUrl(msg) => OcrError::Backend(msg),
+        AgentError::InvalidUrl(msg) | AgentError::UnsafeUrl(msg) => OcrError::Backend(msg),
         // Cross-host can only happen if the agent's host changed
         // mid-flight (or someone bypassed `OllamaBackend::new`).
         // Treat as a config bug rather than a transient network

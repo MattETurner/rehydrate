@@ -14,7 +14,7 @@ mod http;
 mod wordpress;
 
 pub use ghost::{GhostClient, GhostCredentials};
-pub use http::{host_of, RestrictedAgent};
+pub use http::{host_of, redact_credentials, validate_remote_url, RestrictedAgent};
 pub use wordpress::{WordpressClient, WordpressCredentials};
 
 use serde::{Deserialize, Serialize};
@@ -67,6 +67,22 @@ pub struct PublishResult {
 pub enum PublishError {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+
+    /// The configured URL points somewhere the publish layer refuses
+    /// to fetch from (private IP, link-local, plaintext to a public
+    /// host, etc.). Surfaced separately from `InvalidConfig` so the
+    /// UI can render a more specific "this URL is unsafe" message
+    /// instead of a generic config error.
+    #[error("URL is unsafe to publish to: {0}")]
+    UnsafeUrl(String),
+
+    /// A request was about to go out to a host different from the one
+    /// the agent was pinned to. Surfaced as its own variant so the
+    /// UI can distinguish "you misconfigured the URL" (which
+    /// `InvalidConfig` covers) from "the agent caught a redirect /
+    /// cross-host attempt at runtime."
+    #[error("request host {found:?} does not match pinned host {expected:?}")]
+    CrossHost { found: String, expected: String },
 
     #[error("network: {0}")]
     Network(String),

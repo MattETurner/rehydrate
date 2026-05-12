@@ -34,9 +34,9 @@ use tauri_plugin_dialog::DialogExt;
 use tokio::sync::mpsc;
 
 use crate::config;
+use crate::keychain;
 use crate::state::{
-    AppState, OllamaPing, KEYRING_GHOST_CREDS, KEYRING_SERVICE, KEYRING_WORDPRESS_CREDS,
-    OLLAMA_PING_TTL,
+    AppState, OllamaPing, KEYRING_GHOST_CREDS, KEYRING_WORDPRESS_CREDS, OLLAMA_PING_TTL,
 };
 
 const TRANSCRIPT_PATH: &str = "ocr/transcript.md";
@@ -101,45 +101,16 @@ pub async fn save_ollama_config(cfg: OllamaConfigDto) -> Result<(), String> {
     config::save(&on_disk).map_err(err)
 }
 
-/// Reject URLs that the user shouldn't be pointing OCR at. Three
-/// gates:
+/// Reject URLs the user shouldn't be pointing OCR at.
 ///
-/// 1. Must parse with a host (the existing `host_of` check).
-/// 2. Scheme must be `http` or `https` — `file://`, `gopher://`,
-///    etc. would be Just Weird and could trick ureq into doing
-///    something unexpected.
-/// 3. Non-loopback hosts may not use plain `http://`. Localhost is
-///    fine over http (the daemon doesn't speak HTTPS); but if the
-///    user points at a LAN box, encrypt the link. Otherwise PNG
-///    page renders and transcript responses cross the network in
-///    plaintext, and anyone on-path sees handwriting content.
-///
-/// Both `save_ollama_config` and `ping_ollama` route through this
-/// so the renderer can't bypass the gates by going straight to the
-/// probe endpoint.
+/// The actual rules — scheme/loopback/private-IP gating — live in
+/// `rehydrate_ocr::validate_remote_url`, which is also what
+/// `RestrictedAgent::for_base` calls before constructing the ureq
+/// agent. Keeping the gate in one place means the IPC probe and the
+/// production fetch always see the same answer; a renderer can't
+/// bypass the gate by going through a different code path.
 fn validate_ollama_url(url_str: &str) -> Result<(), String> {
-    let parsed =
-        url::Url::parse(url_str).map_err(|e| format!("Ollama URL is not a valid URL: {e}"))?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| format!("Ollama URL must have a host (got {url_str:?})"))?;
-    let scheme = parsed.scheme();
-    if scheme != "http" && scheme != "https" {
-        return Err(format!(
-            "Ollama URL scheme must be http or https (got {scheme:?})"
-        ));
-    }
-    let is_loopback = host.eq_ignore_ascii_case("localhost")
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host == "[::1]";
-    if scheme == "http" && !is_loopback {
-        return Err(format!(
-            "plain HTTP is only allowed for localhost. {host:?} must use https:// — \
-             otherwise notebook page images and transcripts cross the network in plaintext."
-        ));
-    }
-    Ok(())
+    rehydrate_ocr::validate_remote_url(url_str).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -751,60 +722,49 @@ pub async fn publish_transcript(
 }
 
 fn load_ghost_client() -> Result<GhostClient, String> {
-    let json = read_keychain(KEYRING_GHOST_CREDS)
+    let json = keychain::read_slot(KEYRING_GHOST_CREDS)
         .ok_or_else(|| "no Ghost credentials saved".to_string())?;
     let creds: GhostCredentials = serde_json::from_str(&json).map_err(err)?;
     GhostClient::new(creds).map_err(err)
 }
 
 fn load_wordpress_client() -> Result<WordpressClient, String> {
-    let json = read_keychain(KEYRING_WORDPRESS_CREDS)
+    let json = keychain::read_slot(KEYRING_WORDPRESS_CREDS)
         .ok_or_else(|| "no WordPress credentials saved".to_string())?;
     let creds: WordpressCredentials = serde_json::from_str(&json).map_err(err)?;
     WordpressClient::new(creds).map_err(err)
 }
 
-fn read_keychain(slot: &str) -> Option<String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, slot).ok()?;
-    entry.get_password().ok()
-}
-
-fn write_keychain(slot: &str, value: &str) -> Result<(), String> {
-    keyring::Entry::new(KEYRING_SERVICE, slot)
-        .map_err(err)?
-        .set_password(value)
-        .map_err(err)
-}
-
-fn forget_keychain(slot: &str) -> Result<(), String> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, slot) {
-        // Some keyring backends return a "not found" error when the
-        // entry doesn't exist; treat as success.
-        let _ = entry.delete_credential();
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn set_ghost_credentials(creds: GhostCredentials) -> Result<(), String> {
+    // Validate before the credentials hit the keychain so a misshaped
+    // URL never leaves the IPC layer. `validate_remote_url` blocks
+    // `http://` to public hosts and any literal-IP private/link-local
+    // target — both of which would leak the Admin API key in
+    // cleartext or pivot to internal services.
+    rehydrate_publish::validate_remote_url(&creds.base_url).map_err(err)?;
     let json = serde_json::to_string(&creds).map_err(err)?;
-    write_keychain(KEYRING_GHOST_CREDS, &json)
+    keychain::write_slot(KEYRING_GHOST_CREDS, &json)
 }
 
 #[tauri::command]
 pub async fn forget_ghost_credentials() -> Result<(), String> {
-    forget_keychain(KEYRING_GHOST_CREDS)
+    keychain::forget_slot(KEYRING_GHOST_CREDS)
 }
 
 #[tauri::command]
 pub async fn set_wordpress_credentials(creds: WordpressCredentials) -> Result<(), String> {
+    // Mirrors the Ghost path — see the rationale there. WordPress
+    // Application Passwords ship as Basic auth, so plaintext is
+    // even more catastrophic.
+    rehydrate_publish::validate_remote_url(&creds.base_url).map_err(err)?;
     let json = serde_json::to_string(&creds).map_err(err)?;
-    write_keychain(KEYRING_WORDPRESS_CREDS, &json)
+    keychain::write_slot(KEYRING_WORDPRESS_CREDS, &json)
 }
 
 #[tauri::command]
 pub async fn forget_wordpress_credentials() -> Result<(), String> {
-    forget_keychain(KEYRING_WORDPRESS_CREDS)
+    keychain::forget_slot(KEYRING_WORDPRESS_CREDS)
 }
 
 #[derive(Serialize)]
@@ -816,8 +776,8 @@ pub struct PublishCredentialStatus {
 #[tauri::command]
 pub async fn publish_credential_status() -> Result<PublishCredentialStatus, String> {
     Ok(PublishCredentialStatus {
-        ghost: read_keychain(KEYRING_GHOST_CREDS).is_some(),
-        wordpress: read_keychain(KEYRING_WORDPRESS_CREDS).is_some(),
+        ghost: keychain::read_slot(KEYRING_GHOST_CREDS).is_some(),
+        wordpress: keychain::read_slot(KEYRING_WORDPRESS_CREDS).is_some(),
     })
 }
 
@@ -896,9 +856,20 @@ mod ollama_url_tests {
     }
 
     #[test]
-    fn accepts_remote_https() {
+    fn accepts_remote_https_named() {
         validate_ollama_url("https://ollama.example.com").unwrap();
-        validate_ollama_url("https://10.0.0.5:11434").unwrap();
+    }
+
+    #[test]
+    fn rejects_https_to_private_ip() {
+        // A renderer XSS that flipped the configured base URL to one
+        // of these could exfiltrate page imagery to an internal host
+        // the user never intended; the audit specifically flagged
+        // `https://10.0.0.5` and `https://169.254.169.254` as
+        // SSRF-adjacent targets that previously slipped through.
+        assert!(validate_ollama_url("https://10.0.0.5:11434").is_err());
+        assert!(validate_ollama_url("https://169.254.169.254").is_err());
+        assert!(validate_ollama_url("https://192.168.1.10:11434").is_err());
     }
 
     #[test]

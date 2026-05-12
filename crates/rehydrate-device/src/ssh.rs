@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use russh::client::{self, Handle, Handler};
@@ -27,6 +28,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use crate::error::{DeviceError, DeviceResult};
+use crate::known_hosts::KnownHosts;
 use crate::model::{DeviceInfo, RemoteEntry, RemoteEntryKind, RemoteFile};
 use crate::trait_def::Device;
 
@@ -48,6 +50,28 @@ const MAX_REMOTE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 /// loop that slipped past the symlink filter.
 const MAX_SUBTREE_DEPTH: usize = 16;
 
+/// Per-operation SFTP timeout. The session-level `inactivity_timeout`
+/// already covers "the whole TCP connection went quiet"; this cap is
+/// stricter — a single `read_dir`, `open`, or `read_to_end` that
+/// stalls for two minutes is almost certainly stuck (the reMarkable
+/// SFTP server tops out around 5 MB/s, so even a 512 MB file should
+/// land well inside this budget). Without this, a stuck SFTP read
+/// would hold the device-wide mutex indefinitely.
+const SFTP_OP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Wrap an SFTP-shaped future in a per-operation timeout. Used by every
+/// `inner.sftp.*` call site so a single misbehaving read can never
+/// hold the device-wide mutex past the timeout budget.
+async fn with_timeout<T, F>(label: &str, fut: F) -> DeviceResult<T>
+where
+    F: std::future::Future<Output = DeviceResult<T>>,
+{
+    match tokio::time::timeout(SFTP_OP_TIMEOUT, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(DeviceError::Timeout(label.to_string())),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SshConfig {
     pub host: String,
@@ -67,21 +91,74 @@ impl Default for SshConfig {
     }
 }
 
-/// Minimal russh client handler. Phase 1 accepts any host key on first
-/// connect (TOFU is a Phase 5 concern); over USB-ethernet to 10.11.99.1
-/// the threat model is "did the user plug the right device in", which is
-/// covered by the user physically plugging the device in.
-#[derive(Default)]
-struct ClientHandler;
+/// russh client handler doing trust-on-first-use host-key pinning.
+///
+/// On first connect to a given `host:port` the server's SHA256
+/// fingerprint is pinned. Every subsequent connect compares the
+/// presented key to the pinned value and refuses to proceed when they
+/// don't match — propagating the mismatch back to `SshDevice::connect`
+/// through the shared `outcome` slot, which is then surfaced as
+/// [`DeviceError::HostKeyChanged`].
+///
+/// The outcome is held in `Arc<std::sync::Mutex<_>>` rather than
+/// directly on the handler because russh's `client::connect` consumes
+/// the handler by value; sharing the slot lets the caller read the
+/// verification result after the handshake completes.
+struct ClientHandler {
+    known_hosts: KnownHosts,
+    endpoint: String,
+    outcome: Arc<std::sync::Mutex<HostKeyOutcome>>,
+}
+
+#[derive(Debug, Clone, Default)]
+enum HostKeyOutcome {
+    /// Handshake hasn't happened yet (or was rejected outright by
+    /// russh before our `check_server_key` ran).
+    #[default]
+    Pending,
+    /// First time we've seen this host; the fingerprint will be pinned
+    /// once the session is fully authenticated.
+    PendingRecord { fingerprint: String },
+    /// Pinned fingerprint matched the presented key. No action needed.
+    Matched,
+    /// Pinned fingerprint did not match — refuse.
+    Changed { pinned: String, presented: String },
+}
 
 impl Handler for ClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        // ssh-key's `Fingerprint` Display impl is the exact OpenSSH
+        // shape `SHA256:<base64>` — exactly what `ssh-keygen -lf`
+        // emits and what users will paste into known-hosts diagnostics.
+        let presented = server_public_key
+            .fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
+            .to_string();
+        let next = match self.known_hosts.lookup(&self.endpoint) {
+            Ok(Some(pinned)) if pinned == presented => HostKeyOutcome::Matched,
+            Ok(Some(pinned)) => HostKeyOutcome::Changed {
+                pinned,
+                presented: presented.clone(),
+            },
+            Ok(None) => HostKeyOutcome::PendingRecord {
+                fingerprint: presented.clone(),
+            },
+            Err(e) => {
+                // Reading known_hosts shouldn't fail — but if it does,
+                // refuse rather than fall back to "accept anything".
+                tracing::error!("known_hosts read failed: {e}");
+                return Err(russh::Error::IO(std::io::Error::other(e.to_string())));
+            }
+        };
+        let accept = !matches!(next, HostKeyOutcome::Changed { .. });
+        if let Ok(mut guard) = self.outcome.lock() {
+            *guard = next;
+        }
+        Ok(accept)
     }
 }
 
@@ -97,15 +174,48 @@ struct Inner {
 
 impl SshDevice {
     /// Open an SSH session and SFTP subsystem against the configured host.
-    pub async fn connect(cfg: SshConfig, password: SecretString) -> DeviceResult<Self> {
+    ///
+    /// The host's public key is pinned via TOFU using the supplied
+    /// `known_hosts` store. A mismatched pinned fingerprint produces
+    /// `DeviceError::HostKeyChanged` — see `known_hosts.rs` for the
+    /// rationale and the file shape.
+    pub async fn connect(
+        cfg: SshConfig,
+        password: SecretString,
+        known_hosts: KnownHosts,
+    ) -> DeviceResult<Self> {
         let russh_cfg = Arc::new(client::Config {
-            inactivity_timeout: Some(std::time::Duration::from_secs(60)),
-            keepalive_interval: Some(std::time::Duration::from_secs(15)),
+            inactivity_timeout: Some(Duration::from_secs(60)),
+            keepalive_interval: Some(Duration::from_secs(15)),
             ..Default::default()
         });
 
-        let mut handle = client::connect(russh_cfg, (cfg.host.as_str(), cfg.port), ClientHandler)
-            .await
+        let endpoint = format!("{}:{}", cfg.host, cfg.port);
+        let outcome: Arc<std::sync::Mutex<HostKeyOutcome>> = Arc::default();
+        let handler = ClientHandler {
+            known_hosts: known_hosts.clone(),
+            endpoint: endpoint.clone(),
+            outcome: Arc::clone(&outcome),
+        };
+
+        let connect_result =
+            client::connect(russh_cfg, (cfg.host.as_str(), cfg.port), handler).await;
+
+        // Translate a host-key mismatch into the typed error before
+        // checking the connect Result — a mismatch causes
+        // `check_server_key` to return Ok(false), which surfaces as
+        // a generic russh disconnect rather than a useful message.
+        if let Ok(guard) = outcome.lock() {
+            if let HostKeyOutcome::Changed { pinned, presented } = &*guard {
+                return Err(DeviceError::HostKeyChanged {
+                    endpoint,
+                    pinned_fingerprint: pinned.clone(),
+                    presented_fingerprint: presented.clone(),
+                });
+            }
+        }
+
+        let mut handle = connect_result
             .map_err(|e| DeviceError::Unreachable(format!("{}:{} ({e})", cfg.host, cfg.port)))?;
 
         let auth_ok = handle
@@ -116,12 +226,80 @@ impl SshDevice {
             return Err(DeviceError::AuthFailed);
         }
 
+        // Auth succeeded — now is the right time to commit a
+        // first-seen fingerprint. Doing this before auth would let an
+        // impostor that handshakes successfully but rejects the
+        // password silently overwrite the pinned key. Doing it after
+        // means a successful login is also a confirmation that this
+        // is the device the user expected.
+        if let Ok(guard) = outcome.lock() {
+            if let HostKeyOutcome::PendingRecord { fingerprint } = &*guard {
+                if let Err(e) = known_hosts.record(&endpoint, fingerprint) {
+                    tracing::warn!("could not persist pinned host key: {e}");
+                }
+            }
+        }
+
         let sftp = open_sftp(&handle).await?;
 
-        Ok(Self {
+        let device = Self {
             cfg,
             inner: Mutex::new(Inner { handle, sftp }),
+        };
+        // Surface stranded `.rehydrate-bak` files in the xochitl
+        // directory — these mean a previous push hit a double-fault
+        // and the live file may have been lost. Logged at warn so the
+        // user notices; actual recovery is performed by the next push
+        // to the affected path (see `commit_staged`).
+        device.scan_stranded_backups().await;
+        Ok(device)
+    }
+
+    /// Best-effort scan for stranded `.rehydrate-bak` files in the
+    /// xochitl directory. A leftover backup with no live counterpart
+    /// signals a previous push crashed during the rename dance and
+    /// the user's data is sitting at `<path>.rehydrate-bak`. The
+    /// next `commit_staged` for the same path performs the actual
+    /// recovery; this scan only surfaces the situation early so it
+    /// doesn't go unnoticed until the user pushes that doc again.
+    async fn scan_stranded_backups(&self) {
+        let inner = self.inner.lock().await;
+        let dir = self.cfg.xochitl_dir.clone();
+        let entries = match with_timeout("scan_stranded.read_dir", async {
+            inner
+                .sftp
+                .read_dir(&dir)
+                .await
+                .map_err(|e| sftp_err("read_dir", &dir, e))
         })
+        .await
+        {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("could not scan for stranded backups under {dir}: {e}");
+                return;
+            }
+        };
+        let mut stranded = Vec::new();
+        for entry in entries {
+            let name = entry.file_name();
+            let Some(live_name) = name.strip_suffix(".rehydrate-bak") else {
+                continue;
+            };
+            let live = format!("{dir}/{live_name}");
+            let exists = inner.sftp.metadata(&live).await.is_ok();
+            if !exists {
+                stranded.push(format!("{dir}/{name}"));
+            }
+        }
+        if !stranded.is_empty() {
+            tracing::warn!(
+                "found {} stranded .rehydrate-bak file(s) on device — \
+                 the next push to the same path will recover them: {:?}",
+                stranded.len(),
+                stranded
+            );
+        }
     }
 
     pub fn config(&self) -> &SshConfig {
@@ -156,11 +334,15 @@ impl SshDevice {
     }
 
     async fn read_file(&self, sftp: &SftpSession, path: &str) -> DeviceResult<Vec<u8>> {
-        let f = sftp
-            .open(path)
-            .await
-            .map_err(|e| sftp_err("open", path, e))?;
-        read_capped(f, path).await
+        // Every SFTP touchpoint goes through `with_timeout` — without
+        // it a stuck server-side read would hold the device-wide mutex
+        // until the session-level inactivity_timeout fires (60 s) and
+        // the entire SSH connection tears down.
+        let f = with_timeout("read_file.open", async {
+            sftp.open(path).await.map_err(|e| sftp_err("open", path, e))
+        })
+        .await?;
+        with_timeout("read_file.body", read_capped(f, path)).await
     }
 
     /// Stage a file's bytes to `<path>.rehydrate-tmp`. Does NOT touch the
@@ -178,16 +360,24 @@ impl SshDevice {
         let _ = sftp.remove_file(&tmp_path).await;
 
         let flags = OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE;
-        let mut file = sftp
-            .open_with_flags(&tmp_path, flags)
-            .await
-            .map_err(|e| sftp_err("open_with_flags", &tmp_path, e))?;
-        file.write_all(bytes)
-            .await
-            .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))?;
-        file.shutdown()
-            .await
-            .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))?;
+        let mut file = with_timeout("stage_file.open", async {
+            sftp.open_with_flags(&tmp_path, flags)
+                .await
+                .map_err(|e| sftp_err("open_with_flags", &tmp_path, e))
+        })
+        .await?;
+        with_timeout("stage_file.write", async {
+            file.write_all(bytes)
+                .await
+                .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))
+        })
+        .await?;
+        with_timeout("stage_file.shutdown", async {
+            file.shutdown()
+                .await
+                .map_err(|e| DeviceError::Io(std::io::Error::other(e.to_string())))
+        })
+        .await?;
         drop(file);
         Ok(())
     }
@@ -349,11 +539,14 @@ impl Device for SshDevice {
     async fn list_documents(&self) -> DeviceResult<Vec<RemoteEntry>> {
         let inner = self.inner.lock().await;
         let dir = self.cfg.xochitl_dir.clone();
-        let entries = inner
-            .sftp
-            .read_dir(&dir)
-            .await
-            .map_err(|e| sftp_err("read_dir", &dir, e))?;
+        let entries = with_timeout("list_documents.read_dir", async {
+            inner
+                .sftp
+                .read_dir(&dir)
+                .await
+                .map_err(|e| sftp_err("read_dir", &dir, e))
+        })
+        .await?;
 
         let mut out = Vec::new();
         for entry in entries {
@@ -481,11 +674,14 @@ impl Device for SshDevice {
 
         let mut out = Vec::new();
         // 1. All sibling files prefixed with `<uuid>.`
-        let entries = inner
-            .sftp
-            .read_dir(&dir)
-            .await
-            .map_err(|e| sftp_err("read_dir", &dir, e))?;
+        let entries = with_timeout("fetch_document_tree.read_dir", async {
+            inner
+                .sftp
+                .read_dir(&dir)
+                .await
+                .map_err(|e| sftp_err("read_dir", &dir, e))
+        })
+        .await?;
         for entry in entries {
             let name = entry.file_name();
             if !name.starts_with(&format!("{uuid}.")) {
@@ -561,10 +757,12 @@ async fn fetch_subtree_named(
     let mut stack: Vec<(String, PathBuf, usize)> =
         vec![(device_dir.to_string(), PathBuf::from(rel_root), 0)];
     while let Some((dev, rel, depth)) = stack.pop() {
-        let entries = sftp
-            .read_dir(&dev)
-            .await
-            .map_err(|e| sftp_err("read_dir", &dev, e))?;
+        let entries = with_timeout("fetch_subtree.read_dir", async {
+            sftp.read_dir(&dev)
+                .await
+                .map_err(|e| sftp_err("read_dir", &dev, e))
+        })
+        .await?;
         for entry in entries {
             let name = entry.file_name();
             // Skip symlinks: the device reports `xochitl` straight off the
@@ -598,11 +796,11 @@ async fn fetch_subtree_named(
 }
 
 async fn read_path(sftp: &SftpSession, path: &str) -> DeviceResult<Vec<u8>> {
-    let f = sftp
-        .open(path)
-        .await
-        .map_err(|e| sftp_err("open", path, e))?;
-    read_capped(f, path).await
+    let f = with_timeout("read_path.open", async {
+        sftp.open(path).await.map_err(|e| sftp_err("open", path, e))
+    })
+    .await?;
+    with_timeout("read_path.body", read_capped(f, path)).await
 }
 
 /// Read an SFTP file with a hard size limit. `take(MAX_REMOTE_FILE_BYTES + 1)`

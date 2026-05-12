@@ -45,6 +45,19 @@ impl<N: Readable> Bitreader<N> {
         // self.cursor.seek(SeekFrom::Current(position)).unwrap();
     }
 
+    /// Bytes left unread in the underlying buffer.
+    ///
+    /// Used to bound `read_bytes` allocations against the actual stream
+    /// size. A hostile `.rm` file can declare a varuint-derived
+    /// `string_length` of up to `u32::MAX`, which without this cap would
+    /// pre-allocate ~4 GB before the underlying read discovered the
+    /// stream was empty.
+    pub fn remaining(&self) -> usize {
+        let total = self.cursor.get_ref().as_ref().len();
+        let pos = self.cursor.position() as usize;
+        total.saturating_sub(pos)
+    }
+
     // Read bytes first from inner buffer than from bits, will also update the offset
     fn read_exact(&mut self, buffer: &mut [u8]) -> Result<(), ParseError> {
         self.cursor.read_exact(buffer)?;
@@ -52,7 +65,35 @@ impl<N: Readable> Bitreader<N> {
         return Ok(());
     }
 
+    /// Skip `amount` bytes without allocating. Same bounds check as
+    /// `read_bytes`; used when the caller only needs to advance the
+    /// cursor (e.g. tolerated trailing bytes on a block).
+    pub fn skip_bytes(&mut self, amount: usize) -> Result<(), ParseError> {
+        let avail = self.remaining();
+        if amount > avail {
+            return Err(ParseError::invalid(&format!(
+                "asked to skip {amount} bytes but only {avail} remain"
+            )));
+        }
+        let pos = self.cursor.position();
+        self.cursor.set_position(pos + amount as u64);
+        Ok(())
+    }
+
     pub fn read_bytes(&mut self, amount: usize) -> Result<Vec<u8>, ParseError> {
+        // Refuse to allocate more than the buffer can possibly provide.
+        // Without this guard, a malformed file can declare a length
+        // of ~4 GB and the parser allocates eagerly *before*
+        // discovering the underlying stream is empty — the classic
+        // length-prefix DOS shape (see audit H-2). With the guard,
+        // allocation is bounded by the file's actual size, which the
+        // OS-level mmap / read cap already constrains.
+        let avail = self.remaining();
+        if amount > avail {
+            return Err(ParseError::invalid(&format!(
+                "requested {amount} bytes but only {avail} remain"
+            )));
+        }
         let mut buffer = vec![0; amount];
         self.read_exact(&mut buffer)?;
         return Ok(buffer);
@@ -195,5 +236,24 @@ mod tests {
         assert!(br(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x01])
             .read_varuint()
             .is_err());
+    }
+
+    #[test]
+    fn read_bytes_refuses_amount_exceeding_remaining() {
+        // The reader has 4 bytes; asking for 1 GiB must fail
+        // immediately — without allocating a 1 GiB Vec — because
+        // amount > remaining(). This is the audit-H-2 bound.
+        let r = br(&[0x01, 0x02, 0x03, 0x04]).read_bytes(1024 * 1024 * 1024);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn skip_bytes_refuses_overshoot() {
+        let mut r = br(&[0x01, 0x02, 0x03, 0x04]);
+        assert!(r.skip_bytes(usize::MAX / 2).is_err());
+        // Stream cursor must not have moved past EOF — a follow-up
+        // read returns the original bytes.
+        let kept = r.read_bytes(4).unwrap();
+        assert_eq!(kept, vec![0x01, 0x02, 0x03, 0x04]);
     }
 }

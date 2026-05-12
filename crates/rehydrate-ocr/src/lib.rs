@@ -16,7 +16,7 @@ pub mod page_render;
 pub mod progress;
 
 pub use backend::{Mock, OcrBackend, OcrCancel, OcrError, PageTranscript, TranscribeOptions};
-pub use http::RestrictedAgent;
+pub use http::{validate_remote_url, AgentError, RestrictedAgent};
 pub use ollama::OllamaBackend;
 pub use page_render::render_rm_to_png;
 pub use progress::OcrProgressEvent;

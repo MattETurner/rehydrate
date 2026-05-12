@@ -138,5 +138,28 @@ pub fn save(cfg: &AppConfig) -> Result<(), std::io::Error> {
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, &bytes)?;
     fs::rename(&tmp, &path)?;
+    // Real secrets live in the keychain; this file only ever holds
+    // the library path and Ollama base-URL. Still: a hostile other-
+    // user account on a shared box can otherwise see which library
+    // the user opened, so clamp to owner-only on POSIX. No-op
+    // elsewhere (the cfg(unix) guard makes this compile on every
+    // platform without conditional-compilation noise at the
+    // call site).
+    set_owner_only(&path);
     Ok(())
 }
+
+#[cfg(unix)]
+fn set_owner_only(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    // Best-effort: a permissions error here doesn't invalidate the
+    // write that already landed.
+    if let Ok(meta) = fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o600);
+        let _ = fs::set_permissions(path, perms);
+    }
+}
+
+#[cfg(not(unix))]
+fn set_owner_only(_path: &std::path::Path) {}

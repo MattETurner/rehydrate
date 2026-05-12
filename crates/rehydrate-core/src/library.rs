@@ -293,6 +293,15 @@ pub struct Library {
     /// The lock is held only inside Library methods; it doesn't span
     /// async I/O (the sync engine pulls all bytes into memory before
     /// calling record_version, so the critical section is short).
+    ///
+    /// All call sites lock with `.unwrap_or_else(|e| e.into_inner())`
+    /// rather than `.expect(…)`. A panic inside a critical section
+    /// poisons the mutex; treating that as a hard panic on every
+    /// subsequent operation would turn a single transient bug into a
+    /// permanent app-wide crash. Recovering the inner guard lets the
+    /// library degrade rather than abend — the underlying SQLite
+    /// connection survives a Rust panic in the application code
+    /// above it.
     write_lock: Mutex<()>,
     /// OS-level advisory exclusive lock held for the lifetime of the
     /// library instance. Audit fix H3: without this, two app
@@ -466,6 +475,17 @@ impl Library {
         self.blobs.put_bytes(bytes)
     }
 
+    /// Stream-and-hash a blob from a reader without buffering its
+    /// contents end-to-end in memory. Used by `import_file` to keep
+    /// peak memory at one 64 KB buffer when the user drops in a
+    /// 500 MB PDF, instead of allocating the whole file's bytes.
+    pub fn put_blob_from_reader<R: std::io::Read>(
+        &self,
+        reader: &mut R,
+    ) -> Result<crate::blob::PutResult> {
+        self.blobs.put_reader(reader)
+    }
+
     pub fn has_blob(&self, hash: &Sha256Hex) -> bool {
         self.blobs.has(hash)
     }
@@ -478,7 +498,7 @@ impl Library {
     /// manifest's hash equals the document's current_manifest, this is a no-op
     /// and the existing version_id is returned with `unchanged=true`.
     pub fn record_version(&self, manifest: &Manifest, source: Source) -> Result<RecordOutcome> {
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
 
         let canonical = manifest.canonical_json()?;
         let manifest_hash = Sha256Hex::from_bytes(&canonical);
@@ -766,7 +786,7 @@ impl Library {
     {
         // Take the write lock for the WHOLE flow — read, mutate, write —
         // so concurrent rename/move/archive callers serialise properly.
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
 
         // Brief db lock to resolve the current manifest hash (live or
         // archived). We must drop this before doing filesystem I/O
@@ -820,7 +840,8 @@ impl Library {
         // Mark the file as changed locally so the tablet's xochitl picks
         // up the new metadata on next sync. Empty defaults are safe — if
         // these keys were missing they'll simply be set.
-        let now_ms = OffsetDateTime::now_utc().unix_timestamp() * 1000;
+        let now_ms = i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+            .unwrap_or(i64::MAX);
         map.insert(
             "lastModified".into(),
             serde_json::Value::String(now_ms.to_string()),
@@ -978,7 +999,7 @@ impl Library {
             )));
         }
 
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
 
         let manifest_hex: String = {
             let conn = self.db.lock();
@@ -1206,7 +1227,7 @@ impl Library {
     /// referenced by any version become orphans and will be reclaimed by
     /// the next `garbage_collect`.
     pub fn purge_archived_document(&self, document_id: &str) -> Result<()> {
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
 
@@ -1459,13 +1480,20 @@ impl Library {
         // safe because the GC's live-set query and the import's record
         // are serialised through record_version's lock.
 
-        let bytes = fs::read(source_path)?;
+        // Stream the body file rather than `fs::read` it whole. A
+        // 500 MB PDF would otherwise allocate 500 MB just to hand to
+        // `put_blob` — the blob store already supports a streaming
+        // path that keeps peak memory at one 64 KB buffer.
+        let mut body_file = std::fs::File::open(source_path)?;
+        let body_put = self.put_blob_from_reader(&mut body_file)?;
         let document_id = uuid::Uuid::new_v4().to_string();
         let now = OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default();
         // The tablet stores `lastModified` as a unix-millis string.
-        let last_modified_ms = OffsetDateTime::now_utc().unix_timestamp() * 1000;
+        let last_modified_ms =
+            i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
 
         let metadata_json = serde_json::json!({
             "visibleName": visible_name,
@@ -1488,7 +1516,9 @@ impl Library {
 
         let metadata_put = self.put_blob(&metadata_bytes)?;
         let content_put = self.put_blob(&content_bytes)?;
-        let body_put = self.put_blob(&bytes)?;
+        // `body_put` was produced above before any allocation of the
+        // file bytes — leaving the variable here keeps the manifest
+        // construction below unchanged.
 
         let mut manifest = Manifest::new(&document_id, body_kind.doc_type(), visible_name);
         manifest.metadata = metadata_json;
@@ -1654,14 +1684,23 @@ impl Library {
             params![parent],
             |r| r.get(0),
         )?;
+        // If a row exists with `pending_push = 1`, the user renamed
+        // the folder locally and the next push hasn't run yet. A
+        // pull observed during that window would otherwise clobber
+        // the local rename with the device's stale name. Audit fix
+        // (Phase 5): when pending_push is set, refresh only the
+        // structural columns (`parent`, `sort_index` we control) and
+        // leave `visible_name` / `metadata_json` / `pending_push`
+        // alone so the next push picks up the local rename
+        // unchanged.
         tx.execute(
             "INSERT INTO folders(folder_id, parent, visible_name, metadata_json, pending_push, sort_index) \
              VALUES (?1, ?2, ?3, ?4, 0, ?5) \
              ON CONFLICT(folder_id) DO UPDATE SET \
                  parent = excluded.parent, \
-                 visible_name = excluded.visible_name, \
-                 metadata_json = excluded.metadata_json, \
-                 pending_push = 0",
+                 visible_name = CASE WHEN pending_push = 1 THEN visible_name ELSE excluded.visible_name END, \
+                 metadata_json = CASE WHEN pending_push = 1 THEN metadata_json ELSE excluded.metadata_json END, \
+                 pending_push = CASE WHEN pending_push = 1 THEN 1 ELSE 0 END",
             params![folder_id, parent, visible_name, metadata_json, next_sort],
         )?;
         tx.commit()?;
@@ -1681,7 +1720,9 @@ impl Library {
             ));
         }
         let folder_id = uuid::Uuid::new_v4().to_string();
-        let last_modified_ms = OffsetDateTime::now_utc().unix_timestamp() * 1000;
+        let last_modified_ms =
+            i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
         // Mirror the schema xochitl writes for folders. `parent` is "" at
         // root, never a JSON null, because the device side reads it as a
         // string. `synced: false` and the `*modified` flags signal the
@@ -1701,7 +1742,7 @@ impl Library {
         });
         let metadata_json = serde_json::to_string(&metadata)?;
 
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
         // Reject inserts under a non-existent parent — the UI shouldn't
@@ -1761,7 +1802,7 @@ impl Library {
             ));
         }
 
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
 
@@ -1822,7 +1863,7 @@ impl Library {
                 "folder name must not be empty".into(),
             ));
         }
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
 
@@ -1850,7 +1891,8 @@ impl Library {
             serde_json::Value::String(trimmed.clone()),
         );
         // xochitl uses these to decide a re-index is needed.
-        let now_ms = OffsetDateTime::now_utc().unix_timestamp() * 1000;
+        let now_ms = i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+            .unwrap_or(i64::MAX);
         map.insert(
             "lastModified".into(),
             serde_json::Value::String(now_ms.to_string()),
@@ -1921,7 +1963,7 @@ impl Library {
         &self,
         grace: std::time::Duration,
     ) -> Result<GarbageCollectReport> {
-        let _write_guard = self.write_lock.lock().expect("library write_lock poisoned");
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut live: std::collections::HashSet<String> = std::collections::HashSet::new();
         {
             let conn = self.db.lock();
@@ -2090,7 +2132,27 @@ impl Library {
 
     /// Reconstruct the file tree of `version_id` under `dest`. Used by Phase 2
     /// (export) and as the canonical round-trip property test for the library.
+    ///
+    /// Refuses to overwrite pre-existing files inside `dest` by default —
+    /// callers who deliberately want to overwrite must pass
+    /// `ReconstructOptions { allow_overwrite: true, .. }` via
+    /// [`Self::reconstruct_with`]. Manifest path validation prevents `..`
+    /// escapes (see `crate::manifest::Manifest::validate_paths`), so the
+    /// damage is bounded to `dest`, but the export UI nonetheless picks
+    /// virgin directories — this guard is the second line of defence
+    /// against a careless caller building a destination programmatically.
     pub fn reconstruct(&self, version_id: VersionId, dest: &Path) -> Result<()> {
+        self.reconstruct_with(version_id, dest, ReconstructOptions::default())
+    }
+
+    /// As [`Self::reconstruct`], but lets callers tune the overwrite
+    /// policy. See [`ReconstructOptions`].
+    pub fn reconstruct_with(
+        &self,
+        version_id: VersionId,
+        dest: &Path,
+        opts: ReconstructOptions,
+    ) -> Result<()> {
         let manifest_hex: String = self
             .db
             .lock()
@@ -2110,6 +2172,12 @@ impl Library {
 
         fs::create_dir_all(dest)?;
         for f in &manifest.files {
+            let target = dest.join(&f.path);
+            if !opts.allow_overwrite && target.exists() {
+                return Err(Error::AlreadyExists(target.display().to_string()));
+            }
+        }
+        for f in &manifest.files {
             let blob = self.blobs.read_to_vec(&f.sha256)?;
             let target = dest.join(&f.path);
             if let Some(parent) = target.parent() {
@@ -2119,6 +2187,17 @@ impl Library {
         }
         Ok(())
     }
+}
+
+/// Knobs for [`Library::reconstruct_with`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReconstructOptions {
+    /// When `true`, files already present at the destination paths are
+    /// silently replaced. When `false` (the default), reconstruct
+    /// aborts with `Error::AlreadyExists` on the first collision and
+    /// does not write any blobs — the caller can pick a different
+    /// destination or pass `allow_overwrite` deliberately.
+    pub allow_overwrite: bool,
 }
 
 /// Recursively walk the `blobs/<aa>/<bb>/<hash>` tree, invoking `visit` for

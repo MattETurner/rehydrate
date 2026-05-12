@@ -13,6 +13,7 @@
 use std::time::Instant;
 
 use rehydrate_core::Library;
+use rehydrate_device::known_hosts::KnownHosts;
 use rehydrate_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rehydrate_device::Device;
 use rehydrate_sync::{execute_pull, plan_pull, progress, ProgressEvent};
@@ -34,7 +35,9 @@ async fn full_pull_against_real_device() {
     let lib_dir = tempfile::tempdir().expect("tempdir");
     println!("library: {}", lib_dir.path().display());
 
-    let dev = SshDevice::connect(cfg, SecretString::from(password))
+    let kh_dir = tempfile::tempdir().expect("tempdir for known_hosts");
+    let kh = KnownHosts::new(kh_dir.path().join("known_hosts.json"));
+    let dev = SshDevice::connect(cfg, SecretString::from(password), kh)
         .await
         .expect("ssh connect failed");
     let info = dev.ping().await.expect("ping");

@@ -21,6 +21,12 @@ secrecy = { workspace = true, optional = true }
 [features]
 default = ["ssh"]
 ssh = ["dep:russh", "dep:russh-sftp", "dep:keyring", "dep:secrecy"]
+# Expose `FakeDevice` outside of `cfg(test)` builds. Off by default
+# because the only production consumer is the SSH path; downstream
+# test crates that want the fake (currently `rehydrate-sync`) enable
+# this feature via a `dev-dependencies` entry rather than pulling it
+# into the shipped binary.
+fake = []
 
 [dev-dependencies]
 tempfile = { workspace = true }
