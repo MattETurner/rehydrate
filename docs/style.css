@@ -88,7 +88,7 @@ body {
 .hero {
   text-align: center;
   padding: var(--space-8) var(--space-5) var(--space-8);
-  max-width: 760px;
+  max-width: 840px;
   margin: 0 auto;
 }
 
@@ -221,7 +221,7 @@ body {
 
 main {
   flex: 1;
-  max-width: 760px;
+  max-width: 840px;
   margin: 0 auto;
   padding: 0 var(--space-5);
 }
@@ -353,7 +353,7 @@ em {
  * ===================================================================== */
 
 footer {
-  max-width: 760px;
+  max-width: 840px;
   margin: 0 auto;
   padding: var(--space-6) var(--space-5) var(--space-7);
   text-align: center;
@@ -405,6 +405,16 @@ footer p {
   gap: var(--space-6);
   align-items: center;
   margin: var(--space-5) 0;
+}
+/* Even-split modifier — used in "Why this exists" where the
+ * accompanying image is a photo of equal visual weight to the
+ * prose column, not a small inline mascot. */
+.story__split--even {
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-6);
+}
+.story__split--even .story__figure img {
+  border-radius: var(--radius-lg);
 }
 .story__figure--inline {
   margin: 0;
