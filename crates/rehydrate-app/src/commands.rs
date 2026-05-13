@@ -9,7 +9,7 @@ use rehydrate_device::known_hosts::KnownHosts;
 use rehydrate_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rehydrate_device::{Device, DeviceInfo};
 use rehydrate_sync::{
-    execute_pull, execute_push, plan_pull, plan_push, progress, Cancel, ProgressEvent, PullPlan,
+    execute_pull, execute_push, plan_pull, plan_push, progress, ProgressEvent, PullPlan,
     PushPlan,
 };
 use secrecy::SecretString;
@@ -696,6 +696,27 @@ pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Trip the shared sync cancellation flag. The engine polls the
+/// flag between documents (and inside the folder-push loop), so an
+/// in-flight sync_two_way / pull_execute / push_execute stops at
+/// the next granular boundary and returns `SyncError::Cancelled`.
+/// Idempotent: calling when nothing is running is a no-op (the next
+/// sync resets the flag before it starts).
+#[tauri::command]
+pub fn cancel_sync(state: State<'_, AppState>) -> Result<(), String> {
+    state.sync_cancel.cancel();
+    Ok(())
+}
+
+/// Trip the shared OCR cancellation flag. Mirrors `cancel_sync`
+/// but targets `transcribe_document` / the auto-OCR sweep. The
+/// flag is reset at the start of each new OCR job.
+#[tauri::command]
+pub fn cancel_ocr(state: State<'_, AppState>) -> Result<(), String> {
+    state.ocr_cancel.cancel();
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentSummary>, String> {
     let lib = lib_arc(&state).await?;
@@ -1257,7 +1278,11 @@ pub async fn pull_execute(
     let (tx, rx) = progress::channel(64);
     let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
 
-    let report = execute_pull(&lib, dev.as_ref(), plan, Some(tx), Cancel::default())
+    // Reset the shared cancel handle to a clean (un-cancelled) state
+    // and pass a clone to the engine. The renderer's `cancel_sync`
+    // command flips the same handle.
+    state.sync_cancel.reset();
+    let report = execute_pull(&lib, dev.as_ref(), plan, Some(tx), state.sync_cancel.clone())
         .await
         .map_err(err)?;
     let _ = forwarder.await;
@@ -1286,7 +1311,8 @@ pub async fn push_execute(
     let plan = plan_push(&lib).map_err(err)?;
     let (tx, rx) = progress::channel(64);
     let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
-    let report = execute_push(&lib, dev.as_ref(), plan, Some(tx), Cancel::default())
+    state.sync_cancel.reset();
+    let report = execute_push(&lib, dev.as_ref(), plan, Some(tx), state.sync_cancel.clone())
         .await
         .map_err(err)?;
     let _ = forwarder.await;
@@ -1310,14 +1336,24 @@ pub async fn sync_two_way(
     let dev = device_arc(&state).await?;
     let lib = lib_arc(&state).await?;
 
+    // Reset the cancel handle once for the whole two-way sync; the
+    // renderer's `cancel_sync` command will trip both phases.
+    state.sync_cancel.reset();
+
     // ----- PULL phase -----
     let _ = app.emit("sync:phase", "pull");
     let pull_plan = plan_pull(&lib, dev.as_ref()).await.map_err(err)?;
     let (tx, rx) = progress::channel(64);
     let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
-    let pull = execute_pull(&lib, dev.as_ref(), pull_plan, Some(tx), Cancel::default())
-        .await
-        .map_err(err)?;
+    let pull = execute_pull(
+        &lib,
+        dev.as_ref(),
+        pull_plan,
+        Some(tx),
+        state.sync_cancel.clone(),
+    )
+    .await
+    .map_err(err)?;
     let _ = forwarder.await;
 
     // ----- PUSH phase -----
@@ -1325,9 +1361,15 @@ pub async fn sync_two_way(
     let push_plan = plan_push(&lib).map_err(err)?;
     let (tx, rx) = progress::channel(64);
     let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
-    let push = execute_push(&lib, dev.as_ref(), push_plan, Some(tx), Cancel::default())
-        .await
-        .map_err(err)?;
+    let push = execute_push(
+        &lib,
+        dev.as_ref(),
+        push_plan,
+        Some(tx),
+        state.sync_cancel.clone(),
+    )
+    .await
+    .map_err(err)?;
     let _ = forwarder.await;
 
     Ok(TwoWayReport {

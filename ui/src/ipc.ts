@@ -170,6 +170,13 @@ export const ipc = {
   /// via this command.
   openSupportUrl: (url: string) => invoke<void>("open_support_url", { url }),
   appVersion: () => invoke<string>("app_version"),
+
+  /// Cooperative cancellation. The engines poll the shared flag
+  /// between documents (and between OCR pages), so calling either
+  /// of these aborts at the next granular boundary — not
+  /// instantly, but bounded.
+  cancelSync: () => invoke<void>("cancel_sync"),
+  cancelOcr: () => invoke<void>("cancel_ocr"),
 };
 
 /** Subscribe to OCR-progress events emitted from the Rust side. */

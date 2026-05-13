@@ -5,11 +5,12 @@
  * `ipc.transcribeDocument`; per-page deltas come over `ocr:progress`
  * events handled in App.tsx.
  *
- * The "×" button is **Hide**, not Cancel — the IPC call doesn't
- * support cancellation today, so a real "stop the model now"
- * affordance would be a lie. In the sweep mode the user *can* stop
- * the *sweep* (the queue between docs) by signalling via the
- * cancellation token, which is a real action and labelled as such. */
+ * The "×" button is **Cancel**: it trips the shared OCR cancel
+ * flag (`cancel_ocr` IPC) so the current document's transcribe
+ * aborts at the next page boundary, AND invalidates the sweep
+ * token so the loop between docs unwinds. Cancellation is
+ * cooperative — the engine polls between pages — so the chip may
+ * linger briefly while the in-flight page finishes. */
 import type { OcrJob, OcrSweepProgress } from "../types";
 
 export function OcrJobChip({
@@ -31,14 +32,14 @@ export function OcrJobChip({
   // before it actually is.
   const pct = Math.min(80, 8 + job.pagesDone * 6);
   const inSweep = sweep && sweep.totalAtStart > 0;
-  // Sweep mode: the × stops the *sweep* (real cancellation token).
-  // Single-job mode: the × is Hide only — the IPC call has no
-  // cancellation handle, so framing it as "cancel" would lie.
-  // The label and tooltip match the actual behaviour.
+  // Cancellation is real in both modes now: the X trips the shared
+  // OCR cancel flag (and in sweep mode also halts the loop between
+  // docs). Bounded by the engine's per-page polling, so the chip
+  // may linger a beat after the click.
   const titleClose = inSweep
     ? "Stop the auto-OCR sweep"
-    : "Hide — OCR keeps running in the background";
-  const ariaClose = inSweep ? "Stop auto-OCR sweep" : "Hide OCR progress";
+    : "Cancel — stops at the next page";
+  const ariaClose = inSweep ? "Stop auto-OCR sweep" : "Cancel OCR";
   return (
     <div className="ocr-chip" role="status" aria-live="polite">
       <div
@@ -72,7 +73,7 @@ export function OcrJobChip({
         onClick={onDismiss}
         title={titleClose}
       >
-        {inSweep ? "Stop" : "Hide"}
+        {inSweep ? "Stop" : "Cancel"}
       </button>
     </div>
   );

@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use rehydrate_core::{Manifest, VersionId};
 use rehydrate_ocr::{
-    default_model_id, OcrBackend, OcrCancel, OcrError, OcrProgressEvent, OllamaBackend,
+    default_model_id, OcrBackend, OcrError, OcrProgressEvent, OllamaBackend,
     TranscribeOptions,
 };
 use rehydrate_publish::{
@@ -552,9 +552,12 @@ pub async fn transcribe_document(
         language,
         markdown: true,
     };
-    let cancel = OcrCancel::new();
+    // Reset the shared OCR cancel handle (it may have been tripped
+    // by a previous `cancel_ocr` call); the renderer can flip it
+    // again to abort the in-flight transcribe at the next page.
+    state.ocr_cancel.reset();
     let pages_result = backend
-        .transcribe_pages(pages_png, &opts, Some(tx), cancel)
+        .transcribe_pages(pages_png, &opts, Some(tx), state.ocr_cancel.clone())
         .await;
     let _ = forwarder.await;
     let pages = match pages_result {

@@ -51,6 +51,10 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
   const [pushPlan, setPushPlan] = useState<PushPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  // True between "user clicked cancel" and "engine actually returns".
+  // Bounded by the engine's per-document polling cadence (a few
+  // hundred ms typical, up to one full document on a slow link).
+  const [cancelling, setCancelling] = useState(false);
   const [phase, setPhase] = useState<"plan" | "pull" | "push" | "done">("plan");
   const [report, setReport] = useState<TwoWayReport | null>(null);
   const [progress, setProgress] = useState<Record<string, DocProgress>>({});
@@ -148,6 +152,7 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
 
   async function start() {
     setRunning(true);
+    setCancelling(false);
     setProgress({});
     setReport(null);
     setWarnings([]);
@@ -229,6 +234,7 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
       unlistenPhase();
       unlistenProgress();
       setRunning(false);
+      setCancelling(false);
     }
   }
 
@@ -305,23 +311,40 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
                   <small>to upload</small>
                 </span>
               </div>
-              <button
-                className="primary start"
-                onClick={start}
-                disabled={running || totalActive === 0}
-              >
-                {running ? (
-                  <>
-                    <Icon name="sync" /> Syncing…
-                  </>
-                ) : totalActive === 0 ? (
-                  "Nothing to sync"
-                ) : (
-                  <>
-                    <Icon name="sync" /> Start sync
-                  </>
-                )}
-              </button>
+              {running ? (
+                <button
+                  className="primary start"
+                  onClick={() => {
+                    // Cancellation is cooperative: the engine polls
+                    // the flag between documents, so the button
+                    // dims to "Cancelling…" until the in-flight
+                    // chunk completes and the cancel actually lands.
+                    ipc.cancelSync().catch(() => {
+                      /* idempotent — if the call fails the sync
+                         either already finished or never started */
+                    });
+                    setCancelling(true);
+                  }}
+                  disabled={cancelling}
+                >
+                  <Icon name="sync" />
+                  {cancelling ? "Cancelling…" : "Cancel sync"}
+                </button>
+              ) : (
+                <button
+                  className="primary start"
+                  onClick={start}
+                  disabled={totalActive === 0}
+                >
+                  {totalActive === 0 ? (
+                    "Nothing to sync"
+                  ) : (
+                    <>
+                      <Icon name="sync" /> Start sync
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           )}
 

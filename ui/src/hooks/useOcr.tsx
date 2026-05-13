@@ -324,12 +324,21 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
     }
   }, []);
 
-  // Chip × button: invalidates the sweep token (universal "stop any
-  // in-flight sweep" lever) and clears local state. Single-job mode
-  // can't actually cancel the underlying IPC call, but clearing the
-  // chip is the honest UX (see `OcrJobChip.tsx` for the rationale).
+  // Chip × button:
+  //   * Invalidates the sweep token (universal "stop any in-flight
+  //     sweep" lever) so the loop between docs unwinds.
+  //   * Trips the shared OCR cancel flag so the *current* document's
+  //     transcribe call aborts at the next page boundary. Without
+  //     this the user could be staring at a 200-page notebook for
+  //     20+ minutes with no escape.
+  //   * Clears local UI state so the chip vanishes promptly. The
+  //     underlying IPC call may still take a beat to return as the
+  //     engine finishes the in-flight page.
   const dismissOcrChip = useCallback(() => {
     sweepTokenRef.current += 1;
+    ipc.cancelOcr().catch(() => {
+      /* idempotent; the next OCR job resets the flag anyway */
+    });
     setOcrJob(null);
     setAutoOcrSweep(null);
   }, []);

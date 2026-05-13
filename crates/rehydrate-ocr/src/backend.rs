@@ -85,6 +85,14 @@ impl OcrCancel {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
+    /// Clear the cancelled flag so the same shared handle can be
+    /// reused for the next OCR job. The IPC layer keeps one
+    /// long-lived OcrCancel in AppState so the renderer's "cancel"
+    /// button can see it; without `reset()` a single cancel would
+    /// permanently kill OCR for the lifetime of the app.
+    pub fn reset(&self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 #[async_trait]
