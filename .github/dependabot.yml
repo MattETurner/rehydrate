@@ -1,0 +1,35 @@
+# Dependabot configuration.
+#
+# Two ecosystems are covered:
+#
+# * `github-actions` — keeps every `uses:` in our workflows on the
+#   latest released version AND pins each entry to a commit SHA in
+#   the same PR (Dependabot's default behaviour for actions). That
+#   closes the "floating tag" supply-chain hole flagged by the v1.0
+#   audit without us having to fetch and verify each SHA by hand.
+# * `cargo` — tracks Rust dependency updates. The Cargo.lock + the
+#   audit/deny configs already guard against vulnerable crates;
+#   this just keeps us current.
+#
+# Schedule is weekly because action / dep churn rarely needs a
+# faster cadence and a flood of daily PRs would just get ignored.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+    # Workspace-level resolution — Dependabot will read each crate's
+    # Cargo.toml under crates/ and update them coherently.
