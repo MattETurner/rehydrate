@@ -1871,9 +1871,7 @@ export function App() {
           <SyncDrawer
             onClose={() => setShowSync(false)}
             onComplete={onSyncComplete}
-            onRunningChange={(running) =>
-              setSyncPhase(running ? "syncing" : "idle")
-            }
+            onSyncStateChange={setSyncPhase}
           />
         </div>
       )}

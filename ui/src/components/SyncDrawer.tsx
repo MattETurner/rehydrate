@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ipc, onSyncPhase, onSyncProgress } from "../ipc";
 import { Icon } from "./Icon";
 import { Skeleton } from "./Skeleton";
-import { formatError } from "../formatError";
+import { humanizeSyncError } from "../humanizeError";
 import type {
   PlanItemStatus,
   ProgressEvent,
@@ -15,11 +15,15 @@ import type {
 interface Props {
   onClose: () => void;
   onComplete: () => void;
-  /** Optional: notified whenever the in-drawer `running` flag flips.
-   *  The App uses this to (a) light up the toolbar StatusPill with
-   *  "Syncing…" and (b) gate backdrop-click dismissal so the user
-   *  can't accidentally hide the drawer mid-sync. */
-  onRunningChange?: (running: boolean) => void;
+  /** Notified whenever the drawer's sync state changes:
+   *  - "idle":    drawer is showing the plan or done state, not running.
+   *  - "syncing": a sync is currently in progress.
+   *  - "failed":  the most recent sync ended with an error.
+   *
+   *  The App uses this to drive the toolbar StatusPill (which used
+   *  to be wired to a boolean `running` flag and therefore couldn't
+   *  surface failures — they appeared as a clean "idle" instead). */
+  onSyncStateChange?: (phase: "idle" | "syncing" | "failed") => void;
 }
 
 interface DocProgress {
@@ -42,7 +46,7 @@ const PUSH_LABEL: Record<PushItemStatus, string> = {
   skipped: "Skipped",
 };
 
-export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
+export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
   const [pullPlan, setPullPlan] = useState<PullPlan | null>(null);
   const [pushPlan, setPushPlan] = useState<PushPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -56,12 +60,20 @@ export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
   const [warnings, setWarnings] = useState<string[]>([]);
   const startedAtRef = useRef<number | null>(null);
 
-  // Mirror the local `running` flag up to the parent so the toolbar
-  // StatusPill can light up "Syncing…" and the App can gate
-  // backdrop-click dismissal.
+  // Mirror the drawer's sync state up to the parent. The "failed"
+  // branch matters: a sync error used to look indistinguishable from
+  // a successful completion at the toolbar level because the
+  // boolean-running mirror always collapsed to "idle" in the finally
+  // block. Tracking planError as part of the projection means the
+  // pill keeps showing red until the user starts a new sync.
+  const syncState: "idle" | "syncing" | "failed" = running
+    ? "syncing"
+    : planError
+      ? "failed"
+      : "idle";
   useEffect(() => {
-    onRunningChange?.(running);
-  }, [running, onRunningChange]);
+    onSyncStateChange?.(syncState);
+  }, [syncState, onSyncStateChange]);
 
   // Build the plan preview up front so the user can see what's about
   // to happen before they hit Start.
@@ -74,7 +86,7 @@ export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
         setPushPlan(ps);
       })
       .catch((e) => {
-        if (mounted) setPlanError(formatError(e));
+        if (mounted) setPlanError(humanizeSyncError(e));
       });
     return () => {
       mounted = false;
@@ -212,7 +224,7 @@ export function SyncDrawer({ onClose, onComplete, onRunningChange }: Props) {
         setTimeout(() => onClose(), 1500);
       }
     } catch (e) {
-      setPlanError(formatError(e));
+      setPlanError(humanizeSyncError(e));
     } finally {
       unlistenPhase();
       unlistenProgress();
