@@ -23,6 +23,15 @@ pub enum CoreError {
     #[error("manifest references unknown blob {0}")]
     MissingBlob(String),
 
+    /// A blob's bytes on disk no longer hash to the filename the
+    /// content-addressed store filed them under. Either the store
+    /// is corrupted (bit-rot, FS truncation) or the file was
+    /// modified out-of-band. Surfaced from `read_to_vec` so the
+    /// hot path never silently serves tampered bytes to push,
+    /// OCR, or reconstruct.
+    #[error("blob {expected} corrupt: bytes hash to {actual}")]
+    BlobCorrupt { expected: String, actual: String },
+
     #[error("not found: {0}")]
     NotFound(String),
 

@@ -142,6 +142,21 @@ impl BlobStore {
         let mut f = self.open(hash)?;
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)?;
+        // Verify the bytes still hash to the filename. Catches
+        // bit-rot, FS truncation, and out-of-band modification of
+        // the blob file. The cost is one SHA-256 pass per read
+        // (~500 MB/s on Apple Silicon); the alternative — trusting
+        // the filesystem to never corrupt content-addressed storage
+        // — would silently feed garbled bytes to push (re-poisoning
+        // the tablet), OCR, and reconstruct. v1.0 audit flagged
+        // the unverified-read path as a data-integrity hazard.
+        let actual = Sha256Hex::from_bytes(&buf);
+        if actual.as_str() != hash.as_str() {
+            return Err(CoreError::BlobCorrupt {
+                expected: hash.to_string(),
+                actual: actual.to_string(),
+            });
+        }
         Ok(buf)
     }
 
@@ -188,5 +203,27 @@ mod tests {
         let a = bs.put_bytes(b"alpha").unwrap();
         let b = bs.put_bytes(b"beta").unwrap();
         assert_ne!(a.hash, b.hash);
+    }
+
+    #[test]
+    fn read_to_vec_detects_on_disk_corruption() {
+        // Regression guard against the v1.0 audit's data-integrity
+        // finding: pre-fix, reads trusted the filename without
+        // verifying that the bytes inside still hashed to it.
+        // Bit-rot, FS truncation, or out-of-band tampering would
+        // be silently fed to push (re-poisoning the tablet), OCR,
+        // and reconstruct.
+        let tmp = tempfile::tempdir().unwrap();
+        let bs = store(&tmp);
+        let r = bs.put_bytes(b"original contents").unwrap();
+        // Tamper with the file on disk.
+        let path = bs.path_for(&r.hash);
+        std::fs::write(&path, b"tampered contents").unwrap();
+        // The hashes don't match, so read_to_vec must refuse.
+        let err = bs.read_to_vec(&r.hash);
+        assert!(
+            matches!(err, Err(CoreError::BlobCorrupt { .. })),
+            "tampered blob must surface BlobCorrupt, got {err:?}",
+        );
     }
 }
