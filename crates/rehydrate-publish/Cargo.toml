@@ -10,7 +10,11 @@ description = "reHydrate publish layer: post OCR transcripts as drafts to Ghost 
 [dependencies]
 base64 = "0.22"
 hex = { workspace = true }
-jsonwebtoken = { version = "9", default-features = false }
+# `default-features = false` strips PEM parsing (we only sign with a raw
+# HMAC secret) and the OS-default crypto picker. v10 requires an explicit
+# crypto-provider feature; `rust_crypto` matches our rustls-only,
+# pure-Rust posture (see deny.toml: openssl/native-tls are banned).
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 # Host-pinned, redirect-refusing ureq agent + URL safety check.
 # See `rehydrate-ocr/Cargo.toml` for the rationale.
 rehydrate-http = { path = "../rehydrate-http" }
