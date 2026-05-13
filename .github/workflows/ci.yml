@@ -16,12 +16,12 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: short
 
-# GitHub-hosted macOS ARM runner. Intel macs and Linux/Windows are
+# Self-hosted macOS ARM runner (M1). Intel macs and Linux/Windows are
 # intentionally unsupported.
 jobs:
   rust:
     name: Rust + UI (macOS, Apple Silicon)
-    runs-on: macos-14
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
 
@@ -75,7 +75,7 @@ jobs:
 
   audit:
     name: Supply chain audit
-    runs-on: macos-14
+    runs-on: [self-hosted, macOS, ARM64]
     # Soft-gate: a new advisory landing between commits shouldn't
     # block a merge that's otherwise green. `cargo deny check` and
     # `cargo audit` both read from `.cargo/audit.toml` + `deny.toml`,
