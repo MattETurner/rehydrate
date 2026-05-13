@@ -1027,8 +1027,7 @@ pub async fn open_publish_url(
 ) -> Result<(), String> {
     rehydrate_publish::validate_remote_url(&url).map_err(err)?;
 
-    let url_host = host_of(&url)
-        .ok_or_else(|| "could not parse host from URL".to_string())?;
+    let url_host = host_of(&url).ok_or_else(|| "could not parse host from URL".to_string())?;
 
     // Resolve the trusted host for `target` from saved credentials.
     // `load_*_client` returns "no credentials saved" — bubble that as a
