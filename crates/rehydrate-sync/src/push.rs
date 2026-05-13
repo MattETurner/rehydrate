@@ -420,6 +420,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn folder_delete_op_hard_removes_metadata_from_device() {
+        // Regression guard for commit 24ea264. A folder delete must
+        // route the push through Device::delete_document_tree
+        // (sweeping every `<uuid>*` artefact off the device) rather
+        // than uploading metadata with `deleted: true`. The latter
+        // would only move the folder to xochitl's Trash view; the
+        // user would still see it on the tablet until they emptied
+        // trash there manually. The core test in rehydrate-core
+        // verifies the queue enqueues Delete (not Upsert); this one
+        // pins what actually happens on the wire.
+        let lib_dir = tempfile::tempdir().unwrap();
+        let dev_dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(lib_dir.path()).unwrap();
+        let dev = FakeDevice::new(dev_dir.path());
+
+        // Create + first push → metadata lands on the fake device.
+        let folder = lib.create_folder("Journal", None).unwrap();
+        let plan = plan_push(&lib).unwrap();
+        execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+        let metadata_path = dev_dir
+            .path()
+            .join(format!("{}.metadata", folder.folder_id));
+        assert!(
+            metadata_path.exists(),
+            "precondition: folder metadata must be on device after first push",
+        );
+        // Stray sibling artefact under the same uuid prefix proves
+        // the delete sweep takes everything, not just .metadata.
+        let stray = dev_dir.path().join(format!("{}.stray", folder.folder_id));
+        std::fs::write(&stray, b"garbage").unwrap();
+
+        // Delete + second push.
+        lib.delete_folder(&folder.folder_id).unwrap();
+        let plan = plan_push(&lib).unwrap();
+        execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+
+        assert!(
+            !metadata_path.exists(),
+            "Delete op must hard-remove <uuid>.metadata from device, not upload deleted:true",
+        );
+        assert!(
+            !stray.exists(),
+            "Delete op must sweep every <uuid>* artefact, not just .metadata",
+        );
+        // The library row is gone too (mark_folder_pushed drops tombstones).
+        assert!(lib.list_folders().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn folder_reparent_pushes_new_parent_in_metadata_payload() {
+        // Regression guard for commit 49e935b. The core test in
+        // rehydrate-core proves the queue payload carries the new
+        // parent. This one closes the loop by reading what landed on
+        // the device — a future refactor that silently stripped or
+        // re-keyed the `parent` field between queue and
+        // put_document_tree would slip past the queue-side test.
+        let lib_dir = tempfile::tempdir().unwrap();
+        let dev_dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(lib_dir.path()).unwrap();
+        let dev = FakeDevice::new(dev_dir.path());
+
+        let parent = lib.create_folder("Journal", None).unwrap();
+        let child = lib.create_folder("BH", None).unwrap();
+        let plan = plan_push(&lib).unwrap();
+        execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+
+        // Drag BH under Journal.
+        lib.reorder_folder(&child.folder_id, Some(&parent.folder_id), 0.0)
+            .unwrap();
+        let plan = plan_push(&lib).unwrap();
+        execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+
+        let metadata_path = dev_dir.path().join(format!("{}.metadata", child.folder_id));
+        let bytes = std::fs::read(&metadata_path).expect("child metadata on device");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            v.get("parent").and_then(|x| x.as_str()),
+            Some(parent.folder_id.as_str()),
+            "device-side metadata must carry the new parent uuid",
+        );
+    }
+
+    #[tokio::test]
     async fn derived_files_are_not_pushed_to_device() {
         // Library-side artefacts (OCR transcripts, future caches)
         // travel with the manifest for versioning + restore but must

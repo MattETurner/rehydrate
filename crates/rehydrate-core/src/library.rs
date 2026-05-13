@@ -850,8 +850,15 @@ impl Library {
         // so concurrent rename/move/archive callers serialise properly.
         let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Brief db lock to resolve the current manifest hash (live or
-        // archived). We must drop this before doing filesystem I/O
+        // Brief db lock to resolve the current manifest hash. Only
+        // `PostAction::Unarchive` is allowed to fall back to the
+        // archive table — every other caller (move_document,
+        // rename_document, record_derived_artefact, …) must treat an
+        // archived id as NotFound. Otherwise record_version_in_tx's
+        // unconditional `INSERT INTO documents ON CONFLICT UPDATE`
+        // would resurrect the archived row into the live listing,
+        // leaving the doc in both `documents` and `archived_documents`
+        // simultaneously. We must drop this lock before filesystem I/O
         // because the connection is held by transactional code below.
         let manifest_hex: String = {
             let conn = self.db.lock();
@@ -864,7 +871,7 @@ impl Library {
                 .optional()?;
             if let Some(h) = live {
                 h
-            } else {
+            } else if matches!(post_action, PostAction::Unarchive) {
                 conn.query_row(
                     "SELECT manifest_hash FROM archived_documents WHERE document_id = ?1",
                     params![document_id],
@@ -872,6 +879,8 @@ impl Library {
                 )
                 .optional()?
                 .ok_or_else(|| CoreError::NotFound(format!("document {document_id}")))?
+            } else {
+                return Err(CoreError::NotFound(format!("document {document_id}")));
             }
         };
 
@@ -3803,6 +3812,185 @@ mod tests {
         // After dropping the first, the lock is released.
         drop(_first);
         let _third = Library::open(tmp.path()).unwrap();
+    }
+
+    #[test]
+    fn unarchive_falls_back_when_parent_is_soft_deleted_but_not_yet_pushed() {
+        // Sister test to `unarchive_falls_back_to_root_when_original_parent_was_deleted`,
+        // which exercises the *tombstoned-and-pushed* branch (row dropped
+        // by `mark_folder_pushed`). This one covers the *deleted-locally*
+        // branch — the row is still in the folders table but with
+        // `deleted_locally = 1`. The SQL `AND deleted_locally = 0` clause
+        // in `unarchive_document` is what disqualifies it; without that
+        // clause unarchive would happily restore the doc under a folder
+        // the user has already asked to remove.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let folder = lib.create_folder("Stash", None).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"page")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+        lib.move_document("doc-1", Some(&folder.folder_id)).unwrap();
+        lib.archive_document("doc-1", ArchiveReason::Device)
+            .unwrap();
+
+        // Delete the folder but DO NOT call mark_folder_pushed —
+        // the tombstone is queued and the row still carries
+        // deleted_locally = 1.
+        lib.delete_folder(&folder.folder_id).unwrap();
+        let still_present: i64 = {
+            let conn = lib.db.lock();
+            conn.query_row(
+                "SELECT deleted_locally FROM folders WHERE folder_id = ?1",
+                params![folder.folder_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            still_present, 1,
+            "precondition: folder is soft-deleted but row still present",
+        );
+
+        let restored = lib.unarchive_document("doc-1").unwrap();
+        assert_eq!(
+            restored.parent, None,
+            "unarchive must fall back to root when the parent is soft-deleted but not yet pushed",
+        );
+    }
+
+    #[test]
+    fn revert_after_subsequent_push_restores_to_latest_pushed_snapshot() {
+        // Idempotency across multiple push/revert cycles: each
+        // successful push refreshes `last_synced_metadata_json`
+        // (mark_folder_pushed sets it = metadata_json), so a later
+        // revert must restore to the *most recently pushed* shape,
+        // not to the original. A regression that froze the snapshot
+        // at first push, or that revert cleared it, would surface
+        // here as the second revert dragging the folder back to "A"
+        // instead of "C".
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+
+        // Create + first push → snapshot = "A".
+        let folder = lib.create_folder("A", None).unwrap();
+        lib.mark_folder_pushed(&folder.folder_id).unwrap();
+
+        // Rename to "B" → revert. Should restore to "A".
+        lib.rename_folder(&folder.folder_id, "B").unwrap();
+        lib.revert_unpushed_changes().unwrap();
+        let after_first = lib
+            .list_folders()
+            .unwrap()
+            .into_iter()
+            .find(|f| f.folder_id == folder.folder_id)
+            .unwrap()
+            .visible_name;
+        assert_eq!(after_first, "A", "first revert restores to original push");
+
+        // Rename to "C" + push → snapshot moves forward to "C".
+        lib.rename_folder(&folder.folder_id, "C").unwrap();
+        lib.mark_folder_pushed(&folder.folder_id).unwrap();
+
+        // Rename to "D" + revert. Must restore to "C", NOT "A".
+        lib.rename_folder(&folder.folder_id, "D").unwrap();
+        lib.revert_unpushed_changes().unwrap();
+        let after_second = lib
+            .list_folders()
+            .unwrap()
+            .into_iter()
+            .find(|f| f.folder_id == folder.folder_id)
+            .unwrap()
+            .visible_name;
+        assert_eq!(
+            after_second, "C",
+            "second revert must restore to the latest pushed state, not the original",
+        );
+    }
+
+    #[test]
+    fn move_document_on_archived_row_does_not_resurrect_it() {
+        // Boundary contract: archive_document moves the row out of
+        // `documents` into `archived_documents`. record_metadata_change
+        // intentionally falls through to read from archived_documents
+        // (so archive/unarchive themselves can run), which means a
+        // misplaced move_document call against an archived id today
+        // succeeds and writes a fresh version. That's incidental —
+        // what must hold is that the doc STAYS archived and never
+        // resurrects into the live listing. A future refactor that
+        // re-inserted into `documents` on PostAction::None would
+        // surface here as a phantom sidebar entry.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"page")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+        let folder = lib.create_folder("Anywhere", None).unwrap();
+
+        lib.archive_document("doc-1", ArchiveReason::Device)
+            .unwrap();
+        assert!(lib.is_archived("doc-1").unwrap());
+        assert!(lib
+            .list_documents()
+            .unwrap()
+            .iter()
+            .all(|d| d.document_id != "doc-1"));
+
+        // Whether the call succeeds or errors is incidental; the
+        // post-state is what matters.
+        let _ = lib.move_document("doc-1", Some(&folder.folder_id));
+
+        assert!(
+            lib.is_archived("doc-1").unwrap(),
+            "doc must remain archived after a stray move_document call",
+        );
+        assert!(
+            lib.list_documents()
+                .unwrap()
+                .iter()
+                .all(|d| d.document_id != "doc-1"),
+            "archived doc must NOT appear in list_documents after a move attempt",
+        );
+    }
+
+    #[test]
+    fn migration_0007_adds_last_synced_metadata_json_column() {
+        // Pin the column contract that revert depends on. A fresh
+        // Library::open must apply 0007 and expose
+        // `last_synced_metadata_json` on the folders table. A future
+        // migration that renamed or split the column would break
+        // revert silently — the user wouldn't notice until they
+        // clicked the button and the snapshot fallback ("drop locally-
+        // created folders") swallowed every restorable folder.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let cols: Vec<String> = {
+            let conn = lib.db.lock();
+            let mut stmt = conn.prepare("PRAGMA table_info(folders)").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert!(
+            cols.iter().any(|c| c == "last_synced_metadata_json"),
+            "0007 must add last_synced_metadata_json (got cols: {cols:?})",
+        );
+
+        // A locally-created folder starts with snapshot = NULL.
+        // Revert relies on this to distinguish "drop" from "restore".
+        let folder = lib.create_folder("Fresh", None).unwrap();
+        let snapshot: Option<String> = {
+            let conn = lib.db.lock();
+            conn.query_row(
+                "SELECT last_synced_metadata_json FROM folders WHERE folder_id = ?1",
+                params![folder.folder_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            snapshot.is_none(),
+            "locally-created folder must start with NULL snapshot",
+        );
     }
 
     fn walkdir(p: &std::path::Path) -> Vec<std::path::PathBuf> {
