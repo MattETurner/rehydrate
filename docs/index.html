@@ -13,6 +13,18 @@
 </head>
 <body>
 
+<nav class="topnav" aria-label="Primary">
+  <a class="topnav__brand" href="#">
+    <img class="topnav__mark" src="logo.png" alt="">
+    <span class="topnav__name">reHydrate</span>
+  </a>
+  <div class="topnav__links">
+    <a href="#why">Why this exists</a>
+    <a href="#library">Offline Library</a>
+    <a href="#ollama">From Idea to Draft</a>
+  </div>
+</nav>
+
 <header class="hero">
   <img class="hero__logo" src="logo.png"
        alt="The reHydrate logo: a blue water bottle, evoking the act of pouring your notebooks back from the tablet onto your computer.">
@@ -31,27 +43,17 @@
       </a>
       <a class="btn" data-asset-suffix=".AppImage"
          href="https://github.com/dm807cam/rehydrate/releases/latest">
-        <span class="btn__platform">Linux</span>
-        <span class="btn__detail">AppImage</span>
+        <span class="btn__platform">macOS</span>
+        <span class="btn__detail">Intel</span>
       </a>
-      <a class="btn" data-asset-suffix=".msi"
-         href="https://github.com/dm807cam/rehydrate/releases/latest">
-        <span class="btn__platform">Windows</span>
-        <span class="btn__detail">Installer</span>
-      </a>
-    </p>
-    <p class="hero__cta-row">
-      <a class="btn btn--ghost" href="https://github.com/dm807cam/rehydrate">View source on GitHub</a>
     </p>
   </div>
 </header>
 
 <main>
 
-<section class="story">
-  <h2>Why this exists</h2>
-  <div class="story__split story__split--even">
-    <div>
+<section class="story"  id="why">
+	<h2>Why this exists</h2>
       <p>
         I bought a reMarkable because I wanted a paper-like place to put
         my thoughts. What I didn't want was the trade-off I got handed
@@ -67,16 +69,27 @@
         What I actually wanted was an <em>iTunes for the reMarkable</em> —
         feature-packed, private by design, and easy enough to use without
         thinking about it. That's what reHydrate is.
-      </p>
-    </div>
-    <figure class="story__figure story__figure--inline">
-      <img src="reMarkable_reHydrate.png"
-           alt="A reMarkable tablet on a wooden garden table, showing handwritten trip-plan notes. A blue water bottle sits next to it.">
-    </figure>
-  </div>
+	</p>
 </section>
 
-<section class="story">
+<section class="story" id="library">
+  <h2>A library that belongs to you.</h2>
+  <p>
+    Search across every notebook. Organise them into folders. Open
+    any document as a sharp PDF — pens, fineliners, markers, and
+    highlighters all rendered crisply, ready to print or share.
+  </p>
+    <p>
+    Every sync keeps a snapshot. Decided you preferred last week's
+    draft? Open the history view and restore it.
+  </p>
+  <figure class="story__figure story__figure--screenshot">
+    <img src="screenshots/library-view.png"
+         alt="The reHydrate library window. A sidebar lists All Documents, Recently Synced, Pending Sync, Notebooks, PDFs, EPUBs, custom folders, an archive bin, and a device section. The main pane lists notebooks and PDFs with type, size, page count, and last-synced columns.">
+  </figure>
+</section>
+
+<section class="story" id="ollama">
   <h2>Think with your hand. Publish anywhere.</h2>
   <p>
     Most of us create on a glowing screen now — straight into a
@@ -115,95 +128,19 @@
       </p>
     </div>
   </div>
-  <figure class="story__figure story__figure--screenshot">
-    <img src="screenshots/right-click-menu.png"
-         alt="The library window with a right-click menu open over a notebook. Menu items: Open in viewer, Rename, Move to folder, Convert to text, View transcript, Show history, Move to Archive.">
-  </figure>
   <p>
     <strong>Idea → ink → transcript → draft.</strong> The whole
     creative loop, on your machine until you decide to ship it.
   </p>
 </section>
-
-<section class="story">
-  <h2>A library that belongs to you.</h2>
-  <p>
-    Search across every notebook. Organise them into folders. Open
-    any document as a sharp PDF — pens, fineliners, markers, and
-    highlighters all rendered crisply, ready to print or share.
-  </p>
-  <figure class="story__figure story__figure--screenshot">
-    <img src="screenshots/library-view.png"
-         alt="The reHydrate library window. A sidebar lists All Documents, Recently Synced, Pending Sync, Notebooks, PDFs, EPUBs, custom folders, an archive bin, and a device section. The main pane lists notebooks and PDFs with type, size, page count, and last-synced columns.">
-  </figure>
-  <p>
-    Every sync keeps a snapshot. Decided you preferred last week's
-    draft? Open the history view and restore it.
-  </p>
-</section>
-
-<section>
-  <h2>Privacy by construction</h2>
-  <p>
-    The whole point of reHydrate is that your notes never leave your
-    computer. Concretely:
-  </p>
-  <ul class="invariants">
-    <li>No telemetry, no analytics, no "anonymous usage statistics".
-      The app makes no network calls on launch.</li>
-    <li>Sync between your tablet and your computer happens entirely
-      over the USB cable. The reMarkable's cloud is not in the loop.</li>
-    <li>Your tablet password is stored in your computer's secure
-      password store (Keychain on macOS, the equivalent on Linux
-      and Windows). Never in plain text on disk.</li>
-    <li>OCR runs on a daemon you control. If you point reHydrate at
-      a remote Ollama, the URL is locked to that host — no redirects,
-      no leakage to other endpoints.</li>
-    <li>An automated check runs on every release to make sure nobody
-      accidentally adds a network call somewhere they shouldn't.</li>
-  </ul>
-</section>
-
 </main>
 
 <footer>
+	<p class="muted"> Created by Dennis Mayk</p>
   <p class="muted">
     reHydrate is unaffiliated with reMarkable AS. Ollama is a separate
     open-source project; the llama mascot is borrowed with affection.
   </p>
 </footer>
-
-<script>
-/* Resolve each download button to the actual asset URL of the
- * latest release. GitHub doesn't expose a wildcard "latest .dmg"
- * pattern, so we ask the API once and rewrite the hrefs. If the
- * fetch fails (offline, rate-limited, no releases yet), the
- * default href on each button still drops the user on the
- * releases page where they can pick manually. */
-(async function resolveDownloads() {
-  const buttons = document.querySelectorAll("[data-asset-suffix]");
-  if (buttons.length === 0) return;
-  try {
-    const r = await fetch(
-      "https://api.github.com/repos/dm807cam/rehydrate/releases/latest",
-      { headers: { Accept: "application/vnd.github+json" } }
-    );
-    if (!r.ok) return;
-    const release = await r.json();
-    const assets = release.assets || [];
-    for (const btn of buttons) {
-      const suffix = btn.getAttribute("data-asset-suffix");
-      const match = assets.find((a) => a.name && a.name.endsWith(suffix));
-      if (match && match.browser_download_url) {
-        btn.href = match.browser_download_url;
-        btn.setAttribute("download", match.name);
-      }
-    }
-  } catch {
-    /* Stay on the releases-page fallback. */
-  }
-})();
-</script>
-
 </body>
 </html>

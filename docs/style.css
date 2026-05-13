@@ -8,19 +8,25 @@
 
 :root {
   /* Surfaces */
-  --bg: #fafafa;
+  --bg: #ffffff;
   --bg-elev: #ffffff;
-  --bg-sunken: #f3f3f5;
-  --border: #e6e6ea;
+  --bg-sunken: #f5f5f7;
+  --border: #ececef;
 
   /* Text */
-  --text: #1a1a1c;
-  --muted: #74747a;
+  --text: #0f0f10;
+  --muted: #6e6e76;
 
   /* Accent — same blue used in the app's toolbar buttons. */
   --accent: #2960e6;
   --accent-bg: #e7eefc;
   --accent-fg: #ffffff;
+
+  /* Primary action: a near-black, the way modern docs/marketing
+   * pages anchor their CTA. Brand accent is reserved for the
+   * logo, links, and small flourishes. */
+  --primary: #111113;
+  --primary-fg: #ffffff;
 
   /* Spacing */
   --space-2: 8px;
@@ -52,14 +58,16 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1a1a1c;
-    --bg-elev: #232327;
-    --bg-sunken: #141416;
-    --border: #2e2e34;
-    --text: #f0f0f3;
-    --muted: #9090a0;
+    --bg: #0c0c0e;
+    --bg-elev: #161618;
+    --bg-sunken: #1a1a1d;
+    --border: #26262a;
+    --text: #f2f2f4;
+    --muted: #8e8e98;
     --accent: #6792f5;
     --accent-bg: #1f2c4a;
+    --primary: #f2f2f4;
+    --primary-fg: #0c0c0e;
   }
 }
 
@@ -81,14 +89,65 @@ body {
 }
 
 /* =====================================================================
+ * Top nav — a single thin row at the top of every page. Logo on
+ * the left, two text links on the right. No background fill, no
+ * border; the whitespace below it does the separating.
+ * ===================================================================== */
+
+.topnav {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 20px var(--space-5);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+.topnav__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.topnav__brand:hover {
+  text-decoration: none;
+}
+.topnav__mark {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+}
+.topnav__name {
+  font-size: 17px;
+}
+.topnav__links {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+.topnav__links a {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.topnav__links a:hover {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+/* =====================================================================
  * Hero — centred, generous whitespace. Sets the tone before the
  * reader has to scroll.
  * ===================================================================== */
 
 .hero {
   text-align: center;
-  padding: var(--space-8) var(--space-5) var(--space-8);
-  max-width: 840px;
+  padding: var(--space-7) var(--space-5) var(--space-8);
+  max-width: 880px;
   margin: 0 auto;
 }
 
@@ -96,30 +155,30 @@ body {
  * is the brand mark and it carries the page on its own without
  * needing a photo above it. */
 .hero__logo {
-  width: 128px;
-  height: 128px;
+  width: 120px;
+  height: 120px;
   object-fit: contain;
-  filter: drop-shadow(0 8px 24px rgba(41, 96, 230, 0.18));
+  filter: drop-shadow(0 6px 18px rgba(15, 15, 16, 0.08));
   margin-bottom: var(--space-5);
 }
 
 .hero h1 {
   margin: 0 0 var(--space-3);
-  font-size: 64px;
+  font-size: 68px;
   font-weight: 700;
-  letter-spacing: -0.035em;
-  line-height: 1.05;
+  letter-spacing: -0.04em;
+  line-height: 1.02;
   color: var(--text);
 }
 
 .hero__tagline {
   margin: 0 auto var(--space-4);
-  max-width: 540px;
-  font-size: 24px;
+  max-width: 600px;
+  font-size: 22px;
   color: var(--muted);
   font-weight: 400;
-  letter-spacing: -0.012em;
-  line-height: 1.3;
+  letter-spacing: -0.015em;
+  line-height: 1.32;
 }
 
 .hero__lede {
@@ -153,25 +212,25 @@ body {
   display: inline-flex;
   align-items: center;
   padding: 12px 22px;
-  border-radius: 999px;
+  border-radius: 8px;
   text-decoration: none;
   font-size: 15px;
   font-weight: 500;
-  background: var(--accent);
-  color: var(--accent-fg);
-  border: 1px solid var(--accent);
+  background: var(--primary);
+  color: var(--primary-fg);
+  border: 1px solid var(--primary);
   transition: background 140ms ease, transform 140ms ease,
     box-shadow 140ms ease;
-  box-shadow: 0 1px 2px rgba(41, 96, 230, 0.18);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 .btn:hover {
-  background: color-mix(in srgb, var(--accent), black 8%);
-  box-shadow: 0 4px 12px rgba(41, 96, 230, 0.22);
+  background: color-mix(in srgb, var(--primary), white 12%);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
   transform: translateY(-1px);
 }
 .btn:active {
   transform: translateY(0);
-  box-shadow: 0 1px 2px rgba(41, 96, 230, 0.18);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 .btn--ghost {
   background: transparent;
@@ -210,7 +269,7 @@ body {
   text-align: center;
   padding: 14px 20px;
   min-width: 140px;
-  border-radius: var(--radius-lg);
+  border-radius: 10px;
 }
 
 /* =====================================================================
@@ -221,7 +280,7 @@ body {
 
 main {
   flex: 1;
-  max-width: 840px;
+  max-width: 880px;
   margin: 0 auto;
   padding: 0 var(--space-5);
 }
@@ -240,11 +299,11 @@ section:last-child {
 }
 
 section h2 {
-  margin: 0 0 var(--space-4);
-  font-size: 32px;
+  margin: 0 0 var(--space-5);
+  font-size: 36px;
   font-weight: 700;
-  letter-spacing: -0.025em;
-  line-height: 1.15;
+  letter-spacing: -0.03em;
+  line-height: 1.12;
   color: var(--text);
 }
 
@@ -353,9 +412,10 @@ em {
  * ===================================================================== */
 
 footer {
-  max-width: 840px;
+  max-width: 880px;
   margin: 0 auto;
   padding: var(--space-6) var(--space-5) var(--space-7);
+  border-top: 1px solid var(--border);
   text-align: center;
   font-size: 13px;
   color: var(--muted);
@@ -444,12 +504,18 @@ section .small {
   :root {
     font-size: 17px;
   }
+  .topnav {
+    padding: 16px var(--space-4);
+  }
+  .topnav__links {
+    gap: var(--space-4);
+  }
   .hero {
-    padding: var(--space-7) var(--space-4) var(--space-6);
+    padding: var(--space-6) var(--space-4) var(--space-6);
   }
   .hero h1 {
     font-size: 44px;
-    letter-spacing: -0.03em;
+    letter-spacing: -0.035em;
   }
   .hero__tagline {
     font-size: 20px;

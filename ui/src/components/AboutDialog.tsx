@@ -71,6 +71,9 @@ export function AboutDialog({ onClose }: Props) {
           telemetry; the threat model and disclosure channel are
           documented in <code>SECURITY.md</code>.
         </p>
+        <p className="muted">
+          © {new Date().getFullYear()} Dennis Mayk.
+        </p>
         <div className="actions">
           <button onClick={() => openUrl(SUPPORT_URL)}>
             Report an issue…
