@@ -48,17 +48,11 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: aarch64-apple-darwin
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           # Vite 8 requires Node ^20.19 || >=22.12.
           node-version: '22'
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
 
       - name: Install UI deps
         working-directory: ui

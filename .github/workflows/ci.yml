@@ -30,8 +30,6 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -39,8 +37,6 @@ jobs:
           # the latest Node 22 LTS so we're never closer to the bound
           # than necessary.
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: ui/package-lock.json
 
       # `npm ci` enforces lockfile parity; a drift between
       # `package.json` and `package-lock.json` should fail loudly rather
@@ -86,7 +82,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-audit and cargo-deny
         run: |
