@@ -21,7 +21,10 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::backend::{OcrBackend, OcrCancel, OcrError, PageTranscript, TranscribeOptions};
+use crate::backend::{
+    OcrBackend, OcrCancel, OcrError, PageFailure, PageTranscript, TranscribeOptions,
+    TranscribeReport,
+};
 use crate::http::{AgentError, RestrictedAgent};
 use crate::progress::OcrProgressEvent;
 
@@ -323,9 +326,10 @@ impl OcrBackend for OllamaBackend {
         opts: &TranscribeOptions,
         progress: Option<mpsc::Sender<OcrProgressEvent>>,
         cancel: OcrCancel,
-    ) -> Result<Vec<PageTranscript>, OcrError> {
+    ) -> Result<TranscribeReport, OcrError> {
         let prompt = Self::build_prompt(opts);
         let mut out = Vec::with_capacity(pages.len());
+        let mut failures: Vec<PageFailure> = Vec::new();
         for (i, png) in pages.into_iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err(OcrError::Cancelled);
@@ -372,14 +376,19 @@ impl OcrBackend for OllamaBackend {
                 }
                 Err(e) => {
                     // Surface the per-page failure on the progress
-                    // channel and keep going so a single bad page
-                    // doesn't abandon the rest of the run. The
-                    // overall return value still records the rest.
+                    // channel AND record it in `failures` so the
+                    // caller can build an honest transcript that
+                    // shows the user exactly where the gaps are.
+                    // Pre-v1.0 we only sent the event and dropped
+                    // the page — a wedged daemon could produce a
+                    // 1-page transcript for a 200-page notebook
+                    // with no signal at all in the output file.
+                    let msg = format!("{e}");
                     if let Some(p) = &progress {
                         let _ = p
                             .send(OcrProgressEvent::PageFailed {
                                 page_index: i,
-                                message: format!("{e}"),
+                                message: msg.clone(),
                             })
                             .await;
                     }
@@ -395,6 +404,10 @@ impl OcrBackend for OllamaBackend {
                     ) {
                         return Err(e);
                     }
+                    failures.push(PageFailure {
+                        page_index: i,
+                        message: msg,
+                    });
                 }
             }
         }
@@ -407,7 +420,10 @@ impl OcrBackend for OllamaBackend {
                 })
                 .await;
         }
-        Ok(out)
+        Ok(TranscribeReport {
+            pages: out,
+            failures,
+        })
     }
 }
 

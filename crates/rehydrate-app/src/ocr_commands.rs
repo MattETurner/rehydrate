@@ -560,10 +560,10 @@ pub async fn transcribe_document(
         .transcribe_pages(pages_png, &opts, Some(tx), state.ocr_cancel.clone())
         .await;
     let _ = forwarder.await;
-    let pages = match pages_result {
-        Ok(p) => {
+    let report = match pages_result {
+        Ok(r) => {
             record_ping(&state, &ollama.base_url, true).await;
-            p
+            r
         }
         Err(OcrError::Unreachable(msg)) => {
             record_ping(&state, &ollama.base_url, false).await;
@@ -573,6 +573,27 @@ pub async fn transcribe_document(
             return Err(format!("OCR failed: {e}"));
         }
     };
+    // Refuse to commit if every page failed. Without this guard the
+    // user gets a "transcript saved" toast pointing at a file
+    // containing nothing but failure placeholders — and worse, the
+    // empty transcript would claim authority over the document
+    // (next auto-OCR sweep would skip it because it "already has"
+    // a transcript). Surface the per-page errors so support
+    // diagnostics aren't a black box.
+    if report.is_all_failed() {
+        let sample = report
+            .failures
+            .first()
+            .map(|f| f.message.clone())
+            .unwrap_or_else(|| "(no failure details)".into());
+        return Err(format!(
+            "OCR failed for every page ({} pages attempted, none succeeded). \
+             First failure: {sample}",
+            report.failures.len()
+        ));
+    }
+    let pages = report.pages;
+    let page_failures = report.failures;
 
     // Assemble Markdown with a small frontmatter block recording
     // model + timestamp + language so future re-OCR can decide
@@ -585,6 +606,11 @@ pub async fn transcribe_document(
         .iter()
         .find_map(|p| p.detected_language.clone())
         .unwrap_or_default();
+    // The frontmatter has to be honest about what's missing. The
+    // user is going to act on this transcript (search, publish,
+    // archive); if 3 of 50 pages failed they should see that at the
+    // top of the file, not have it buried in an `ocr:progress`
+    // event they never saw.
     let mut markdown = String::new();
     markdown.push_str("---\n");
     markdown.push_str(&format!("model: {model_name}\n"));
@@ -592,6 +618,10 @@ pub async fn transcribe_document(
     if !detected_lang.is_empty() {
         markdown.push_str(&format!("language: {detected_lang}\n"));
     }
+    let transcribed_count = pages.len();
+    markdown.push_str(&format!(
+        "pages_transcribed: {transcribed_count} of {total_pages}\n"
+    ));
     markdown.push_str("---\n\n");
     if blank_count > 0 {
         // Record how many pages we skipped so the user can spot it
@@ -600,21 +630,45 @@ pub async fn transcribe_document(
         // hallucinated essay text indistinguishable from a real
         // transcript.
         markdown.push_str(&format!(
-            "note: {blank_count} blank page{} skipped\n",
+            "_note: {blank_count} blank page{} skipped_\n\n",
             if blank_count == 1 { "" } else { "s" }
         ));
     }
-    markdown.push_str("---\n\n");
+    if !page_failures.is_empty() {
+        // Surface the failure count up front. Per-page placeholders
+        // below make the gaps visible inline; this summary is for
+        // skim-readers.
+        markdown.push_str(&format!(
+            "_note: {} page{} could not be transcribed (placeholder shown inline below)_\n\n",
+            page_failures.len(),
+            if page_failures.len() == 1 { "" } else { "s" }
+        ));
+    }
     let mut total_chars = 0usize;
-    // Splice empty entries back into the output for skipped pages
-    // so the user-visible markdown still reflects the notebook's
-    // original page count.
+    // Splice entries back together respecting the notebook's
+    // original page order. Three classes:
+    //   * blank → skip (already handled by blank_mask).
+    //   * failed → emit a placeholder so the user can see WHERE the
+    //     gap is and re-run OCR on those pages specifically.
+    //   * succeeded → emit the transcribed text.
+    // Pre-v1.0 we just iterated `pages.iter()` and dropped failed
+    // pages silently — a wedged Ollama could produce a 1-page
+    // transcript for a 200-page notebook with no signal.
+    let failure_indices: std::collections::HashSet<usize> =
+        page_failures.iter().map(|f| f.page_index).collect();
     let mut next_transcribed = pages.iter();
     for (i, was_blank) in blank_mask.iter().enumerate() {
         if i > 0 {
             markdown.push_str("\n\n");
         }
         if *was_blank {
+            continue;
+        }
+        if failure_indices.contains(&i) {
+            markdown.push_str(&format!(
+                "*[Page {}: transcription failed — re-run OCR to retry]*",
+                i + 1
+            ));
             continue;
         }
         let Some(page) = next_transcribed.next() else {
