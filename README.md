@@ -60,10 +60,46 @@ v1.1. Until then, macOS warns on first launch:
    developer" warning. After this one-time bypass, normal
    double-click works.
 
+## Compatibility
+
+- **Host:** macOS 11.0+ on Apple Silicon (M1 / M2 / M3 / M4).
+  Intel Macs are not shipped as binaries; building from source
+  on Intel works but is not part of CI. Linux / Windows builds
+  from source — no bundles.
+- **Tablet:** reMarkable 2, with the stock firmware (xochitl) on
+  version 3.x. v1.0 has been tested against firmware 3.11 → 3.20.
+  The reMarkable Paper Pro and reMarkable 1 are **not currently
+  supported** — the Paper Pro because its tablet-side schema
+  introduced new files reHydrate doesn't yet parse, the rM 1
+  because of differing protocol semantics.
+- **OCR (optional):** [Ollama][ollama] 0.6+ on the same machine or
+  a reachable LAN host, with at least one vision-language model
+  pulled (default `qwen3.5:4b`, ~3.4 GB on disk). Without Ollama
+  every other feature still works; only "Convert to text…" is
+  disabled.
+
+If you're on a model / firmware combination not in the list above,
+sync will most likely work but is not part of the test matrix —
+please file an issue from the in-app About dialog if you hit a
+problem so the matrix can grow.
+
+## Known limitations
+
+- No auto-update. See [Updates](#updates) below.
+- Unsigned, un-notarized macOS bundle — first launch needs a
+  right-click → Open (see [Installing](#installing)).
+- OCR partial-failure handling: if individual pages fail (Ollama
+  returns 5xx for those pages) the transcript is committed with
+  inline `*[Page N: transcription failed — re-run OCR to retry]*`
+  placeholders and a header note. If *every* page fails the
+  transcript is not committed and the run surfaces the failure to
+  the user instead.
+
 ## Updates
 
 reHydrate does **not** auto-update. Subscribe to the GitHub repo's
-release feed, or check the [Releases][releases] page periodically.
+release feed, or check the [Releases][releases] page from the
+in-app About dialog (Help → About reHydrate → Check for updates).
 Security fixes will be called out in the release notes.
 
 [releases]: https://github.com/dm807cam/rehydrate/releases

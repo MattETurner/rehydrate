@@ -30,6 +30,29 @@ export function LogDrawer({ onClose }: Props) {
     refresh();
   }, [refresh]);
 
+  const revealInFinder = useCallback(async () => {
+    try {
+      await ipc.revealLogDir();
+    } catch (e) {
+      // Most common failure: the log dir doesn't exist yet because
+      // no rotating-log file has been written this session. Fall
+      // back to copying the path so support flows still work.
+      const msg = formatError(e);
+      setError(`Couldn't open log folder (${msg}). Path: ${logDir ?? "unknown"}`);
+    }
+  }, [logDir]);
+
+  const copyPath = useCallback(async () => {
+    if (!logDir) return;
+    try {
+      await navigator.clipboard.writeText(logDir);
+    } catch {
+      // Webview might not have clipboard access; show the path
+      // inline so the user can manually copy.
+      setError(`Couldn't copy. Path: ${logDir}`);
+    }
+  }, [logDir]);
+
   return (
     <div className="drawer" onClick={(e) => e.stopPropagation()}>
       <header>
@@ -41,6 +64,12 @@ export function LogDrawer({ onClose }: Props) {
             </div>
           )}
         </div>
+        <button onClick={revealInFinder} disabled={!logDir} className="link">
+          Reveal in Finder
+        </button>
+        <button onClick={copyPath} disabled={!logDir} className="link">
+          Copy path
+        </button>
         <button onClick={refresh} disabled={loading} className="link">
           {loading ? "Refreshing…" : "Refresh"}
         </button>

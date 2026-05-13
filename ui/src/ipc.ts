@@ -177,6 +177,12 @@ export const ipc = {
   /// instantly, but bounded.
   cancelSync: () => invoke<void>("cancel_sync"),
   cancelOcr: () => invoke<void>("cancel_ocr"),
+
+  /// Reveal the rolling-log directory in the OS file manager. The
+  /// Rust side picks the path; the renderer can't influence which
+  /// directory gets opened. Returns the resolved path so the UI
+  /// can present a fallback if the open call fails.
+  revealLogDir: () => invoke<string>("reveal_log_dir"),
 };
 
 /** Subscribe to OCR-progress events emitted from the Rust side. */

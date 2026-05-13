@@ -57,6 +57,25 @@ pub async fn get_recent_logs(max_lines: Option<usize>) -> Result<LogTail, String
     })
 }
 
+/// Open the rolling-log directory in the OS file manager (Finder
+/// on macOS). The path comes from `logging::log_dir()` so the
+/// renderer can't influence which directory gets revealed — no
+/// path traversal surface.
+///
+/// Returns the resolved path so the UI can present a fallback
+/// (toast with the path string) if the open call fails — e.g.
+/// when the directory doesn't exist yet because no logs have been
+/// written this session.
+#[tauri::command]
+pub async fn reveal_log_dir(app: AppHandle) -> Result<String, String> {
+    let dir = logging::log_dir().ok_or_else(|| "no log directory on this platform".to_string())?;
+    let path = dir.to_string_lossy().to_string();
+    app.opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|e| format!("could not reveal {path}: {e}"))?;
+    Ok(path)
+}
+
 #[tauri::command]
 pub fn default_library_path() -> Option<PathBuf> {
     default_library_dir()
