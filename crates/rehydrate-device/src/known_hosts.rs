@@ -64,6 +64,30 @@ impl KnownHosts {
     /// fingerprint already exists (otherwise the override silently
     /// papers over an unexpected key change).
     pub fn record(&self, endpoint: &str, fingerprint: &str) -> io::Result<()> {
+        self.write_back(|entries| {
+            entries.insert(endpoint.to_string(), fingerprint.to_string());
+        })
+    }
+
+    /// Remove the pinned fingerprint for `endpoint`, if any. Returns
+    /// `Ok(true)` when an entry was removed and `Ok(false)` when no
+    /// entry existed — both are non-error outcomes (the user's intent
+    /// is "no pinned key for this endpoint" and that's the post-state
+    /// either way).
+    ///
+    /// Used by the UI's "Forget host key" recovery flow after a
+    /// `HostKeyChanged` error: the user confirms the new fingerprint
+    /// is legitimate (e.g. a factory-reset tablet) and clears the
+    /// pin so the next connect re-records under TOFU.
+    pub fn forget(&self, endpoint: &str) -> io::Result<bool> {
+        let mut removed = false;
+        let outcome = self.write_back(|entries| {
+            removed = entries.remove(endpoint).is_some();
+        });
+        outcome.map(|()| removed)
+    }
+
+    fn write_back(&self, mutate: impl FnOnce(&mut BTreeMap<String, String>)) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -72,9 +96,7 @@ impl KnownHosts {
             Err(e) if e.kind() == io::ErrorKind::NotFound => KnownHostsFile::default(),
             Err(e) => return Err(e),
         };
-        parsed
-            .entries
-            .insert(endpoint.to_string(), fingerprint.to_string());
+        mutate(&mut parsed.entries);
         let serialised =
             serde_json::to_vec_pretty(&parsed).map_err(|e| io::Error::other(e.to_string()))?;
         let tmp = self.path.with_extension("json.tmp");
@@ -125,5 +147,28 @@ mod tests {
         kh.record("a:22", "SHA256:1").unwrap();
         kh.record("a:22", "SHA256:2").unwrap();
         assert_eq!(kh.lookup("a:22").unwrap().as_deref(), Some("SHA256:2"));
+    }
+
+    #[test]
+    fn forget_removes_pinned_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let kh = KnownHosts::new(dir.path().join("known_hosts.json"));
+        kh.record("a:22", "SHA256:1").unwrap();
+        kh.record("b:22", "SHA256:2").unwrap();
+        assert!(kh.forget("a:22").unwrap());
+        assert!(kh.lookup("a:22").unwrap().is_none());
+        assert_eq!(kh.lookup("b:22").unwrap().as_deref(), Some("SHA256:2"));
+    }
+
+    #[test]
+    fn forget_missing_entry_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let kh = KnownHosts::new(dir.path().join("known_hosts.json"));
+        // No file written yet — forget on a never-existed entry is Ok(false).
+        assert!(!kh.forget("a:22").unwrap());
+        kh.record("a:22", "SHA256:1").unwrap();
+        assert!(kh.forget("a:22").unwrap());
+        // Idempotent: forgetting again is Ok(false).
+        assert!(!kh.forget("a:22").unwrap());
     }
 }

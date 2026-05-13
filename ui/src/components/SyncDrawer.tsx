@@ -3,6 +3,7 @@ import { ipc, onSyncPhase, onSyncProgress } from "../ipc";
 import { Icon } from "./Icon";
 import { Skeleton } from "./Skeleton";
 import { humanizeSyncError } from "../humanizeError";
+import { useDialogA11y } from "../dialogA11y";
 import type {
   PlanItemStatus,
   ProgressEvent,
@@ -47,6 +48,9 @@ const PUSH_LABEL: Record<PushItemStatus, string> = {
 };
 
 export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
+  const { dialogProps, rootRef, titleId } = useDialogA11y({
+    onEscape: onClose,
+  });
   const [pullPlan, setPullPlan] = useState<PullPlan | null>(null);
   const [pushPlan, setPushPlan] = useState<PushPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -239,9 +243,14 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
   }
 
   return (
-    <div className="drawer" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="drawer"
+      onClick={(e) => e.stopPropagation()}
+      ref={rootRef}
+      {...dialogProps}
+    >
       <header>
-        <h2>Sync with reMarkable</h2>
+        <h2 id={titleId}>Sync with reMarkable</h2>
         <button
           onClick={onClose}
           className="close"

@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { ipc } from "../ipc";
+import { useDialogA11y } from "../dialogA11y";
+import { useToast } from "./Toast";
 import type {
   DocumentSummary,
   PublishCredentialStatus,
@@ -41,6 +43,10 @@ interface Props {
  * structure here matches the grid's expectation 1:1.
  */
 export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: Props) {
+  const { dialogProps, rootRef, titleId } = useDialogA11y({
+    onEscape: onClose,
+  });
+  const toast = useToast();
   const [transcript, setTranscript] = useState<TranscriptDocument | null | undefined>(
     undefined,
   );
@@ -97,10 +103,29 @@ export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: 
         transcript.version_id,
         target,
       );
-      notify(
-        "ok",
-        `Draft created on ${target === "ghost" ? "Ghost" : "WordPress"}: ${result.edit_url}`,
-      );
+      const targetLabel = target === "ghost" ? "Ghost" : "WordPress";
+      // Persistent toast (`duration: 0`) with an action button — the
+      // user needs time to read the message and click through to the
+      // draft, and the URL itself isn't selectable from a transient
+      // toast. The `View draft` button routes through the backend's
+      // `open_publish_url`, which validates the URL host against the
+      // saved credentials for `target` before handing off to the OS
+      // browser, so a future bug can't aim this at arbitrary sites.
+      toast.show({
+        tone: "ok",
+        body: `Draft created on ${targetLabel}.`,
+        duration: 0,
+        action: {
+          label: "View draft",
+          onClick: async () => {
+            try {
+              await ipc.openPublishUrl(result.edit_url, target);
+            } catch (e) {
+              notify("err", `Could not open draft: ${formatError(e)}`);
+            }
+          },
+        },
+      });
     } catch (e) {
       // If publish failed because no credentials are saved, hand
       // the user off to Settings → Publishing instead of leaving
@@ -121,10 +146,11 @@ export function TranscriptDrawer({ document, onClose, notify, onOpenSettings }: 
       <aside
         className="drawer transcript-drawer"
         onClick={(e) => e.stopPropagation()}
-        aria-label="Transcript"
+        ref={rootRef as unknown as RefObject<HTMLElement>}
+        {...dialogProps}
       >
         <header>
-          <h2>Transcript</h2>
+          <h2 id={titleId}>Transcript</h2>
           <button
             className="icon ghost"
             onClick={onClose}

@@ -97,6 +97,11 @@ pub struct DeviceState {
     /// True if a password is stored in the OS keychain — the UI uses this
     /// to decide whether to show a password prompt or just a Connect button.
     pub has_stored_password: bool,
+    /// True if the host-key TOFU store has a pinned fingerprint for the
+    /// default device endpoint. Drives the "Forget host key" affordance
+    /// in the StatusPill popover — without this the user can only clear
+    /// a stale pin by editing `known_hosts.json` by hand.
+    pub has_recorded_host_key: bool,
 }
 
 #[derive(Serialize)]
@@ -1101,12 +1106,37 @@ mod sanitize_tests {
 
 #[tauri::command]
 pub async fn device_state(state: State<'_, AppState>) -> Result<DeviceState, String> {
+    let cfg = SshConfig::default();
+    let endpoint = format!("{}:{}", cfg.host, cfg.port);
+    // A missing or unreadable known_hosts file is reported as "no
+    // recorded fingerprint" — the UI will simply hide the Forget
+    // affordance, which is the right post-state either way.
+    let has_recorded_host_key = known_hosts_for_app()
+        .lookup(&endpoint)
+        .ok()
+        .flatten()
+        .is_some();
     Ok(DeviceState {
         reachable: *state.device_reachable.read().await,
         connected: state.device.lock().await.is_some(),
         info: state.device_info.read().await.clone(),
         has_stored_password: keychain::slot_has_value(KEYRING_DEVICE_USER),
+        has_recorded_host_key,
     })
+}
+
+/// Clear the pinned host-key fingerprint for the default device
+/// endpoint. The next connect will re-record under TOFU.
+///
+/// Returns `true` when an entry was removed and `false` when none
+/// existed — both outcomes leave the UI in the same desired state
+/// ("no pinned key"), so the renderer treats both as success and
+/// just refreshes `device_state` to hide the button.
+#[tauri::command]
+pub async fn forget_device_host_key() -> Result<bool, String> {
+    let cfg = SshConfig::default();
+    let endpoint = format!("{}:{}", cfg.host, cfg.port);
+    known_hosts_for_app().forget(&endpoint).map_err(err)
 }
 
 /// Save a device password into the OS keychain. Does not connect.
