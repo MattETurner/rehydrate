@@ -22,7 +22,7 @@ use crate::config;
 use crate::keychain;
 use crate::logging;
 use crate::state::{default_library_dir, AppState, KEYRING_DEVICE_USER};
-use crate::util::{err, lib_arc};
+use crate::util::{err, lib_arc, IpcSecret};
 
 /// Resolve the per-user known-hosts store for SSH host-key pinning.
 /// Falls back to a cwd-relative path if the OS doesn't expose a
@@ -1092,9 +1092,12 @@ pub async fn device_state(state: State<'_, AppState>) -> Result<DeviceState, Str
 }
 
 /// Save a device password into the OS keychain. Does not connect.
+/// The `IpcSecret` wrapper length-caps the input and ensures the
+/// plaintext isn't printable via Debug derives further up the
+/// call chain.
 #[tauri::command]
-pub async fn save_device_password(password: String) -> Result<(), String> {
-    keychain::write_slot(KEYRING_DEVICE_USER, &password)
+pub async fn save_device_password(password: IpcSecret) -> Result<(), String> {
+    keychain::write_slot(KEYRING_DEVICE_USER, password.expose())
 }
 
 #[tauri::command]
@@ -1125,7 +1128,7 @@ pub async fn forget_device_password() -> Result<(), String> {
 /// canonical "store this" call.
 #[tauri::command]
 pub async fn connect_device(
-    password: Option<String>,
+    password: Option<IpcSecret>,
     remember: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1136,11 +1139,11 @@ pub async fn connect_device(
     // connect attempt silently uses the bad value.
     //
     // Audit fix M4: a parallel un-zeroized `Option<String>` shadow used
-    // to defeat SecretString's zero-on-drop. We now carry only the
-    // SecretString and a flag — the keychain write reads the bytes
-    // back out via expose_secret().
+    // to defeat SecretString's zero-on-drop. The IPC layer now hands us
+    // an `IpcSecret`, so the plaintext never lives in a plain String the
+    // caller could Debug-print. We unwrap into SecretString immediately.
     let (secret, freshly_typed) = match password {
-        Some(p) => (SecretString::from(p), true),
+        Some(p) => (p.into_secret(), true),
         None => {
             let stored = keychain::read_slot(KEYRING_DEVICE_USER)
                 .ok_or_else(|| "no password stored; pass one to connect_device".to_string())?;
