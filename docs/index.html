@@ -7,19 +7,23 @@
   <link rel="icon" type="image/png" href="logo.png">
   <meta name="description" content="An offline-first companion for the reMarkable. Pulls notebooks over USB and renders ink as sharp PDFs — without touching a cloud you didn't choose.">
   <meta property="og:title" content="reHydrate">
-  <meta property="og:description" content="An offline-first companion for the reMarkable. Sync and browse without the cloud.">
-  <meta property="og:image" content="logo.png">
+  <meta property="og:description" content="An offline companion for the reMarkable. Pulls your notebooks over USB and turns them into proper PDFs — without the cloud.">
+  <meta property="og:image" content="reMarkable_reHydrate_2.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <header class="hero">
-  <img class="hero__logo" src="logo.png" alt="">
-  <h1>reHydrate</h1>
+  <img class="hero__art" src="reMarkable_reHydrate_2.png"
+       alt="A reMarkable tablet on a wooden garden table. A glowing blue water bottle hovers above it, representing notes flowing from the tablet back to your computer.">
+  <h1>
+    <img class="hero__logo" src="logo.png" alt="">
+    reHydrate
+  </h1>
   <p class="hero__tagline">An offline companion for the reMarkable.</p>
   <p class="hero__lede">
-    Pulls your notebooks over USB and makes proper PDFs from your handwriting —
-    all without sending your notes to anybody else's server.
+    Plug in your tablet. Push one button. Your notebooks flow back to your
+    computer as proper PDFs — without a cloud in the middle.
   </p>
   <div class="hero__cta">
     <p class="hero__cta-row" id="downloads">
@@ -47,49 +51,90 @@
 
 <main>
 
-<section>
-  <h2>Truly offline</h2>
+<section class="story">
+  <h2>You write all day.</h2>
   <p>
-    reHydrate connects to your reMarkable through its USB cable. No
-    Wi-Fi, no subscription, no servers in the middle. Your notes go
-    from the tablet to your computer and stop there.
+    Trail plans on Sunday. Meeting notes on Tuesday. A sketch you'll
+    want to remember on Thursday. The reMarkable is the right place
+    for all of it — paper-like, distraction-free, always on.
   </p>
   <p>
-    There's no reMarkable Connect needed and no monthly fee. The app
-    works exactly the same with the tablet's cloud features turned
-    off entirely.
+    But at the end of the week, every note still lives on the tablet.
+  </p>
+  <figure class="story__figure">
+    <img src="reMarkable_reHydrate.png"
+         alt="A reMarkable tablet on a wooden garden table, showing handwritten trip-plan notes. A blue water bottle sits next to it, ready to be filled.">
+  </figure>
+</section>
+
+<section class="story">
+  <h2>reHydrate brings them back.</h2>
+  <p>
+    Plug the tablet into your computer with the cable it came with.
+    Open reHydrate, push <strong>Sync</strong>, and every notebook,
+    every PDF, every sketch flows into a library on your machine.
+  </p>
+  <p>
+    No reMarkable Connect. No monthly fee. No Wi-Fi handshake. Just
+    a USB cable and one button.
+  </p>
+</section>
+
+<section class="story">
+  <h2>A library that belongs to you.</h2>
+  <p>
+    Search across every notebook. Organise them into folders. Open
+    any document as a sharp PDF — pens, fineliners, markers, and
+    highlighters all rendered crisply, ready to print or share.
+  </p>
+  <figure class="story__figure story__figure--screenshot">
+    <img src="screenshots/library-view.png"
+         alt="The reHydrate library window. A sidebar lists All Documents, Recently Synced, Pending Sync, Notebooks, PDFs, EPUBs, custom folders, an archive bin, and a device section. The main pane lists notebooks and PDFs with type, size, page count, and last-synced columns.">
+  </figure>
+  <p>
+    Every sync keeps a snapshot. Decided you preferred last week's
+    draft? Open the history view and restore it.
+  </p>
+</section>
+
+<section class="story">
+  <h2>And it reads your handwriting.</h2>
+  <div class="story__split">
+    <figure class="story__figure story__figure--inline">
+      <img class="story__llama" src="ollama_reHydrate.png"
+           alt="A cartoon llama happily drinking from a blue water bottle — the Ollama mascot, drinking from reHydrate's bottle.">
+    </figure>
+    <div>
+      <p>
+        Point reHydrate at an <a href="https://ollama.com">Ollama</a>
+        daemon on your machine and a vision-language model turns
+        handwritten notebooks into Markdown. Your scrawl, searchable.
+      </p>
+      <p>
+        Ollama runs <em>on your computer</em>, not in a cloud somewhere.
+        Pick the model that fits your hardware — a 4B model fits
+        comfortably on 8 GB of RAM; bigger models do better on
+        cursive and equations. Your pages never leave the network
+        you're sitting on.
+      </p>
+    </div>
+  </div>
+  <figure class="story__figure story__figure--screenshot">
+    <img src="screenshots/right-click-menu.png"
+         alt="The library window with a right-click menu open over a notebook. Menu items: Open in viewer, Rename, Move to folder, Convert to text, View transcript, Show history, Move to Archive.">
+  </figure>
+  <p class="muted small">
+    Right-click any notebook → <strong>Convert to text…</strong> The
+    transcript attaches to the document so the next time you open
+    it, the text is already there.
   </p>
 </section>
 
 <section>
-  <h2>Version history</h2>
+  <h2>Privacy by construction</h2>
   <p>
-    Every time you sync, reHydrate keeps a snapshot of every notebook
-    that changed. Decided you preferred last week's draft? It's still
-    there — open the history view and restore. Want to see how a
-    notebook looked a month ago? Same.
-  </p>
-  <p>
-    If you have more than one reMarkable, keep a separate library
-    for each one and switch between them from the toolbar.
-  </p>
-</section>
-
-<section>
-  <h2>Beautiful PDFs</h2>
-  <p>
-    Notebooks open as proper PDFs — not blurry screenshots. Every pen,
-    ballpoint, marker, fineliner, calligraphy stroke, and highlighter
-    looks the way it does on the tablet. Sharp at any zoom, ready to
-    print or share.
-  </p>
-</section>
-
-<section>
-  <h2>Privacy</h2>
-  <p>
-    reHydrate is built so your notes never leave your computer.
-    Concretely:
+    The whole point of reHydrate is that your notes never leave your
+    computer. Concretely:
   </p>
   <ul class="invariants">
     <li>No telemetry, no analytics, no "anonymous usage statistics".
@@ -99,8 +144,9 @@
     <li>Your tablet password is stored in your computer's secure
       password store (Keychain on macOS, the equivalent on Linux
       and Windows). Never in plain text on disk.</li>
-    <li>The only server the app ever contacts is your tablet, over
-      USB.</li>
+    <li>OCR runs on a daemon you control. If you point reHydrate at
+      a remote Ollama, the URL is locked to that host — no redirects,
+      no leakage to other endpoints.</li>
     <li>An automated check runs on every release to make sure nobody
       accidentally adds a network call somewhere they shouldn't.</li>
   </ul>
@@ -116,6 +162,8 @@
       first launch needs an extra confirmation step (right-click →
       Open on macOS, "Run anyway" on Windows). Signing is on the
       roadmap.</li>
+    <li>It's tested against reMarkable 2 on firmware 3.x. The Paper
+      Pro and the original reMarkable 1 aren't supported yet.</li>
   </ul>
 </section>
 
@@ -147,7 +195,8 @@ cd rehydrate
     <a href="https://github.com/dm807cam/rehydrate/blob/main/PACKAGING.md">Packaging</a>
   </p>
   <p class="muted">
-    reHydrate is unaffiliated with reMarkable AS.
+    reHydrate is unaffiliated with reMarkable AS. Ollama is a separate
+    open-source project; the llama mascot is borrowed with affection.
   </p>
 </footer>
 

@@ -84,17 +84,33 @@ body {
 
 .hero {
   text-align: center;
-  padding: var(--space-8) var(--space-5) var(--space-7);
+  padding: var(--space-7) var(--space-5) var(--space-7);
   max-width: 720px;
   margin: 0 auto;
 }
 
+/* Lead visual — the bottle-over-tablet metaphor. Letting it run a
+ * little wider than the prose column gives it room to breathe;
+ * the radius softens the photo edge against the page bg. */
+.hero__art {
+  display: block;
+  width: 100%;
+  max-width: 560px;
+  height: auto;
+  margin: 0 auto var(--space-5);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.10);
+}
+
+/* The logo now lives inline with the wordmark — a small lockup
+ * rather than the standalone monolith it used to be. The hero
+ * image carries the visual weight; the logo just identifies. */
 .hero__logo {
-  width: 96px;
-  height: 96px;
+  width: 36px;
+  height: 36px;
   object-fit: contain;
-  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.10));
-  margin-bottom: var(--space-5);
+  vertical-align: -6px;
+  margin-right: var(--space-2);
 }
 
 .hero h1 {
@@ -103,6 +119,9 @@ body {
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .hero__tagline {
@@ -347,6 +366,67 @@ footer p:last-child {
 }
 
 /* =====================================================================
+ * Story sections — the narrative arc that walks the reader from
+ * "you write on the tablet" to "and here's what reHydrate does
+ * with it." Visually identical to a plain section, with a few
+ * affordances for embedded images.
+ * ===================================================================== */
+
+.story h2 {
+  font-size: 26px;
+  letter-spacing: -0.015em;
+}
+
+/* Generic figure inside a story section. Centred, no caption
+ * frame, no fancy border — the image speaks for itself. The radius
+ * keeps a hard rectangle from butting up against the soft prose. */
+.story__figure {
+  margin: var(--space-5) 0 var(--space-4);
+  text-align: center;
+}
+.story__figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-md);
+}
+
+/* Screenshots get a hairline border + slight shadow so they read
+ * as application UI rather than just another inline photo. */
+.story__figure--screenshot img {
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+/* The Ollama section uses a two-column layout: llama on the left,
+ * prose on the right. Falls back to stacked on mobile. */
+.story__split {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: var(--space-5);
+  align-items: center;
+  margin-bottom: var(--space-4);
+}
+.story__figure--inline {
+  margin: 0;
+}
+.story__llama {
+  width: 100%;
+  max-width: 200px;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+/* Small caption-style text under an inline figure. */
+section .small {
+  font-size: 14px;
+  margin-top: calc(var(--space-2) * -1);
+}
+
+/* =====================================================================
  * Mobile — narrower padding, slightly smaller hero type. The page
  * is so vertical that mobile mostly just inherits the desktop
  * layout; only the type scale and gutters need tuning.
@@ -360,14 +440,18 @@ footer p:last-child {
     padding: var(--space-6) var(--space-4) var(--space-5);
   }
   .hero h1 {
-    font-size: 36px;
+    font-size: 32px;
   }
   .hero__tagline {
     font-size: 19px;
   }
   .hero__logo {
-    width: 80px;
-    height: 80px;
+    width: 28px;
+    height: 28px;
+    vertical-align: -4px;
+  }
+  .hero__art {
+    border-radius: var(--radius-md);
   }
   main, footer {
     padding-left: var(--space-4);
@@ -378,6 +462,23 @@ footer p:last-child {
   }
   section h2 {
     font-size: 20px;
+  }
+  .story h2 {
+    font-size: 22px;
+  }
+  /* Collapse the OCR section's two-column layout to stacked. The
+   * llama still gets a centred max-width so it doesn't dominate
+   * the column. */
+  .story__split {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+    text-align: center;
+  }
+  .story__split > div {
+    text-align: left;
+  }
+  .story__llama {
+    max-width: 160px;
   }
   pre code {
     font-size: 13px;
