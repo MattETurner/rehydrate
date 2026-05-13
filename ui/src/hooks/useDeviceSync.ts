@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { formatError } from "../formatError";
+import { humanizeSyncError } from "../humanizeError";
 import { ipc, onDeviceReachable } from "../ipc";
 import type { DeviceState } from "../types";
 
@@ -84,7 +84,7 @@ export function useDeviceSync(
         openPasswordDialog();
       }
     } catch (e) {
-      injectionsRef.current.setError(formatError(e));
+      injectionsRef.current.setError(humanizeSyncError(e));
     }
   }, [device?.has_stored_password]);
 

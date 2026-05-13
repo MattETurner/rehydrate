@@ -2,10 +2,21 @@ import { useId, useRef, useState } from "react";
 
 import { useDialogA11y } from "../dialogA11y";
 import { formatError } from "../formatError";
+import { classifySyncError, type SyncErrorKind } from "../humanizeError";
 
 interface Props {
   onCancel: () => void;
   onSubmit: (password: string, remember: boolean) => Promise<void>;
+}
+
+// The dialog's headline copy only distinguishes three buckets, so we
+// collapse the broader SyncErrorKind taxonomy at the use site.
+type DialogErrorKind = "auth" | "network" | "other";
+
+function dialogKindFromSync(k: SyncErrorKind): DialogErrorKind {
+  if (k === "auth") return "auth";
+  if (k === "network" || k === "disconnect") return "network";
+  return "other";
 }
 
 export function PasswordDialog({ onCancel, onSubmit }: Props) {
@@ -13,7 +24,7 @@ export function PasswordDialog({ onCancel, onSubmit }: Props) {
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [errorKind, setErrorKind] = useState<"auth" | "network" | "other" | null>(null);
+  const [errorKind, setErrorKind] = useState<DialogErrorKind | null>(null);
 
   const descId = useId();
   const errId = useId();
@@ -36,7 +47,7 @@ export function PasswordDialog({ onCancel, onSubmit }: Props) {
     } catch (e) {
       const msg = formatError(e);
       setError(msg);
-      setErrorKind(classifyConnectError(msg));
+      setErrorKind(dialogKindFromSync(classifySyncError(msg)));
     } finally {
       setBusy(false);
     }
@@ -112,35 +123,7 @@ export function PasswordDialog({ onCancel, onSubmit }: Props) {
   );
 }
 
-/// Distinguish the three commonly-confused failure modes so the dialog can
-/// offer a recovery hint specific to each. The backend hands us a single
-/// stringly-typed error (`SshDevice::connect` → `DeviceError` → `String`);
-/// matching on the message text keeps the IPC contract loose.
-function classifyConnectError(msg: string): "auth" | "network" | "other" {
-  const lc = msg.toLowerCase();
-  if (
-    lc.includes("authentication failed") ||
-    lc.includes("auth failed") ||
-    lc.includes("no password stored")
-  ) {
-    return "auth";
-  }
-  if (
-    lc.includes("unreachable") ||
-    lc.includes("connection refused") ||
-    lc.includes("no route") ||
-    lc.includes("timed out") ||
-    lc.includes("network")
-  ) {
-    return "network";
-  }
-  if (lc.includes("host key") || lc.includes("known_hosts")) {
-    return "other";
-  }
-  return "other";
-}
-
-function errorHeadline(kind: "auth" | "network" | "other" | null): string {
+function errorHeadline(kind: DialogErrorKind | null): string {
   if (kind === "auth") return "That password didn't work.";
   if (kind === "network") return "Couldn't reach the tablet.";
   return "Couldn't connect.";

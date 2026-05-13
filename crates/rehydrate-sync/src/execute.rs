@@ -23,6 +23,14 @@ impl Cancel {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
+    /// Clear the cancelled flag so the same shared handle can be
+    /// reused for the next sync. Needed because the IPC layer keeps
+    /// a single long-lived Cancel in AppState (so the renderer's
+    /// "cancel" button can see it) rather than constructing a fresh
+    /// one per call.
+    pub fn reset(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug, Clone)]

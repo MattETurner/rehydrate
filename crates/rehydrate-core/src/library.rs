@@ -151,6 +151,26 @@ impl FolderPushOp {
             FolderPushOp::Delete { folder_id } => folder_id,
         }
     }
+
+    pub fn kind(&self) -> FolderPushKind {
+        match self {
+            FolderPushOp::Upsert { .. } => FolderPushKind::Upsert,
+            FolderPushOp::Delete { .. } => FolderPushKind::Delete,
+        }
+    }
+}
+
+/// What kind of folder push completed. Passed to
+/// `mark_folder_pushed` so the post-push DB update routes from the
+/// op that was actually shipped to the device, NOT from the current
+/// `deleted_locally` value — that field can flip between when the
+/// push engine snapshots the queue and when it reconciles the row,
+/// and a row whose `deleted_locally` flipped to 1 mid-push must
+/// keep its pending Delete queued instead of being dropped silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderPushKind {
+    Upsert,
+    Delete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2442,28 +2462,48 @@ impl Library {
     /// state now equals our local state, so the snapshot has to
     /// move forward too — otherwise the next local edit would still
     /// roll back to the pre-push state when reverted.
-    pub fn mark_folder_pushed(&self, folder_id: &str) -> Result<()> {
-        let conn = self.db.lock();
-        let was_tombstoned: i64 = conn
-            .query_row(
-                "SELECT deleted_locally FROM folders WHERE folder_id = ?1",
-                params![folder_id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        if was_tombstoned == 1 {
-            conn.execute(
-                "DELETE FROM folders WHERE folder_id = ?1",
-                params![folder_id],
-            )?;
-        } else {
-            conn.execute(
-                "UPDATE folders SET pending_push = 0, last_synced_metadata_json = metadata_json \
-                 WHERE folder_id = ?1",
-                params![folder_id],
-            )?;
+    pub fn mark_folder_pushed(&self, folder_id: &str, kind: FolderPushKind) -> Result<()> {
+        // Route by the op that was actually pushed, NOT by the row's
+        // current `deleted_locally`. Reading `deleted_locally` here
+        // would race a concurrent `delete_folder`: imagine the push
+        // engine ships an Upsert for folder F to the device, then the
+        // user clicks "Delete" on F. `delete_folder` flips
+        // `deleted_locally` to 1; if mark_folder_pushed then read that
+        // flag it would `DELETE FROM folders`, dropping the queued
+        // tombstone before any sync ever shipped it. The result: F
+        // is gone from the library but still on the tablet, with no
+        // pending-push row to ever clean it up.
+        //
+        // By taking `kind` from the caller (which holds the queue
+        // snapshot from `list_pending_folder_pushes`) the routing is
+        // immune to concurrent mutation between snapshot and commit.
+        let _write_guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.db.lock();
+        let tx = conn.transaction()?;
+        match kind {
+            FolderPushKind::Delete => {
+                // Tombstone shipped. The row's job is done.
+                tx.execute(
+                    "DELETE FROM folders WHERE folder_id = ?1",
+                    params![folder_id],
+                )?;
+            }
+            FolderPushKind::Upsert => {
+                // Clear pending_push and advance the snapshot — but
+                // gate on `deleted_locally = 0`. If a concurrent
+                // `delete_folder` flipped `deleted_locally` to 1
+                // between the queue snapshot and now, the next push
+                // must still see this row in `list_pending_folder_pushes`
+                // so the Delete actually reaches the device. Leaving
+                // pending_push = 1 in that case is the right move.
+                tx.execute(
+                    "UPDATE folders SET pending_push = 0, last_synced_metadata_json = metadata_json \
+                     WHERE folder_id = ?1 AND deleted_locally = 0",
+                    params![folder_id],
+                )?;
+            }
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -3192,8 +3232,10 @@ mod tests {
 
         // Clear the post-create pending pushes so we know the next
         // pending-push set is purely from the reparent.
-        lib.mark_folder_pushed(&parent.folder_id).unwrap();
-        lib.mark_folder_pushed(&child.folder_id).unwrap();
+        lib.mark_folder_pushed(&parent.folder_id, FolderPushKind::Upsert)
+            .unwrap();
+        lib.mark_folder_pushed(&child.folder_id, FolderPushKind::Upsert)
+            .unwrap();
         assert!(lib.list_pending_folder_pushes().unwrap().is_empty());
 
         // Drag BH under Journal.
@@ -3221,7 +3263,8 @@ mod tests {
         // A pure sibling-shuffle (no parent change) must NOT trigger
         // a push — flooding the queue with redundant metadata uploads
         // would slow every drag inside a folder.
-        lib.mark_folder_pushed(&child.folder_id).unwrap();
+        lib.mark_folder_pushed(&child.folder_id, FolderPushKind::Upsert)
+            .unwrap();
         let new_sort = 12345.5;
         lib.reorder_folder(&child.folder_id, Some(&parent.folder_id), new_sort)
             .unwrap();
@@ -3260,8 +3303,10 @@ mod tests {
 
         // Clear the create-time pending pushes so we can read the
         // deletion's push payload in isolation.
-        lib.mark_folder_pushed(&journal.folder_id).unwrap();
-        lib.mark_folder_pushed(&bh.folder_id).unwrap();
+        lib.mark_folder_pushed(&journal.folder_id, FolderPushKind::Upsert)
+            .unwrap();
+        lib.mark_folder_pushed(&bh.folder_id, FolderPushKind::Upsert)
+            .unwrap();
         assert!(lib.list_pending_folder_pushes().unwrap().is_empty());
 
         let outcome = lib.delete_folder(&journal.folder_id).unwrap();
@@ -3370,7 +3415,8 @@ mod tests {
 
         // Live rename → still present after push.
         lib.rename_folder(&live.folder_id, "Stays Renamed").unwrap();
-        lib.mark_folder_pushed(&live.folder_id).unwrap();
+        lib.mark_folder_pushed(&live.folder_id, FolderPushKind::Upsert)
+            .unwrap();
         assert!(lib
             .list_folders()
             .unwrap()
@@ -3379,7 +3425,8 @@ mod tests {
 
         // Tombstoned → gone after push.
         lib.delete_folder(&doomed.folder_id).unwrap();
-        lib.mark_folder_pushed(&doomed.folder_id).unwrap();
+        lib.mark_folder_pushed(&doomed.folder_id, FolderPushKind::Delete)
+            .unwrap();
         let conn = lib.db.lock();
         let still_there: i64 = conn
             .query_row(
@@ -3419,7 +3466,8 @@ mod tests {
         // sync would; without it the dangling-parent check still
         // passes because deleted_locally = 1 also disqualifies the
         // row.
-        lib.mark_folder_pushed(&folder.folder_id).unwrap();
+        lib.mark_folder_pushed(&folder.folder_id, FolderPushKind::Delete)
+            .unwrap();
 
         // Unarchive must NOT restore the doc to the dead parent.
         let restored = lib.unarchive_document("doc-1").unwrap();
@@ -3815,6 +3863,52 @@ mod tests {
     }
 
     #[test]
+    fn mark_folder_pushed_with_upsert_kind_preserves_concurrent_tombstone() {
+        // Race scenario the v1.0 audit flagged: push completes an
+        // Upsert for folder F, then between the device put and
+        // `mark_folder_pushed` the user clicks "Delete folder" on F.
+        // `delete_folder` flips `deleted_locally = 1` and re-queues a
+        // Delete op. If `mark_folder_pushed` routed by the row's
+        // current `deleted_locally` it would `DELETE FROM folders`,
+        // wiping the queued Delete and leaving F as a ghost on the
+        // tablet that no future sync resolves.
+        //
+        // With the API now taking the *pushed* kind, the Upsert
+        // completion path is gated on `deleted_locally = 0` and the
+        // tombstoned row stays in the queue.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let folder = lib.create_folder("Doomed", None).unwrap();
+        // First push (the Upsert that placed F on the device).
+        lib.mark_folder_pushed(&folder.folder_id, FolderPushKind::Upsert)
+            .unwrap();
+        assert!(lib.list_pending_folder_pushes().unwrap().is_empty());
+
+        // Simulate: push engine snapshots queue (empty here),
+        // user renames F (Upsert queued), push engine ships the
+        // Upsert to the device, ABOUT to call mark_folder_pushed.
+        lib.rename_folder(&folder.folder_id, "Renamed").unwrap();
+        // Meanwhile the user clicks Delete on F.
+        lib.delete_folder(&folder.folder_id).unwrap();
+        // Now the push engine completes — it pushed an Upsert but
+        // the row is now `deleted_locally = 1`.
+        lib.mark_folder_pushed(&folder.folder_id, FolderPushKind::Upsert)
+            .unwrap();
+
+        // The Delete must still be queued: the device has the
+        // Upsert'd metadata, and the next sync must ship the Delete
+        // to clean it up.
+        let pending = lib.list_pending_folder_pushes().unwrap();
+        let queued_delete = pending.iter().any(
+            |op| matches!(op, FolderPushOp::Delete { folder_id } if folder_id == &folder.folder_id),
+        );
+        assert!(
+            queued_delete,
+            "Upsert completion must NOT silently absorb a concurrent Delete — row should still be queued for tombstoning",
+        );
+    }
+
+    #[test]
     fn unarchive_falls_back_when_parent_is_soft_deleted_but_not_yet_pushed() {
         // Sister test to `unarchive_falls_back_to_root_when_original_parent_was_deleted`,
         // which exercises the *tombstoned-and-pushed* branch (row dropped
@@ -3873,7 +3967,8 @@ mod tests {
 
         // Create + first push → snapshot = "A".
         let folder = lib.create_folder("A", None).unwrap();
-        lib.mark_folder_pushed(&folder.folder_id).unwrap();
+        lib.mark_folder_pushed(&folder.folder_id, FolderPushKind::Upsert)
+            .unwrap();
 
         // Rename to "B" → revert. Should restore to "A".
         lib.rename_folder(&folder.folder_id, "B").unwrap();
@@ -3889,7 +3984,8 @@ mod tests {
 
         // Rename to "C" + push → snapshot moves forward to "C".
         lib.rename_folder(&folder.folder_id, "C").unwrap();
-        lib.mark_folder_pushed(&folder.folder_id).unwrap();
+        lib.mark_folder_pushed(&folder.folder_id, FolderPushKind::Upsert)
+            .unwrap();
 
         // Rename to "D" + revert. Must restore to "C", NOT "A".
         lib.rename_folder(&folder.folder_id, "D").unwrap();

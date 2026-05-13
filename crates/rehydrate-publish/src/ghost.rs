@@ -16,13 +16,27 @@ use time::OffsetDateTime;
 use crate::http::RestrictedAgent;
 use crate::{DraftPost, PublishError, PublishResult, PublishResultT, PublishTarget, Publisher};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct GhostCredentials {
     /// Base URL of the Ghost site, e.g. `https://blog.example.com`.
     /// No trailing `/ghost/api/...` path — we append it.
     pub base_url: String,
     /// `<id>:<hex_secret>` Admin API key from Settings → Integrations.
     pub admin_api_key: String,
+}
+
+// Hand-rolled Debug that redacts `admin_api_key`. The `derive(Debug)`
+// path printed the secret verbatim, so any `format!("{:?}", creds)`
+// (panic message, tracing instrument, `Debug` on a containing struct,
+// `dbg!` in dev) leaked it into the log file. The base URL stays
+// visible because it's useful for diagnosing connection problems.
+impl std::fmt::Debug for GhostCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GhostCredentials")
+            .field("base_url", &self.base_url)
+            .field("admin_api_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 pub struct GhostClient {
@@ -173,6 +187,26 @@ impl Publisher for GhostClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_redacts_admin_api_key() {
+        // Regression guard: pre-fix, deriving Debug printed the
+        // admin_api_key verbatim, so any `format!("{:?}", creds)`
+        // (panic message, tracing instrument, a Debug-deriving
+        // containing struct) leaked it to logs.
+        let creds = GhostCredentials {
+            base_url: "https://blog.example.com".into(),
+            admin_api_key: "abc123def456:0123456789abcdef".into(),
+        };
+        let s = format!("{creds:?}");
+        assert!(
+            !s.contains("0123456789abcdef"),
+            "Debug must NOT reveal the hex secret; got: {s}",
+        );
+        assert!(s.contains("REDACTED"));
+        // base_url stays visible — useful for diagnostics, not secret.
+        assert!(s.contains("blog.example.com"));
+    }
 
     #[test]
     fn rejects_malformed_key() {

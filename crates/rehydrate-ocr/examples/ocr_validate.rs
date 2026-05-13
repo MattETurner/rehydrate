@@ -86,16 +86,24 @@ async fn main() {
     let elapsed = t0.elapsed().as_secs_f64();
 
     match res {
-        Ok(pages) => {
-            let chars = pages.first().map(|p| p.text.chars().count()).unwrap_or(0);
+        Ok(report) => {
+            let chars = report
+                .pages
+                .first()
+                .map(|p| p.text.chars().count())
+                .unwrap_or(0);
             eprintln!(
-                "[{elapsed:>6.1}s] OK — {} page(s), {} chars first page",
-                pages.len(),
+                "[{elapsed:>6.1}s] OK — {} page(s) succeeded, {} failed; {} chars first page",
+                report.pages.len(),
+                report.failures.len(),
                 chars
             );
-            if let Some(p) = pages.first() {
+            if let Some(p) = report.pages.first() {
                 let preview: String = p.text.chars().take(120).collect();
                 eprintln!("    preview: {preview}");
+            }
+            for f in &report.failures {
+                eprintln!("    page {}: {}", f.page_index + 1, f.message);
             }
             std::process::exit(0);
         }

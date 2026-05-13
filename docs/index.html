@@ -7,19 +7,32 @@
   <link rel="icon" type="image/png" href="logo.png">
   <meta name="description" content="An offline-first companion for the reMarkable. Pulls notebooks over USB and renders ink as sharp PDFs — without touching a cloud you didn't choose.">
   <meta property="og:title" content="reHydrate">
-  <meta property="og:description" content="An offline-first companion for the reMarkable. Sync and browse without the cloud.">
-  <meta property="og:image" content="logo.png">
+  <meta property="og:description" content="An offline companion for the reMarkable. Pulls your notebooks over USB and turns them into proper PDFs — without the cloud.">
+  <meta property="og:image" content="reMarkable_reHydrate_2.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
+<nav class="topnav" aria-label="Primary">
+  <a class="topnav__brand" href="#">
+    <img class="topnav__mark" src="logo.png" alt="">
+    <span class="topnav__name">reHydrate</span>
+  </a>
+  <div class="topnav__links">
+    <a href="#why">Why this exists</a>
+    <a href="#library">Offline Library</a>
+    <a href="#ollama">From Idea to Draft</a>
+  </div>
+</nav>
+
 <header class="hero">
-  <img class="hero__logo" src="logo.png" alt="">
+  <img class="hero__logo" src="logo.png"
+       alt="The reHydrate logo: a blue water bottle, evoking the act of pouring your notebooks back from the tablet onto your computer.">
   <h1>reHydrate</h1>
   <p class="hero__tagline">An offline companion for the reMarkable.</p>
   <p class="hero__lede">
-    Pulls your notebooks over USB and makes proper PDFs from your handwriting —
-    all without sending your notes to anybody else's server.
+    Plug in your tablet. Push one button. Your notebooks flow back to your
+    computer as proper PDFs — without a cloud in the middle.
   </p>
   <div class="hero__cta">
     <p class="hero__cta-row" id="downloads">
@@ -30,158 +43,104 @@
       </a>
       <a class="btn" data-asset-suffix=".AppImage"
          href="https://github.com/dm807cam/rehydrate/releases/latest">
-        <span class="btn__platform">Linux</span>
-        <span class="btn__detail">AppImage</span>
+        <span class="btn__platform">macOS</span>
+        <span class="btn__detail">Intel</span>
       </a>
-      <a class="btn" data-asset-suffix=".msi"
-         href="https://github.com/dm807cam/rehydrate/releases/latest">
-        <span class="btn__platform">Windows</span>
-        <span class="btn__detail">Installer</span>
-      </a>
-    </p>
-    <p class="hero__cta-row">
-      <a class="btn btn--ghost" href="https://github.com/dm807cam/rehydrate">View source on GitHub</a>
     </p>
   </div>
 </header>
 
 <main>
 
-<section>
-  <h2>Truly offline</h2>
-  <p>
-    reHydrate connects to your reMarkable through its USB cable. No
-    Wi-Fi, no subscription, no servers in the middle. Your notes go
-    from the tablet to your computer and stop there.
-  </p>
-  <p>
-    There's no reMarkable Connect needed and no monthly fee. The app
-    works exactly the same with the tablet's cloud features turned
-    off entirely.
-  </p>
+<section class="story"  id="why">
+	<h2>Why this exists</h2>
+      <p>
+        I bought a reMarkable because I wanted a paper-like place to put
+        my thoughts. What I didn't want was the trade-off I got handed
+        to retrieve them.
+      </p>
+      <p>
+        Either pay a monthly subscription and let my most private notes
+        live on someone else's servers, or make do with a web interface
+        that gets painfully slow once your library grows, or open a
+        terminal and SSH into the tablet like it's a server.
+      </p>
+      <p>
+        What I actually wanted was an <em>iTunes for the reMarkable</em> —
+        feature-packed, private by design, and easy enough to use without
+        thinking about it. That's what reHydrate is.
+	</p>
 </section>
 
-<section>
-  <h2>Version history</h2>
+<section class="story" id="library">
+  <h2>A library that belongs to you.</h2>
   <p>
-    Every time you sync, reHydrate keeps a snapshot of every notebook
-    that changed. Decided you preferred last week's draft? It's still
-    there — open the history view and restore. Want to see how a
-    notebook looked a month ago? Same.
+    Search across every notebook. Organise them into folders. Open
+    any document as a sharp PDF — pens, fineliners, markers, and
+    highlighters all rendered crisply, ready to print or share.
   </p>
-  <p>
-    If you have more than one reMarkable, keep a separate library
-    for each one and switch between them from the toolbar.
+    <p>
+    Every sync keeps a snapshot. Decided you preferred last week's
+    draft? Open the history view and restore it.
   </p>
+  <figure class="story__figure story__figure--screenshot">
+    <img src="screenshots/library-view.png"
+         alt="The reHydrate library window. A sidebar lists All Documents, Recently Synced, Pending Sync, Notebooks, PDFs, EPUBs, custom folders, an archive bin, and a device section. The main pane lists notebooks and PDFs with type, size, page count, and last-synced columns.">
+  </figure>
 </section>
 
-<section>
-  <h2>Beautiful PDFs</h2>
+<section class="story" id="ollama">
+  <h2>Think with your hand. Publish anywhere.</h2>
   <p>
-    Notebooks open as proper PDFs — not blurry screenshots. Every pen,
-    ballpoint, marker, fineliner, calligraphy stroke, and highlighter
-    looks the way it does on the tablet. Sharp at any zoom, ready to
-    print or share.
-  </p>
-</section>
-
-<section>
-  <h2>Privacy</h2>
-  <p>
-    reHydrate is built so your notes never leave your computer.
-    Concretely:
-  </p>
-  <ul class="invariants">
-    <li>No telemetry, no analytics, no "anonymous usage statistics".
-      The app makes no network calls on launch.</li>
-    <li>Sync between your tablet and your computer happens entirely
-      over the USB cable. The reMarkable's cloud is not in the loop.</li>
-    <li>Your tablet password is stored in your computer's secure
-      password store (Keychain on macOS, the equivalent on Linux
-      and Windows). Never in plain text on disk.</li>
-    <li>The only server the app ever contacts is your tablet, over
-      USB.</li>
-    <li>An automated check runs on every release to make sure nobody
-      accidentally adds a network call somewhere they shouldn't.</li>
-  </ul>
-</section>
-
-<section>
-  <h2>What it's not</h2>
-  <ul>
-    <li>It's not a cloud service. There's nothing to subscribe to.</li>
-    <li>It doesn't replace your reMarkable's tablet experience — it
-      sits next to it, on your computer.</li>
-    <li>It's not yet officially signed for macOS or Windows, so the
-      first launch needs an extra confirmation step (right-click →
-      Open on macOS, "Run anyway" on Windows). Signing is on the
-      roadmap.</li>
-  </ul>
-</section>
-
-<section>
-  <h2>Get it</h2>
-  <p>
-    Pre-built apps are on the
-    <a href="https://github.com/dm807cam/rehydrate/releases">releases page</a>
-    for Mac (Apple Silicon and Intel), Linux (AppImage and .deb), and
-    Windows. Pick your platform from the buttons at the top, or browse
-    the full list.
+    Most of us create on a glowing screen now — straight into a
+    browser tab, with notifications buzzing in the corner and the
+    next link a click away. The thought you almost had gets buried
+    before you finish it.
   </p>
   <p>
-    Want to build it yourself?
+    Writing by hand is the opposite. Ink on a page. Nothing to
+    switch to. No autocomplete second-guessing the sentence you
+    started. It's a different — and quieter — way of thinking, and
+    the ideas that come out of it tend to be the ones worth keeping.
   </p>
-  <pre><code>git clone https://github.com/dm807cam/rehydrate
-cd rehydrate
-./build.sh</code></pre>
+  <p>
+    reHydrate carries those ideas the rest of the way:
+  </p>
+  <div class="story__split">
+    <figure class="story__figure story__figure--inline">
+      <img class="story__llama" src="ollama_reHydrate.png"
+           alt="A cartoon llama drinking from a blue water bottle — the Ollama mascot, sipping from reHydrate's bottle.">
+    </figure>
+    <div>
+      <p>
+        Sync your notebook. Right-click any page and let a local
+        <a href="https://ollama.com">Ollama</a> model turn your
+        handwriting into Markdown. From the same window, publish
+        a draft straight to your <strong>WordPress</strong> or
+        <strong>Ghost</strong> site.
+      </p>
+      <p>
+        Ollama runs <em>on your computer</em>, not in a cloud
+        somewhere. Pick the model that fits your hardware — a 4B
+        model fits comfortably on 8 GB of RAM; bigger models do
+        better on cursive and equations. Your pages never leave the
+        network you're sitting on.
+      </p>
+    </div>
+  </div>
+  <p>
+    <strong>Idea → ink → transcript → draft.</strong> The whole
+    creative loop, on your machine until you decide to ship it.
+  </p>
 </section>
-
 </main>
 
 <footer>
-  <p>
-    <a href="https://github.com/dm807cam/rehydrate">Source</a>
-    ·
-    <a href="https://github.com/dm807cam/rehydrate/issues">Issues</a>
-    ·
-    <a href="https://github.com/dm807cam/rehydrate/blob/main/PACKAGING.md">Packaging</a>
-  </p>
+	<p class="muted"> Created by Dennis Mayk</p>
   <p class="muted">
-    reHydrate is unaffiliated with reMarkable AS.
+    reHydrate is unaffiliated with reMarkable AS. Ollama is a separate
+    open-source project; the llama mascot is borrowed with affection.
   </p>
 </footer>
-
-<script>
-/* Resolve each download button to the actual asset URL of the
- * latest release. GitHub doesn't expose a wildcard "latest .dmg"
- * pattern, so we ask the API once and rewrite the hrefs. If the
- * fetch fails (offline, rate-limited, no releases yet), the
- * default href on each button still drops the user on the
- * releases page where they can pick manually. */
-(async function resolveDownloads() {
-  const buttons = document.querySelectorAll("[data-asset-suffix]");
-  if (buttons.length === 0) return;
-  try {
-    const r = await fetch(
-      "https://api.github.com/repos/dm807cam/rehydrate/releases/latest",
-      { headers: { Accept: "application/vnd.github+json" } }
-    );
-    if (!r.ok) return;
-    const release = await r.json();
-    const assets = release.assets || [];
-    for (const btn of buttons) {
-      const suffix = btn.getAttribute("data-asset-suffix");
-      const match = assets.find((a) => a.name && a.name.endsWith(suffix));
-      if (match && match.browser_download_url) {
-        btn.href = match.browser_download_url;
-        btn.setAttribute("download", match.name);
-      }
-    }
-  } catch {
-    /* Stay on the releases-page fallback. */
-  }
-})();
-</script>
-
 </body>
 </html>

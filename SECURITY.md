@@ -50,16 +50,30 @@ from local blobs (`data:`/`blob:` URLs) only.
 
 ## SSH host-key verification
 
-**v1.0 accepts any host key on connect (TOFU without persistence).** The
-threat model: the user physically plugged a USB cable into a device they
-own. An adversary who can substitute a different SSH host on `10.11.99.1:22`
-must have either compromised the cable / network stack or replaced the
-tablet itself — both of which require physical access that defeats
-host-key pinning anyway.
+**v1.0 uses persistent TOFU (Trust On First Use).** The first
+successful connection to `10.11.99.1:22` records the tablet's host
+key fingerprint in a per-app `known_hosts.json` (mode `0o600`).
+Every subsequent connect compares the live key against the stored
+fingerprint:
 
-If you're running reHydrate against any SSH endpoint that isn't a tablet
-you physically own, **don't use v1.0 yet**. A future release will add
-optional host-key pinning for users who want it.
+- Match → connection proceeds normally.
+- Mismatch → reHydrate refuses to connect and surfaces a
+  `HostKeyChanged` error naming the expected and observed
+  fingerprints. The user has to manually delete the stored entry
+  (or factory-reset the tablet so its key actually changed) before
+  another connect attempt can succeed.
+
+The fingerprint is committed *after* successful authentication, so
+an attacker who can intercept the very first connect (before any
+key has been recorded) can still pin themselves as the trusted
+host — that's the classic TOFU compromise window. The threat model
+assumes the first connect happens over a trusted USB cable to a
+tablet the user physically owns; anyone running reHydrate against
+an SSH endpoint they did NOT just unbox should verify the recorded
+fingerprint out-of-band before relying on the persistence guarantee.
+
+A future release may add explicit fingerprint pinning at config
+time so users can avoid the TOFU window entirely.
 
 ## Ollama (OCR backend)
 
@@ -171,10 +185,12 @@ frontend is allowed to call any registered Tauri command. This means a
 compromised renderer (XSS in third-party deps, etc.) can read the entire
 library through the existing commands. v1.0 mitigations:
 
-- **`devtools` is disabled in release builds.** The feature flag is
-  default-on for `cargo run` so contributors keep the inspector, but the
-  release workflow builds with `--no-default-features` so end users
-  can't open the inspector and arbitrary-JS-evaluate.
+- **`devtools` is disabled by default and absent from release builds.**
+  The feature flag is opt-in (`default = []` on `rehydrate-app`).
+  Contributors enable it explicitly with `--features devtools` (or
+  via `./build.sh --dev`, which adds the flag for you). The release
+  workflow builds with `--no-default-features` as belt-and-suspenders
+  so end users can never open the inspector and arbitrary-JS-evaluate.
 - **CSP** locks `script-src` to `'self'` — no inline scripts, no remote
   scripts. `style-src 'unsafe-inline'` remains as a v1.0 carve-out for
   React inline styles; it'll be tightened in a follow-up.
@@ -221,12 +237,25 @@ sensitive data on multi-user systems.
 - **Sandboxing of imported PDFs**: a malicious PDF that exploits a
   decoder bug would run with the app's privileges. v1.0 relies on
   upstream decoders being CVE-clean.
-- **Host-key pinning for SSH**: TOFU without persistence; see above.
+- **Explicit SSH host-key pinning at config time**: today's flow is
+  persistent TOFU (see above), which still has a first-connect
+  window. A pinned-fingerprint config option would close it.
 - **Telemetry**: there is none, by design.
 
 ## Reporting
 
-Found a security issue? Please open a private vulnerability report via
-GitHub's "Report a vulnerability" interface on the repository, or email
-the maintainers listed in `Cargo.toml`. Please don't open a public issue
-for security-sensitive matters.
+Found a security issue? Please report it privately through GitHub's
+[Report a Vulnerability](https://github.com/dm807cam/rehydrate/security/advisories/new)
+flow on this repository. That channel is monitored and routes
+directly to the maintainers without a public issue ever being
+created. Please don't open a public issue for security-sensitive
+matters.
+
+If you can't use the GitHub flow, open a minimally-detailed public
+issue saying you have a security report to share and asking for a
+private channel; a maintainer will follow up.
+
+### Supported versions
+
+Only the latest released `v1.x.y` receives security fixes. v0.x
+releases are unsupported.

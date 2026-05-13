@@ -15,13 +15,28 @@ use serde::{Deserialize, Serialize};
 use crate::http::RestrictedAgent;
 use crate::{DraftPost, PublishError, PublishResult, PublishResultT, PublishTarget, Publisher};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WordpressCredentials {
     /// Base URL of the WP site, e.g. `https://example.com`. The
     /// REST API path `/wp-json/wp/v2/...` is appended internally.
     pub base_url: String,
     pub username: String,
     pub application_password: String,
+}
+
+// Hand-rolled Debug that redacts `application_password`. The
+// `derive(Debug)` path printed it verbatim — see the matching
+// rationale on GhostCredentials. Username + base URL stay visible
+// because they're useful for diagnosing connection problems and
+// aren't themselves authentication material.
+impl std::fmt::Debug for WordpressCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WordpressCredentials")
+            .field("base_url", &self.base_url)
+            .field("username", &self.username)
+            .field("application_password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 pub struct WordpressClient {
@@ -134,6 +149,26 @@ impl Publisher for WordpressClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_redacts_application_password() {
+        // Mirrors the GhostCredentials redaction test — same class
+        // of bug, same regression guard.
+        let creds = WordpressCredentials {
+            base_url: "https://blog.example.com".into(),
+            username: "alice".into(),
+            application_password: "abcd efgh ijkl mnop".into(),
+        };
+        let s = format!("{creds:?}");
+        assert!(
+            !s.contains("ijkl mnop"),
+            "Debug must NOT reveal the application password; got: {s}",
+        );
+        assert!(s.contains("REDACTED"));
+        // Username + URL stay visible for diagnostics.
+        assert!(s.contains("alice"));
+        assert!(s.contains("blog.example.com"));
+    }
 
     #[test]
     fn auth_header_strips_whitespace_in_app_password() {

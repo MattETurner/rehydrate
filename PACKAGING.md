@@ -88,12 +88,15 @@ by hand) is more robust.
 
 ## `--no-default-features` is mandatory
 
-The `devtools` feature on `rehydrate-app` is default-on so daily
-`cargo run` / `cargo tauri dev` works without flags. The release
-workflow must build with `--no-default-features` so shipped binaries
-don't expose the inspector to end users — the renderer can call any
-registered Tauri command, so an open DevTools is a security boundary
-skip. Both the workflow and the local-build snippets above include
+The `devtools` feature on `rehydrate-app` is opt-in (`default = []`).
+Contributors who want the webview inspector enable it with
+`--features devtools` (`./build.sh --dev` does this automatically).
+The release workflow builds with `--no-default-features` as
+belt-and-suspenders: even if a future change to the crate added a
+default feature, the flag prevents the inspector from slipping into
+a shipped binary — the renderer can call any registered Tauri command,
+so an open DevTools is a security boundary skip. Both the workflow
+and the local-build snippets above include
 this flag.
 
 ## What's left

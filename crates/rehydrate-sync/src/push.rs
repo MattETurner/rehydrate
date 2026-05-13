@@ -176,6 +176,14 @@ pub async fn execute_push(
             break;
         }
         let folder_id = op.folder_id().to_string();
+        // Capture kind from the queue snapshot, NOT from the row's
+        // current `deleted_locally`. A concurrent `delete_folder`
+        // can flip the row's state between this push and the
+        // mark_folder_pushed below; routing from the snapshot keeps
+        // the device-side reconciliation honest. (See the comment on
+        // `Library::mark_folder_pushed` for the ghost-folder bug
+        // that motivates this.)
+        let pushed_kind = op.kind();
         let push_result = match op {
             rehydrate_core::FolderPushOp::Upsert {
                 ref folder_id,
@@ -199,7 +207,7 @@ pub async fn execute_push(
                 // re-pushed forever. Count it as skipped instead so
                 // the user sees a non-zero skip count and the loop
                 // doesn't claim success.
-                if let Err(e) = library.mark_folder_pushed(&folder_id) {
+                if let Err(e) = library.mark_folder_pushed(&folder_id, pushed_kind) {
                     tracing::warn!(
                         folder = %folder_id,
                         error = %e,

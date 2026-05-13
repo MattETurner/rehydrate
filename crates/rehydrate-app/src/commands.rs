@@ -9,8 +9,7 @@ use rehydrate_device::known_hosts::KnownHosts;
 use rehydrate_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rehydrate_device::{Device, DeviceInfo};
 use rehydrate_sync::{
-    execute_pull, execute_push, plan_pull, plan_push, progress, Cancel, ProgressEvent, PullPlan,
-    PushPlan,
+    execute_pull, execute_push, plan_pull, plan_push, progress, ProgressEvent, PullPlan, PushPlan,
 };
 use secrecy::SecretString;
 use serde::Serialize;
@@ -22,7 +21,7 @@ use crate::config;
 use crate::keychain;
 use crate::logging;
 use crate::state::{default_library_dir, AppState, KEYRING_DEVICE_USER};
-use crate::util::{err, lib_arc};
+use crate::util::{err, lib_arc, IpcSecret};
 
 /// Resolve the per-user known-hosts store for SSH host-key pinning.
 /// Falls back to a cwd-relative path if the OS doesn't expose a
@@ -55,6 +54,25 @@ pub async fn get_recent_logs(max_lines: Option<usize>) -> Result<LogTail, String
         lines,
         log_dir: logging::log_dir(),
     })
+}
+
+/// Open the rolling-log directory in the OS file manager (Finder
+/// on macOS). The path comes from `logging::log_dir()` so the
+/// renderer can't influence which directory gets revealed — no
+/// path traversal surface.
+///
+/// Returns the resolved path so the UI can present a fallback
+/// (toast with the path string) if the open call fails — e.g.
+/// when the directory doesn't exist yet because no logs have been
+/// written this session.
+#[tauri::command]
+pub async fn reveal_log_dir(app: AppHandle) -> Result<String, String> {
+    let dir = logging::log_dir().ok_or_else(|| "no log directory on this platform".to_string())?;
+    let path = dir.to_string_lossy().to_string();
+    app.opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|e| format!("could not reveal {path}: {e}"))?;
+    Ok(path)
 }
 
 #[tauri::command]
@@ -669,6 +687,54 @@ pub async fn open_document(
     Ok(cache_path)
 }
 
+/// Open an https URL in the user's default browser. The renderer
+/// uses this to surface the support / Issues link from the About
+/// dialog. Restricted to https://github.com/dm807cam/rehydrate/ so a
+/// compromised renderer can't open arbitrary websites — the opener
+/// plugin would happily launch any URL, but that's not a
+/// capability the App needs exposed.
+#[tauri::command]
+pub async fn open_support_url(url: String, app: AppHandle) -> Result<(), String> {
+    const SUPPORT_PREFIX: &str = "https://github.com/dm807cam/rehydrate/";
+    if !url.starts_with(SUPPORT_PREFIX) {
+        return Err(format!(
+            "refusing to open URL outside support prefix ({SUPPORT_PREFIX})"
+        ));
+    }
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("could not open {url}: {e}"))
+}
+
+/// Return the app's published version string. Used by the About
+/// dialog. Kept distinct from any in-app autoupdate flow because
+/// v1.0 has no autoupdate — this is purely diagnostic copy.
+#[tauri::command]
+pub fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// Trip the shared sync cancellation flag. The engine polls the
+/// flag between documents (and inside the folder-push loop), so an
+/// in-flight sync_two_way / pull_execute / push_execute stops at
+/// the next granular boundary and returns `SyncError::Cancelled`.
+/// Idempotent: calling when nothing is running is a no-op (the next
+/// sync resets the flag before it starts).
+#[tauri::command]
+pub fn cancel_sync(state: State<'_, AppState>) -> Result<(), String> {
+    state.sync_cancel.cancel();
+    Ok(())
+}
+
+/// Trip the shared OCR cancellation flag. Mirrors `cancel_sync`
+/// but targets `transcribe_document` / the auto-OCR sweep. The
+/// flag is reset at the start of each new OCR job.
+#[tauri::command]
+pub fn cancel_ocr(state: State<'_, AppState>) -> Result<(), String> {
+    state.ocr_cancel.cancel();
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentSummary>, String> {
     let lib = lib_arc(&state).await?;
@@ -1044,9 +1110,12 @@ pub async fn device_state(state: State<'_, AppState>) -> Result<DeviceState, Str
 }
 
 /// Save a device password into the OS keychain. Does not connect.
+/// The `IpcSecret` wrapper length-caps the input and ensures the
+/// plaintext isn't printable via Debug derives further up the
+/// call chain.
 #[tauri::command]
-pub async fn save_device_password(password: String) -> Result<(), String> {
-    keychain::write_slot(KEYRING_DEVICE_USER, &password)
+pub async fn save_device_password(password: IpcSecret) -> Result<(), String> {
+    keychain::write_slot(KEYRING_DEVICE_USER, password.expose())
 }
 
 #[tauri::command]
@@ -1077,7 +1146,7 @@ pub async fn forget_device_password() -> Result<(), String> {
 /// canonical "store this" call.
 #[tauri::command]
 pub async fn connect_device(
-    password: Option<String>,
+    password: Option<IpcSecret>,
     remember: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1088,11 +1157,11 @@ pub async fn connect_device(
     // connect attempt silently uses the bad value.
     //
     // Audit fix M4: a parallel un-zeroized `Option<String>` shadow used
-    // to defeat SecretString's zero-on-drop. We now carry only the
-    // SecretString and a flag — the keychain write reads the bytes
-    // back out via expose_secret().
+    // to defeat SecretString's zero-on-drop. The IPC layer now hands us
+    // an `IpcSecret`, so the plaintext never lives in a plain String the
+    // caller could Debug-print. We unwrap into SecretString immediately.
     let (secret, freshly_typed) = match password {
-        Some(p) => (SecretString::from(p), true),
+        Some(p) => (p.into_secret(), true),
         None => {
             let stored = keychain::read_slot(KEYRING_DEVICE_USER)
                 .ok_or_else(|| "no password stored; pass one to connect_device".to_string())?;
@@ -1230,9 +1299,19 @@ pub async fn pull_execute(
     let (tx, rx) = progress::channel(64);
     let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
 
-    let report = execute_pull(&lib, dev.as_ref(), plan, Some(tx), Cancel::default())
-        .await
-        .map_err(err)?;
+    // Reset the shared cancel handle to a clean (un-cancelled) state
+    // and pass a clone to the engine. The renderer's `cancel_sync`
+    // command flips the same handle.
+    state.sync_cancel.reset();
+    let report = execute_pull(
+        &lib,
+        dev.as_ref(),
+        plan,
+        Some(tx),
+        state.sync_cancel.clone(),
+    )
+    .await
+    .map_err(err)?;
     let _ = forwarder.await;
 
     Ok(SyncReportOut {
@@ -1259,9 +1338,16 @@ pub async fn push_execute(
     let plan = plan_push(&lib).map_err(err)?;
     let (tx, rx) = progress::channel(64);
     let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
-    let report = execute_push(&lib, dev.as_ref(), plan, Some(tx), Cancel::default())
-        .await
-        .map_err(err)?;
+    state.sync_cancel.reset();
+    let report = execute_push(
+        &lib,
+        dev.as_ref(),
+        plan,
+        Some(tx),
+        state.sync_cancel.clone(),
+    )
+    .await
+    .map_err(err)?;
     let _ = forwarder.await;
 
     Ok(PushReportOut {
@@ -1283,14 +1369,24 @@ pub async fn sync_two_way(
     let dev = device_arc(&state).await?;
     let lib = lib_arc(&state).await?;
 
+    // Reset the cancel handle once for the whole two-way sync; the
+    // renderer's `cancel_sync` command will trip both phases.
+    state.sync_cancel.reset();
+
     // ----- PULL phase -----
     let _ = app.emit("sync:phase", "pull");
     let pull_plan = plan_pull(&lib, dev.as_ref()).await.map_err(err)?;
     let (tx, rx) = progress::channel(64);
     let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
-    let pull = execute_pull(&lib, dev.as_ref(), pull_plan, Some(tx), Cancel::default())
-        .await
-        .map_err(err)?;
+    let pull = execute_pull(
+        &lib,
+        dev.as_ref(),
+        pull_plan,
+        Some(tx),
+        state.sync_cancel.clone(),
+    )
+    .await
+    .map_err(err)?;
     let _ = forwarder.await;
 
     // ----- PUSH phase -----
@@ -1298,9 +1394,15 @@ pub async fn sync_two_way(
     let push_plan = plan_push(&lib).map_err(err)?;
     let (tx, rx) = progress::channel(64);
     let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
-    let push = execute_push(&lib, dev.as_ref(), push_plan, Some(tx), Cancel::default())
-        .await
-        .map_err(err)?;
+    let push = execute_push(
+        &lib,
+        dev.as_ref(),
+        push_plan,
+        Some(tx),
+        state.sync_cancel.clone(),
+    )
+    .await
+    .map_err(err)?;
     let _ = forwarder.await;
 
     Ok(TwoWayReport {

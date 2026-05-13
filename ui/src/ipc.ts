@@ -164,6 +164,25 @@ export const ipc = {
     invoke<void>("set_wordpress_credentials", { creds }),
   forgetWordpressCredentials: () =>
     invoke<void>("forget_wordpress_credentials"),
+
+  /// About / support actions. The Rust side hard-codes the support
+  /// URL prefix so a compromised renderer can't open arbitrary URLs
+  /// via this command.
+  openSupportUrl: (url: string) => invoke<void>("open_support_url", { url }),
+  appVersion: () => invoke<string>("app_version"),
+
+  /// Cooperative cancellation. The engines poll the shared flag
+  /// between documents (and between OCR pages), so calling either
+  /// of these aborts at the next granular boundary — not
+  /// instantly, but bounded.
+  cancelSync: () => invoke<void>("cancel_sync"),
+  cancelOcr: () => invoke<void>("cancel_ocr"),
+
+  /// Reveal the rolling-log directory in the OS file manager. The
+  /// Rust side picks the path; the renderer can't influence which
+  /// directory gets opened. Returns the resolved path so the UI
+  /// can present a fallback if the open call fails.
+  revealLogDir: () => invoke<string>("reveal_log_dir"),
 };
 
 /** Subscribe to OCR-progress events emitted from the Rust side. */

@@ -33,6 +33,38 @@ pub struct PageTranscript {
     pub detected_language: Option<String>,
 }
 
+/// One page that the backend tried and failed to transcribe. Held
+/// separately from `PageTranscript` (rather than as an empty-text
+/// entry) so the consumer can:
+///   * count failures explicitly and refuse to commit a transcript
+///     where every page failed,
+///   * include "Page N: transcription failed" placeholders in the
+///     user-facing markdown instead of silently truncating, and
+///   * surface a per-page reason in support diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageFailure {
+    pub page_index: usize,
+    pub message: String,
+}
+
+/// Outcome of a `transcribe_pages` call. Carries both the
+/// successful pages and the per-page failures so the caller can
+/// build an honest transcript rather than silently dropping pages
+/// the model couldn't process. Pre-v1.0 the trait returned just
+/// `Vec<PageTranscript>`, which made an Ollama wedge after page 1
+/// of a 200-page notebook look like a successful 1-page run.
+#[derive(Debug, Clone)]
+pub struct TranscribeReport {
+    pub pages: Vec<PageTranscript>,
+    pub failures: Vec<PageFailure>,
+}
+
+impl TranscribeReport {
+    pub fn is_all_failed(&self) -> bool {
+        self.pages.is_empty() && !self.failures.is_empty()
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum OcrError {
     /// The Ollama daemon isn't reachable at the configured URL —
@@ -85,6 +117,14 @@ impl OcrCancel {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
+    /// Clear the cancelled flag so the same shared handle can be
+    /// reused for the next OCR job. The IPC layer keeps one
+    /// long-lived OcrCancel in AppState so the renderer's "cancel"
+    /// button can see it; without `reset()` a single cancel would
+    /// permanently kill OCR for the lifetime of the app.
+    pub fn reset(&self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 #[async_trait]
@@ -103,7 +143,7 @@ pub trait OcrBackend: Send + Sync {
         opts: &TranscribeOptions,
         progress: Option<mpsc::Sender<OcrProgressEvent>>,
         cancel: OcrCancel,
-    ) -> Result<Vec<PageTranscript>, OcrError>;
+    ) -> Result<TranscribeReport, OcrError>;
 }
 
 /// Tiny in-process backend used by unit tests and as the default
@@ -124,7 +164,7 @@ impl OcrBackend for Mock {
         _opts: &TranscribeOptions,
         progress: Option<mpsc::Sender<OcrProgressEvent>>,
         cancel: OcrCancel,
-    ) -> Result<Vec<PageTranscript>, OcrError> {
+    ) -> Result<TranscribeReport, OcrError> {
         let mut out = Vec::with_capacity(pages.len());
         for (i, _) in pages.iter().enumerate() {
             if cancel.is_cancelled() {
@@ -149,7 +189,10 @@ impl OcrBackend for Mock {
                 detected_language: None,
             });
         }
-        Ok(out)
+        Ok(TranscribeReport {
+            pages: out,
+            failures: Vec::new(),
+        })
     }
 }
 
@@ -167,9 +210,10 @@ mod tests {
             .transcribe_pages(pages, &TranscribeOptions::default(), None, OcrCancel::new())
             .await
             .unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].text, "one");
-        assert_eq!(result[1].text, "two");
+        assert_eq!(result.pages.len(), 2);
+        assert_eq!(result.pages[0].text, "one");
+        assert_eq!(result.pages[1].text, "two");
+        assert!(result.failures.is_empty());
     }
 
     #[tokio::test]
@@ -184,5 +228,53 @@ mod tests {
             .transcribe_pages(pages, &TranscribeOptions::default(), None, cancel)
             .await;
         assert!(matches!(result, Err(OcrError::Cancelled)));
+    }
+
+    #[test]
+    fn is_all_failed_is_true_only_when_zero_pages_succeeded() {
+        // Pin the contract that ocr_commands.rs depends on: a
+        // transcript with no successful pages must surface as
+        // "all failed" so the IPC layer refuses to commit an
+        // empty placeholder-only transcript over a real notebook.
+        let all_failed = TranscribeReport {
+            pages: vec![],
+            failures: vec![PageFailure {
+                page_index: 0,
+                message: "wedged".into(),
+            }],
+        };
+        assert!(all_failed.is_all_failed());
+
+        let mixed = TranscribeReport {
+            pages: vec![PageTranscript {
+                page_index: 0,
+                text: "ok".into(),
+                detected_language: None,
+            }],
+            failures: vec![PageFailure {
+                page_index: 1,
+                message: "boom".into(),
+            }],
+        };
+        assert!(!mixed.is_all_failed());
+
+        let clean = TranscribeReport {
+            pages: vec![PageTranscript {
+                page_index: 0,
+                text: "ok".into(),
+                detected_language: None,
+            }],
+            failures: vec![],
+        };
+        assert!(!clean.is_all_failed());
+
+        let empty = TranscribeReport {
+            pages: vec![],
+            failures: vec![],
+        };
+        assert!(
+            !empty.is_all_failed(),
+            "a zero-page document is not 'all failed' — there was nothing to fail at",
+        );
     }
 }

@@ -6,6 +6,8 @@ use std::time::Instant;
 use rehydrate_core::Library;
 use rehydrate_device::ssh::SshDevice;
 use rehydrate_device::DeviceInfo;
+use rehydrate_ocr::OcrCancel;
+use rehydrate_sync::Cancel as SyncCancel;
 use tokio::sync::{Mutex, RwLock};
 
 /// Shared application state. Held in `tauri::State<AppState>` and accessed
@@ -33,6 +35,16 @@ pub struct AppState {
     /// loop and bail out cleanly instead of holding the `AppHandle`
     /// across the runtime's teardown.
     pub shutdown_requested: Arc<AtomicBool>,
+    /// Cancellation handle for the currently-running sync, exposed
+    /// through the `cancel_sync` Tauri command so the renderer's
+    /// cancel button can trip it. A single long-lived handle is
+    /// reset before each sync (Cancel::reset); this lets the
+    /// renderer flip cancellation without race-prone token plumbing
+    /// through `cancel_sync` → `state` → in-flight handler.
+    pub sync_cancel: SyncCancel,
+    /// Cancellation handle for the currently-running OCR job, same
+    /// shape as `sync_cancel` above. Tripped by `cancel_ocr`.
+    pub ocr_cancel: OcrCancel,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +78,8 @@ impl AppState {
             device_reachable: RwLock::new(false),
             last_ollama_ping: RwLock::new(None),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
+            sync_cancel: SyncCancel::default(),
+            ocr_cancel: OcrCancel::new(),
         }
     }
 }
