@@ -20,8 +20,7 @@ use std::time::Instant;
 
 use rehydrate_core::{Manifest, VersionId};
 use rehydrate_ocr::{
-    default_model_id, OcrBackend, OcrError, OcrProgressEvent, OllamaBackend,
-    TranscribeOptions,
+    default_model_id, OcrBackend, OcrError, OcrProgressEvent, OllamaBackend, TranscribeOptions,
 };
 use rehydrate_publish::{
     DraftPost, GhostClient, GhostCredentials, PublishResult, PublishTarget, Publisher,

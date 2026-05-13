@@ -9,8 +9,7 @@ use rehydrate_device::known_hosts::KnownHosts;
 use rehydrate_device::ssh::{is_reachable, SshConfig, SshDevice};
 use rehydrate_device::{Device, DeviceInfo};
 use rehydrate_sync::{
-    execute_pull, execute_push, plan_pull, plan_push, progress, ProgressEvent, PullPlan,
-    PushPlan,
+    execute_pull, execute_push, plan_pull, plan_push, progress, ProgressEvent, PullPlan, PushPlan,
 };
 use secrecy::SecretString;
 use serde::Serialize;
@@ -1304,9 +1303,15 @@ pub async fn pull_execute(
     // and pass a clone to the engine. The renderer's `cancel_sync`
     // command flips the same handle.
     state.sync_cancel.reset();
-    let report = execute_pull(&lib, dev.as_ref(), plan, Some(tx), state.sync_cancel.clone())
-        .await
-        .map_err(err)?;
+    let report = execute_pull(
+        &lib,
+        dev.as_ref(),
+        plan,
+        Some(tx),
+        state.sync_cancel.clone(),
+    )
+    .await
+    .map_err(err)?;
     let _ = forwarder.await;
 
     Ok(SyncReportOut {
@@ -1334,9 +1339,15 @@ pub async fn push_execute(
     let (tx, rx) = progress::channel(64);
     let forwarder = spawn_sync_progress_forwarder(app.clone(), rx);
     state.sync_cancel.reset();
-    let report = execute_push(&lib, dev.as_ref(), plan, Some(tx), state.sync_cancel.clone())
-        .await
-        .map_err(err)?;
+    let report = execute_push(
+        &lib,
+        dev.as_ref(),
+        plan,
+        Some(tx),
+        state.sync_cancel.clone(),
+    )
+    .await
+    .map_err(err)?;
     let _ = forwarder.await;
 
     Ok(PushReportOut {

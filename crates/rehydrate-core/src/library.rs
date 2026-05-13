@@ -3899,9 +3899,9 @@ mod tests {
         // Upsert'd metadata, and the next sync must ship the Delete
         // to clean it up.
         let pending = lib.list_pending_folder_pushes().unwrap();
-        let queued_delete = pending.iter().any(|op| {
-            matches!(op, FolderPushOp::Delete { folder_id } if folder_id == &folder.folder_id)
-        });
+        let queued_delete = pending.iter().any(
+            |op| matches!(op, FolderPushOp::Delete { folder_id } if folder_id == &folder.folder_id),
+        );
         assert!(
             queued_delete,
             "Upsert completion must NOT silently absorb a concurrent Delete — row should still be queued for tombstoning",
