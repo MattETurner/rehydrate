@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest an improvement or new capability
+title: "feat: <short summary>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the workflow you want, not just the feature.
+        "I'm trying to do X, and Y gets in the way" is more useful
+        than "add Z" — it gives room to find the best fix.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      placeholder: "When I plug in two tablets back-to-back, I keep losing my place because..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see happen?
+      placeholder: "A persistent 'last library' indicator next to the library switcher would..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Workarounds, similar features in other tools, etc. Optional.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Rough scope estimate (your guess is fine)
+      options:
+        - "Tiny — a UI tweak or copy change"
+        - "Small — one component or command"
+        - "Medium — touches a few areas"
+        - "Large — new subsystem or external integration"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I've searched existing issues and didn't find a duplicate.
+          required: true

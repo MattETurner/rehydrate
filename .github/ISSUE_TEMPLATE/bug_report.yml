@@ -1,0 +1,84 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+title: "bug: <short summary>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please share enough detail that someone
+        else can reproduce it. Logs from **Help → Open log directory**
+        are extremely helpful.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the problem.
+      placeholder: "Tell us what you saw, what you expected, and roughly when it started."
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimum steps to reproduce on a fresh launch.
+      placeholder: |
+        1. Plug in the tablet
+        2. Open reHydrate
+        3. Click Sync
+        4. ...
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: reHydrate version
+      description: Help → About reHydrate
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version + chip
+      placeholder: "macOS 14.4 / Apple M2"
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: reMarkable firmware (if relevant)
+      description: Tablet → Settings → Help → Software → Software version
+      placeholder: "3.15.4.2"
+
+  - type: input
+    id: ollama
+    attributes:
+      label: Ollama version + model (if OCR is involved)
+      placeholder: "ollama 0.6.4 / qwen3.5:4b"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log excerpt
+      description: |
+        Open **Help → Open log directory**, grab the most recent log
+        file, and paste the last 30–80 lines around the failure here.
+        Redact anything sensitive — credentials are already redacted
+        in logs by the app, but document titles are not.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I've searched existing issues and didn't find a duplicate.
+          required: true
+        - label: This is not a security issue. (If it is, use the private security advisory form instead.)
+          required: true

@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issue (private)
+    url: https://github.com/dm807cam/rehydrate/security/advisories/new
+    about: |
+      For anything with security or privacy implications, please use
+      GitHub's private vulnerability report form instead of a public
+      issue. See SECURITY.md for the full disclosure policy.
+  - name: Question or discussion
+    url: https://github.com/dm807cam/rehydrate/discussions
+    about: |
+      Open-ended questions, ideas, and "how do I…" go in Discussions
+      (once enabled). If Discussions isn't enabled yet, file a
+      question-tagged issue instead.

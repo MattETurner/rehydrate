@@ -1,5 +1,10 @@
 # reHydrate
 
+[![CI](https://github.com/dm807cam/rehydrate/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dm807cam/rehydrate/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/dm807cam/rehydrate?display_name=tag&sort=semver)](https://github.com/dm807cam/rehydrate/releases/latest)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
+[![macOS: Apple Silicon](https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple)](#compatibility)
+
 A privacy-respecting desktop app for managing documents on a reMarkable 2 over USB. No cloud, no telemetry; the app talks only to a tablet plugged into your computer.
 
 The library lives in a single self-contained directory you control: every distinct file is stored once by content hash, every change to every document is captured as a new version, and any past version can be restored to the device or exported to disk.
@@ -222,3 +227,37 @@ crates/
 ui/                  React frontend
 docs/                architecture notes + landing page
 ```
+
+## Contributing
+
+Bug reports, feature ideas, and pull requests are all welcome. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for dev environment setup, the
+test/lint commands CI runs, commit conventions, and how to file a
+good bug. The project follows the
+[Contributor Covenant](CODE_OF_CONDUCT.md) — be kind, assume good
+faith. Security issues go through the
+[private advisory form](https://github.com/dm807cam/rehydrate/security/advisories/new),
+not public issues; see [`SECURITY.md`](SECURITY.md) for details.
+
+## Licence
+
+reHydrate is dual-licensed under either of:
+
+- [MIT licence](LICENSE-MIT) ([summary][mit])
+- [Apache License, Version 2.0](LICENSE-APACHE) ([summary][apache])
+
+at your option. Pick whichever fits your downstream use; you don't
+need to do anything special either way.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in reHydrate by you, as defined in the
+Apache-2.0 licence, shall be dual-licensed as above, without any
+additional terms or conditions.
+
+The name **reHydrate** is reserved as a project identifier. You may
+fork the code under the licences above, but please rename the fork
+if you redistribute it so users don't confuse forks with the upstream
+project.
+
+[mit]: https://choosealicense.com/licenses/mit/
+[apache]: https://choosealicense.com/licenses/apache-2.0/
