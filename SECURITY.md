@@ -171,10 +171,12 @@ frontend is allowed to call any registered Tauri command. This means a
 compromised renderer (XSS in third-party deps, etc.) can read the entire
 library through the existing commands. v1.0 mitigations:
 
-- **`devtools` is disabled in release builds.** The feature flag is
-  default-on for `cargo run` so contributors keep the inspector, but the
-  release workflow builds with `--no-default-features` so end users
-  can't open the inspector and arbitrary-JS-evaluate.
+- **`devtools` is disabled by default and absent from release builds.**
+  The feature flag is opt-in (`default = []` on `rehydrate-app`).
+  Contributors enable it explicitly with `--features devtools` (or
+  via `./build.sh --dev`, which adds the flag for you). The release
+  workflow builds with `--no-default-features` as belt-and-suspenders
+  so end users can never open the inspector and arbitrary-JS-evaluate.
 - **CSP** locks `script-src` to `'self'` — no inline scripts, no remote
   scripts. `style-src 'unsafe-inline'` remains as a v1.0 carve-out for
   React inline styles; it'll be tightened in a follow-up.

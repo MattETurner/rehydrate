@@ -27,13 +27,13 @@
 #    combination explicitly below.
 #
 # 2. `-- --no-default-features`
-#    The `devtools` feature on `rehydrate-app` is default-on so daily
-#    `cargo run` / `cargo tauri dev` works without flags. A shipped
-#    binary with DevTools enabled is a security boundary skip because
-#    the renderer can call any registered Tauri command. The release
-#    workflow passes this flag too — keeping the script in lockstep
-#    means "I built it locally and it worked" matches what users
-#    actually get from a tagged release.
+#    Belt-and-suspenders even though `default = []` on `rehydrate-app`
+#    today: a future `default = [...]` addition must not slip into a
+#    shipped binary. DevTools (an opt-in feature) is a security
+#    boundary skip because the renderer can call any registered
+#    Tauri command. The release workflow passes this flag too —
+#    keeping the script in lockstep means "I built it locally and it
+#    worked" matches what users actually get from a tagged release.
 
 set -euo pipefail
 
@@ -137,10 +137,11 @@ else
 fi
 
 if [[ "$MODE" == "dev" ]]; then
-  # Quick local iteration. Doesn't produce an installer; the
-  # `--no-default-features` security toggle is also not applied
-  # here because DevTools is genuinely useful while iterating.
-  CARGO_FLAGS=(-p rehydrate-app)
+  # Quick local iteration. Doesn't produce an installer; DevTools
+  # is genuinely useful while iterating so opt into it explicitly
+  # (the crate's default feature set is empty so shipped builds
+  # never expose the inspector).
+  CARGO_FLAGS=(-p rehydrate-app --features devtools)
   [[ "$PROFILE" == "release" ]] && CARGO_FLAGS+=(--release)
   if [[ $RUN -eq 1 ]]; then
     echo "==> cargo run ${CARGO_FLAGS[*]}"
