@@ -108,6 +108,11 @@ export const ipc = {
   saveDevicePassword: (password: string) =>
     invoke<void>("save_device_password", { password }),
   forgetDevicePassword: () => invoke<void>("forget_device_password"),
+  /** Clear the pinned host-key fingerprint for the device endpoint.
+   *  Resolves with `true` if an entry was removed, `false` if none
+   *  existed — both leave the user in the desired "no pinned key"
+   *  post-state, so the UI treats them identically. */
+  forgetDeviceHostKey: () => invoke<boolean>("forget_device_host_key"),
   connectDevice: (password?: string, remember?: boolean) =>
     invoke<DeviceInfo>("connect_device", {
       password: password ?? null,
@@ -153,6 +158,11 @@ export const ipc = {
   // ---- CMS publish ----------------------------------------------------
   publishTranscript: (versionId: number, target: PublishKind) =>
     invoke<PublishResult>("publish_transcript", { versionId, target }),
+  /** Open a Ghost/WordPress draft URL in the user's default browser,
+   *  allowlisted against the saved publish credentials' host for
+   *  `target`. Throws if the URL host doesn't match. */
+  openPublishUrl: (url: string, target: PublishKind) =>
+    invoke<void>("open_publish_url", { url, target }),
   publishCredentialStatus: () =>
     invoke<PublishCredentialStatus>("publish_credential_status"),
   pingPublishTarget: (target: PublishKind) =>

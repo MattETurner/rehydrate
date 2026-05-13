@@ -72,9 +72,17 @@ export function humanizeSyncError(e: unknown): string {
   const raw = formatError(e);
   switch (classifySyncError(raw)) {
     case "auth":
-      return "Tablet password rejected. Open Settings → Tablet to re-enter it.";
+      // Recovery path: click the device pill in the toolbar → Forget
+      // password, then Connect again to re-enter it. (The pill only
+      // shows Forget password when a password is stored, which is
+      // exactly the case the user is in when auth fails after a
+      // previous successful connect.)
+      return "Tablet password rejected. Click the device pill (top-left) → Forget password, then Connect again to re-enter it.";
     case "host-key":
-      return "Tablet's host key changed since the last connect. If this is the same tablet you've always synced with, the recorded fingerprint needs to be cleared (Settings → Tablet → Forget host key). If it isn't your tablet, do NOT proceed.";
+      // Recovery path: click the device pill → Forget host key. The
+      // button only appears when a pin exists, which is exactly when
+      // this error can fire.
+      return "Tablet's host key changed since the last connect. If this is the same tablet you've always synced with (e.g. after a factory reset), click the device pill (top-left) → Forget host key. If it isn't your tablet, do NOT proceed.";
     case "network":
       return "Couldn't reach the tablet. Check the USB cable is plugged in and that the tablet is awake.";
     case "disconnect":

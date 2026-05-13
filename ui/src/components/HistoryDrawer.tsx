@@ -6,6 +6,7 @@ import { Icon } from "./Icon";
 import { Skeleton } from "./Skeleton";
 import type { DocumentSummary, VersionEntry } from "../types";
 import { formatError } from "../formatError";
+import { useDialogA11y } from "../dialogA11y";
 
 interface Props {
   document: DocumentSummary;
@@ -13,6 +14,9 @@ interface Props {
 }
 
 export function HistoryDrawer({ document, onClose }: Props) {
+  const { dialogProps, rootRef, titleId } = useDialogA11y({
+    onEscape: onClose,
+  });
   const [versions, setVersions] = useState<VersionEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
@@ -100,10 +104,15 @@ export function HistoryDrawer({ document, onClose }: Props) {
   }
 
   return (
-    <div className="drawer" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="drawer"
+      onClick={(e) => e.stopPropagation()}
+      ref={rootRef}
+      {...dialogProps}
+    >
       <header>
         <div>
-          <h2>{document.visible_name}</h2>
+          <h2 id={titleId}>{document.visible_name}</h2>
           <div className="muted small">
             {prettyType(document.doc_type)}
             {document.page_count !== null && ` · ${document.page_count} page${document.page_count === 1 ? "" : "s"}`}

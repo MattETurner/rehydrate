@@ -104,6 +104,7 @@ export interface DeviceState {
   connected: boolean;
   info: DeviceInfo | null;
   has_stored_password: boolean;
+  has_recorded_host_key: boolean;
 }
 
 export type RemoteEntryKind = "folder" | "document";

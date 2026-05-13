@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ipc } from "../ipc";
 import { formatError } from "../formatError";
+import { useDialogA11y } from "../dialogA11y";
 
 interface Props {
   onClose: () => void;
@@ -11,6 +12,9 @@ export function LogDrawer({ onClose }: Props) {
   const [logDir, setLogDir] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const { dialogProps, rootRef, titleId } = useDialogA11y({
+    onEscape: onClose,
+  });
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -54,10 +58,15 @@ export function LogDrawer({ onClose }: Props) {
   }, [logDir]);
 
   return (
-    <div className="drawer" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="drawer"
+      onClick={(e) => e.stopPropagation()}
+      ref={rootRef}
+      {...dialogProps}
+    >
       <header>
         <div>
-          <h2>Activity log</h2>
+          <h2 id={titleId}>Activity log</h2>
           {logDir && (
             <div className="muted small mono" title={logDir}>
               {logDir}

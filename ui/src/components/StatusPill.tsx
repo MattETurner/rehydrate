@@ -77,6 +77,10 @@ export function StatusPill({ state, phase = "idle", onConnect, onDisconnect }: P
             await ipc.forgetDevicePassword();
             setOpen(false);
           }}
+          onForgetHostKey={async () => {
+            await ipc.forgetDeviceHostKey();
+            setOpen(false);
+          }}
         />
       )}
     </span>
@@ -89,12 +93,14 @@ function DevicePopover({
   onConnect,
   onDisconnect,
   onForgetPassword,
+  onForgetHostKey,
 }: {
   state: DeviceState;
   phase: Phase;
   onConnect: () => void;
   onDisconnect: () => Promise<void>;
   onForgetPassword: () => Promise<void>;
+  onForgetHostKey: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   return (
@@ -161,6 +167,20 @@ function DevicePopover({
         {state.has_stored_password && (
           <button onClick={onForgetPassword}>
             Forget password
+          </button>
+        )}
+        {state.has_recorded_host_key && (
+          // Surfaces after a `HostKeyChanged` error so the user has a
+          // visible recovery path without editing `known_hosts.json`
+          // by hand. The button is destructive in spirit — clearing
+          // the pin opens a TOFU window on the next connect — but the
+          // popover already requires the user to click into it, so a
+          // typed `title=` warning is enough; no extra confirm modal.
+          <button
+            onClick={onForgetHostKey}
+            title="Clear the pinned SSH fingerprint for this tablet. The next connect will record the live key under TOFU. Only do this if you trust the tablet (e.g. factory reset) — otherwise an impostor could pin themselves."
+          >
+            Forget host key
           </button>
         )}
       </div>

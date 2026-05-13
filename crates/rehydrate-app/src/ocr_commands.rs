@@ -23,12 +23,13 @@ use rehydrate_ocr::{
     default_model_id, OcrBackend, OcrError, OcrProgressEvent, OllamaBackend, TranscribeOptions,
 };
 use rehydrate_publish::{
-    DraftPost, GhostClient, GhostCredentials, PublishResult, PublishTarget, Publisher,
+    host_of, DraftPost, GhostClient, GhostCredentials, PublishResult, PublishTarget, Publisher,
     WordpressClient, WordpressCredentials,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 use tokio::sync::mpsc;
 
 use crate::config;
@@ -995,6 +996,73 @@ pub async fn publish_credential_status() -> Result<PublishCredentialStatus, Stri
         ghost: keychain::read_slot(KEYRING_GHOST_CREDS).is_some(),
         wordpress: keychain::read_slot(KEYRING_WORDPRESS_CREDS).is_some(),
     })
+}
+
+/// Open a Ghost / WordPress draft URL in the user's default browser.
+///
+/// Sister command to `open_support_url`, but allowlisted dynamically
+/// against the saved publish credentials rather than a hard-coded
+/// prefix. The acceptance rules:
+///
+/// 1. `target` must have credentials in the keychain. No credentials
+///    → no concept of a "trusted host for `target`" → refuse.
+/// 2. The URL's host (ASCII-lowercase, via `host_of`) must match the
+///    saved `base_url`'s host for that target. A renderer XSS that
+///    only got hold of `target` and a forged URL can't pivot the
+///    browser to an attacker-controlled domain — at worst it opens
+///    a path on the user's own Ghost / WordPress site.
+/// 3. The URL must parse and have a scheme of `http`/`https`.
+///    `validate_remote_url` enforces this and the same SSRF guards
+///    `set_ghost_credentials` already applies on the saved base URL.
+///
+/// Used by the Transcript drawer's "Draft created — View draft"
+/// toast action so the user can actually open the post that was just
+/// published. Before this, the `edit_url` was surfaced as plain text
+/// in a transient toast and the user couldn't click it.
+#[tauri::command]
+pub async fn open_publish_url(
+    url: String,
+    target: PublishKind,
+    app: AppHandle,
+) -> Result<(), String> {
+    rehydrate_publish::validate_remote_url(&url).map_err(err)?;
+
+    let url_host = host_of(&url).ok_or_else(|| "could not parse host from URL".to_string())?;
+
+    // Resolve the trusted host for `target` from saved credentials.
+    // `load_*_client` returns "no credentials saved" — bubble that as a
+    // distinct error so the renderer can prompt the user to configure
+    // publishing instead of silently failing.
+    let trusted_host = match target.target() {
+        PublishTarget::Ghost => {
+            let json = keychain::read_slot(KEYRING_GHOST_CREDS)
+                .ok_or_else(|| "no Ghost credentials saved".to_string())?;
+            let creds: GhostCredentials = serde_json::from_str(&json).map_err(err)?;
+            host_of(&creds.base_url)
+                .ok_or_else(|| "saved Ghost base URL has no host".to_string())?
+        }
+        PublishTarget::Wordpress => {
+            let json = keychain::read_slot(KEYRING_WORDPRESS_CREDS)
+                .ok_or_else(|| "no WordPress credentials saved".to_string())?;
+            let creds: WordpressCredentials = serde_json::from_str(&json).map_err(err)?;
+            host_of(&creds.base_url)
+                .ok_or_else(|| "saved WordPress base URL has no host".to_string())?
+        }
+    };
+
+    if url_host != trusted_host {
+        let target_name = match target {
+            PublishKind::Ghost => "Ghost",
+            PublishKind::Wordpress => "WordPress",
+        };
+        return Err(format!(
+            "refusing to open URL: host {url_host} does not match saved {target_name} host {trusted_host}",
+        ));
+    }
+
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("could not open {url}: {e}"))
 }
 
 #[tauri::command]
