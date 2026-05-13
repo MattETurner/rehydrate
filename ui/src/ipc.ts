@@ -164,6 +164,12 @@ export const ipc = {
     invoke<void>("set_wordpress_credentials", { creds }),
   forgetWordpressCredentials: () =>
     invoke<void>("forget_wordpress_credentials"),
+
+  /// About / support actions. The Rust side hard-codes the support
+  /// URL prefix so a compromised renderer can't open arbitrary URLs
+  /// via this command.
+  openSupportUrl: (url: string) => invoke<void>("open_support_url", { url }),
+  appVersion: () => invoke<string>("app_version"),
 };
 
 /** Subscribe to OCR-progress events emitted from the Rust side. */

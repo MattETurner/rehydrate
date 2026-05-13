@@ -24,6 +24,7 @@ import { Menu } from "./components/Menu";
 import { Skeleton } from "./components/Skeleton";
 import { useToast } from "./components/Toast";
 import { useConfirm } from "./components/Confirm";
+import { AboutDialog } from "./components/AboutDialog";
 import { Cheatsheet } from "./components/Cheatsheet";
 import { SettingsModal } from "./components/SettingsModal";
 import { TranscriptDrawer } from "./components/TranscriptDrawer";
@@ -147,6 +148,7 @@ export function App() {
   );
   const [quickLookId, setQuickLookId] = useState<string | null>(null);
   const [showCheatsheet, setShowCheatsheet] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [renaming, setRenaming] = useState<
@@ -1184,6 +1186,13 @@ export function App() {
         tag: "Help",
         onRun: () => setShowCheatsheet(true),
       },
+      {
+        id: "act-about",
+        label: "About reHydrate…",
+        icon: <Icon name="info" />,
+        tag: "Help",
+        onRun: () => setShowAbout(true),
+      },
     );
     const viewMap: Array<[View, string, ReturnType<typeof Icon>]> = [
       ["all", "All Documents", <Icon name="library" key="l" />],
@@ -1251,6 +1260,7 @@ export function App() {
         if (renaming) return setRenaming(null);
         if (showPalette) return setShowPalette(false);
         if (showCheatsheet) return setShowCheatsheet(false);
+        if (showAbout) return setShowAbout(false);
         if (quickLookId) return setQuickLookId(null);
         if (showPassword) return setShowPassword(false);
         if (showLogs) return setShowLogs(false);
@@ -1382,6 +1392,7 @@ export function App() {
     selectedId,
     selectedIds,
     showCheatsheet,
+    showAbout,
     showPalette,
     quickLookId,
     showPassword,
@@ -1505,6 +1516,11 @@ export function App() {
               label: "Keyboard shortcuts",
               icon: <Icon name="info" />,
               onClick: () => setShowCheatsheet(true),
+            },
+            {
+              label: "About reHydrate…",
+              icon: <Icon name="info" />,
+              onClick: () => setShowAbout(true),
             },
           ]}
         />
@@ -1963,6 +1979,7 @@ export function App() {
         />
       )}
       {showCheatsheet && <Cheatsheet onClose={() => setShowCheatsheet(false)} />}
+      {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
       {showPalette && (
         <CommandPalette
           items={paletteItems}

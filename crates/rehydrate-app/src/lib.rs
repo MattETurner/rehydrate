@@ -74,6 +74,8 @@ pub fn run() {
             commands::push_execute,
             commands::sync_two_way,
             commands::restore_version,
+            commands::open_support_url,
+            commands::app_version,
             // OCR + CMS — Phase 1.0 OCR uses an Ollama daemon the
             // user runs themselves; the Settings modal lets them
             // pick base URL + model.
