@@ -399,7 +399,30 @@ pub async fn import_file(
 /// eliminate the multiplier; we keep the JSON-array path for now to
 /// avoid an extra dep on either side, and pay for it with a tight
 /// cap.
-const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+///
+/// Mirrored by `MAX_IMPORT_FILE_BYTES` in `ui/src/ipc.ts`. The
+/// renderer preflights `file.size` against that constant so an
+/// oversize drop never reaches `arrayBuffer()` and never blows up
+/// renderer memory before this backend guard fires (issue #24). If
+/// you change this number, change the TS constant too.
+pub(crate) const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Reject oversize drops with a stable, user-facing error string.
+/// Pulled out of `import_dropped_file` so it can be unit-tested
+/// without standing up the AppState/Tauri runtime — the renderer's
+/// preflight relies on the same numeric cap (see
+/// `MAX_IMPORT_FILE_BYTES` in `ui/src/ipc.ts`), so the contract here
+/// is the last line of defence on the wire.
+pub(crate) fn enforce_import_size_cap(file_name: &str, byte_len: u64) -> Result<(), String> {
+    if byte_len > MAX_IMPORT_FILE_BYTES {
+        Err(format!(
+            "{file_name} is too large to import (limit is {} MiB)",
+            MAX_IMPORT_FILE_BYTES / 1024 / 1024
+        ))
+    } else {
+        Ok(())
+    }
+}
 
 #[tauri::command]
 pub async fn import_dropped_file(
@@ -409,12 +432,7 @@ pub async fn import_dropped_file(
 ) -> Result<DocumentSummary, String> {
     let lib = lib_arc(&state).await?;
 
-    if (bytes.len() as u64) > MAX_IMPORT_FILE_BYTES {
-        return Err(format!(
-            "{file_name} is too large to import (limit is {} MiB)",
-            MAX_IMPORT_FILE_BYTES / 1024 / 1024
-        ));
-    }
+    enforce_import_size_cap(&file_name, bytes.len() as u64)?;
 
     let ext_lower = std::path::Path::new(&file_name)
         .extension()
@@ -1099,6 +1117,40 @@ mod sanitize_tests {
         // Non-reserved names with the same prefix are untouched.
         assert_eq!(sanitize("Console"), "Console");
         assert_eq!(sanitize("Connor"), "Connor");
+    }
+}
+
+#[cfg(test)]
+mod import_size_cap_tests {
+    use super::{enforce_import_size_cap, MAX_IMPORT_FILE_BYTES};
+
+    #[test]
+    fn cap_value_is_64_mib() {
+        // Lock the constant. The renderer's
+        // MAX_IMPORT_FILE_BYTES in ui/src/ipc.ts must match this
+        // number so the preflight in handleExternalFileDrop
+        // (App.tsx) rejects exactly the same set of files this
+        // backend would reject. Issue #24: a divergence here would
+        // re-open the OOM/freeze path that the renderer preflight
+        // is supposed to close.
+        assert_eq!(MAX_IMPORT_FILE_BYTES, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn at_or_below_cap_is_accepted() {
+        assert!(enforce_import_size_cap("ok.pdf", 0).is_ok());
+        assert!(enforce_import_size_cap("ok.pdf", 1).is_ok());
+        assert!(enforce_import_size_cap("ok.pdf", MAX_IMPORT_FILE_BYTES).is_ok());
+    }
+
+    #[test]
+    fn one_byte_over_cap_is_rejected() {
+        let err = enforce_import_size_cap("huge.pdf", MAX_IMPORT_FILE_BYTES + 1)
+            .expect_err("byte over the cap must be rejected");
+        // Surface the file name so the toast/error UI can identify
+        // which drop was rejected when the user dropped a batch.
+        assert!(err.contains("huge.pdf"), "error must mention file name: {err}");
+        assert!(err.contains("64 MiB"), "error must spell out the limit: {err}");
     }
 }
 

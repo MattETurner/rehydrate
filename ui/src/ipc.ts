@@ -38,6 +38,15 @@ import type {
   WordpressCredentials,
 } from "./types";
 
+/// Renderer-side cap for `ipc.importDroppedFile`. MUST stay in sync
+/// with `MAX_IMPORT_FILE_BYTES` in `crates/rehydrate-app/src/commands.rs`.
+/// The renderer pre-flights `file.size` against this so an oversize
+/// PDF/EPUB drop never reaches `file.arrayBuffer()` — without the
+/// preflight, the renderer would allocate hundreds of MB and the
+/// JSON-IPC encoder another ~4× that before the backend rejected it,
+/// freezing or crashing the UI (issue #24).
+export const MAX_IMPORT_FILE_BYTES = 64 * 1024 * 1024;
+
 export const ipc = {
   ping: () => invoke<string>("ping"),
 

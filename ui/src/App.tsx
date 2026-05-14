@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   ipc,
+  MAX_IMPORT_FILE_BYTES,
   onHostKeyWarning,
   onKeyringWarning,
   onLegacyFormatWarning,
@@ -917,6 +918,22 @@ export function App() {
     let imported = 0;
     let failed = 0;
     for (const file of importable) {
+      // Preflight on `file.size` BEFORE `arrayBuffer()`. Without this
+      // guard a 500 MB drop would allocate the full Uint8Array in the
+      // renderer plus ~4× that in the JSON-IPC encoder before the
+      // backend's MAX_IMPORT_FILE_BYTES check fired — long enough to
+      // freeze or OOM the UI (issue #24). `File.size` is metadata, no
+      // bytes are read.
+      if (file.size > MAX_IMPORT_FILE_BYTES) {
+        failed += 1;
+        toast.show({
+          tone: "err",
+          body: `${file.name} is too large to import (${formatBytes(
+            file.size,
+          )}; limit is ${formatBytes(MAX_IMPORT_FILE_BYTES)}).`,
+        });
+        continue;
+      }
       try {
         const buf = await file.arrayBuffer();
         await ipc.importDroppedFile(file.name, new Uint8Array(buf));
