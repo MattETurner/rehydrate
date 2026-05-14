@@ -1149,8 +1149,14 @@ mod import_size_cap_tests {
             .expect_err("byte over the cap must be rejected");
         // Surface the file name so the toast/error UI can identify
         // which drop was rejected when the user dropped a batch.
-        assert!(err.contains("huge.pdf"), "error must mention file name: {err}");
-        assert!(err.contains("64 MiB"), "error must spell out the limit: {err}");
+        assert!(
+            err.contains("huge.pdf"),
+            "error must mention file name: {err}"
+        );
+        assert!(
+            err.contains("64 MiB"),
+            "error must spell out the limit: {err}"
+        );
     }
 }
 
