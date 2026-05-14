@@ -87,17 +87,11 @@ fn ssh_config() -> SshConfig {
 
 fn maybe_persist_device_config(cfg: &SshConfig) {
     let mut app_cfg = config::load();
-    if app_cfg.device.host == cfg.host
-        && app_cfg.device.port == cfg.port
-        && app_cfg.device.user == cfg.user
-        && app_cfg.device.xochitl_dir == cfg.xochitl_dir
-    {
+    let updated = config::DeviceConfig::from_ssh_config(cfg);
+    if app_cfg.device == updated {
         return;
     }
-    app_cfg.device.host = cfg.host.clone();
-    app_cfg.device.port = cfg.port;
-    app_cfg.device.user = cfg.user.clone();
-    app_cfg.device.xochitl_dir = cfg.xochitl_dir.clone();
+    app_cfg.device = updated;
     if let Err(e) = config::save(&app_cfg) {
         tracing::warn!("failed to persist device config: {e}");
     }

@@ -70,7 +70,7 @@ pub struct OllamaConfig {
     pub auto_ocr_on_startup: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeviceConfig {
     pub host: String,
     pub port: u16,
@@ -85,6 +85,17 @@ impl Default for DeviceConfig {
             port: rehydrate_device::ssh::DEFAULT_PORT,
             user: rehydrate_device::ssh::DEFAULT_USER.to_string(),
             xochitl_dir: rehydrate_device::ssh::XOCHITL_DIR.to_string(),
+        }
+    }
+}
+
+impl DeviceConfig {
+    pub fn from_ssh_config(cfg: &rehydrate_device::ssh::SshConfig) -> Self {
+        Self {
+            host: cfg.host.clone(),
+            port: cfg.port,
+            user: cfg.user.clone(),
+            xochitl_dir: cfg.xochitl_dir.clone(),
         }
     }
 }

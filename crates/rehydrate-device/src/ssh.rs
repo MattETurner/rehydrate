@@ -51,6 +51,10 @@ const MAX_REMOTE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 /// loop that slipped past the symlink filter.
 const MAX_SUBTREE_DEPTH: usize = 16;
 
+/// Max depth when probing for a moved xochitl directory. Keeps the
+/// `find` bounded to the expected `/home/root/.local/share/...` subtree.
+const XOCHITL_FIND_MAX_DEPTH: usize = 5;
+
 /// Per-operation SFTP timeout for "should be quick" calls — opens,
 /// stats, directory listings, single chunk writes. 120s is generous;
 /// these usually complete in milliseconds and only stall when the
@@ -300,14 +304,14 @@ impl SshDevice {
         password: SecretString,
         known_hosts: KnownHosts,
     ) -> DeviceResult<Self> {
-        let mut cfg = cfg;
+        let mut resolved_cfg = cfg;
         let russh_cfg = Arc::new(client::Config {
             inactivity_timeout: Some(Duration::from_secs(60)),
             keepalive_interval: Some(Duration::from_secs(15)),
             ..Default::default()
         });
 
-        let endpoint = format!("{}:{}", cfg.host, cfg.port);
+        let endpoint = format!("{}:{}", resolved_cfg.host, resolved_cfg.port);
         let outcome: Arc<std::sync::Mutex<HostKeyOutcome>> = Arc::default();
         let handler = ClientHandler {
             known_hosts: known_hosts.clone(),
@@ -315,8 +319,12 @@ impl SshDevice {
             outcome: Arc::clone(&outcome),
         };
 
-        let connect_result =
-            client::connect(russh_cfg, (cfg.host.as_str(), cfg.port), handler).await;
+        let connect_result = client::connect(
+            russh_cfg,
+            (resolved_cfg.host.as_str(), resolved_cfg.port),
+            handler,
+        )
+        .await;
 
         // Translate a host-key mismatch into the typed error before
         // checking the connect Result — a mismatch causes
@@ -332,11 +340,12 @@ impl SshDevice {
             }
         }
 
-        let mut handle = connect_result
-            .map_err(|e| DeviceError::Unreachable(format!("{}:{} ({e})", cfg.host, cfg.port)))?;
+        let mut handle = connect_result.map_err(|e| {
+            DeviceError::Unreachable(format!("{}:{} ({e})", resolved_cfg.host, resolved_cfg.port))
+        })?;
 
         let auth_ok = handle
-            .authenticate_password(&cfg.user, password.expose_secret())
+            .authenticate_password(&resolved_cfg.user, password.expose_secret())
             .await
             .map_err(|e| DeviceError::Other(format!("authenticate_password: {e}")))?;
         if !auth_ok.success() {
@@ -369,10 +378,10 @@ impl SshDevice {
         }
 
         let sftp = open_sftp(&handle).await?;
-        resolve_xochitl_dir(&mut cfg, &sftp, &handle).await?;
+        resolve_xochitl_dir(&mut resolved_cfg, &sftp, &handle).await?;
 
         let device = Self {
-            cfg,
+            cfg: resolved_cfg,
             inner: Mutex::new(Inner { handle, sftp }),
             pending_warning: std::sync::Mutex::new(pending_warning),
         };
@@ -656,9 +665,11 @@ async fn sftp_path_exists(sftp: &SftpSession, path: &str) -> DeviceResult<bool> 
 }
 
 async fn discover_xochitl_dir(handle: &Handle<ClientHandler>) -> DeviceResult<Option<String>> {
-    let cmd =
-        "find /home/root/.local/share -maxdepth 5 -type d -name xochitl 2>/dev/null | head -n 1";
-    let out = exec_on_handle(handle, cmd).await?;
+    let cmd = format!(
+        "find /home/root/.local/share -maxdepth {} -type d -name xochitl 2>/dev/null | head -n 1",
+        XOCHITL_FIND_MAX_DEPTH
+    );
+    let out = exec_on_handle(handle, &cmd).await?;
     let trimmed = out.trim();
     if trimmed.is_empty() {
         Ok(None)
