@@ -33,6 +33,11 @@ pub struct AppConfig {
     /// configs flow through every migration exactly once.
     #[serde(default)]
     pub schema_version: u32,
+    /// Device connection settings (USB-ethernet endpoint + xochitl root).
+    /// Defaults match a stock reMarkable 2; users on other models can
+    /// override via config or env vars.
+    #[serde(default)]
+    pub device: DeviceConfig,
 }
 
 /// Latest migration version recognised by this build. See
@@ -63,6 +68,25 @@ pub struct OllamaConfig {
     /// configs without a migration step.
     #[serde(default)]
     pub auto_ocr_on_startup: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceConfig {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub xochitl_dir: String,
+}
+
+impl Default for DeviceConfig {
+    fn default() -> Self {
+        Self {
+            host: rehydrate_device::ssh::DEFAULT_HOST.to_string(),
+            port: rehydrate_device::ssh::DEFAULT_PORT,
+            user: rehydrate_device::ssh::DEFAULT_USER.to_string(),
+            xochitl_dir: rehydrate_device::ssh::XOCHITL_DIR.to_string(),
+        }
+    }
 }
 
 impl Default for OllamaConfig {

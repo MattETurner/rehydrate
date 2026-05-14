@@ -116,6 +116,87 @@ impl Default for SshConfig {
     }
 }
 
+fn trim_non_empty(raw: String) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_model_name(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("paper pro move") {
+        "reMarkable Paper Pro Move".to_string()
+    } else if lower.contains("paper pro") {
+        "reMarkable Paper Pro".to_string()
+    } else if lower.contains("remarkable 2") || lower.contains("rm2") {
+        "reMarkable 2".to_string()
+    } else if lower.contains("remarkable 1") || lower.contains("rm1") {
+        "reMarkable 1".to_string()
+    } else if lower.contains("remarkable") {
+        "reMarkable".to_string()
+    } else {
+        raw.trim().to_string()
+    }
+}
+
+fn preferred_model_source<'a>(
+    machine: Option<&'a str>,
+    device_tree: Option<&'a str>,
+) -> Option<&'a str> {
+    let machine_lower = machine.map(|m| m.trim().to_ascii_lowercase());
+    let machine_generic = matches!(
+        machine_lower.as_deref(),
+        None | Some("remarkable") | Some("remarkable tablet")
+    );
+
+    if let Some(dt) = device_tree {
+        let lower = dt.to_ascii_lowercase();
+        if lower.contains("paper")
+            || lower.contains("remarkable 2")
+            || lower.contains("rm2")
+            || lower.contains("remarkable 1")
+            || lower.contains("rm1")
+            || machine_generic
+        {
+            return Some(dt);
+        }
+    }
+    machine.or(device_tree)
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::{normalize_model_name, preferred_model_source};
+
+    #[test]
+    fn normalizes_paper_pro_variants() {
+        assert_eq!(
+            normalize_model_name("reMarkable Paper Pro"),
+            "reMarkable Paper Pro"
+        );
+        assert_eq!(
+            normalize_model_name("reMarkable Paper Pro Move"),
+            "reMarkable Paper Pro Move"
+        );
+        assert_eq!(normalize_model_name("PAPER PRO"), "reMarkable Paper Pro");
+    }
+
+    #[test]
+    fn picks_device_tree_when_it_has_paper_pro() {
+        let source = preferred_model_source(Some("reMarkable"), Some("reMarkable Paper Pro"));
+        assert_eq!(source, Some("reMarkable Paper Pro"));
+    }
+
+    #[test]
+    fn prefers_specific_device_tree_over_generic_machine() {
+        let source = preferred_model_source(Some("reMarkable"), Some("reMarkable 2"));
+        assert_eq!(source, Some("reMarkable 2"));
+    }
+}
+
 /// russh client handler doing trust-on-first-use host-key pinning.
 ///
 /// On first connect to a given `host:port` the server's SHA256
@@ -219,6 +300,7 @@ impl SshDevice {
         password: SecretString,
         known_hosts: KnownHosts,
     ) -> DeviceResult<Self> {
+        let mut cfg = cfg;
         let russh_cfg = Arc::new(client::Config {
             inactivity_timeout: Some(Duration::from_secs(60)),
             keepalive_interval: Some(Duration::from_secs(15)),
@@ -287,6 +369,7 @@ impl SshDevice {
         }
 
         let sftp = open_sftp(&handle).await?;
+        resolve_xochitl_dir(&mut cfg, &sftp, &handle).await?;
 
         let device = Self {
             cfg,
@@ -372,27 +455,7 @@ impl SshDevice {
     /// preferred for everything else.
     async fn exec(&self, cmd: &str) -> DeviceResult<String> {
         let inner = self.inner.lock().await;
-        let mut channel = inner
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|e| DeviceError::Other(format!("channel_open_session: {e}")))?;
-        channel
-            .exec(true, cmd)
-            .await
-            .map_err(|e| DeviceError::Other(format!("exec: {e}")))?;
-
-        let mut out = Vec::new();
-        while let Some(msg) = channel.wait().await {
-            match msg {
-                ChannelMsg::Data { ref data } => out.extend_from_slice(data),
-                ChannelMsg::ExtendedData { .. } => {}
-                ChannelMsg::ExitStatus { .. } => {}
-                ChannelMsg::Eof => break,
-                _ => {}
-            }
-        }
-        Ok(String::from_utf8_lossy(&out).trim().to_string())
+        exec_on_handle(&inner.handle, cmd).await
     }
 
     async fn read_file(&self, sftp: &SftpSession, path: &str) -> DeviceResult<Vec<u8>> {
@@ -555,6 +618,79 @@ async fn open_sftp(handle: &Handle<ClientHandler>) -> DeviceResult<SftpSession> 
         .map_err(|e| DeviceError::Other(format!("SftpSession::new: {e}")))
 }
 
+async fn exec_on_handle(handle: &Handle<ClientHandler>, cmd: &str) -> DeviceResult<String> {
+    let mut channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| DeviceError::Other(format!("channel_open_session: {e}")))?;
+    channel
+        .exec(true, cmd)
+        .await
+        .map_err(|e| DeviceError::Other(format!("exec: {e}")))?;
+
+    let mut out = Vec::new();
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { ref data } => out.extend_from_slice(data),
+            ChannelMsg::ExtendedData { .. } => {}
+            ChannelMsg::ExitStatus { .. } => {}
+            ChannelMsg::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
+}
+
+async fn sftp_path_exists(sftp: &SftpSession, path: &str) -> DeviceResult<bool> {
+    match with_timeout("xochitl.exists", async {
+        sftp.metadata(path)
+            .await
+            .map_err(|e| sftp_err("metadata", path, e))
+    })
+    .await
+    {
+        Ok(_) => Ok(true),
+        Err(DeviceError::NotFound(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+async fn discover_xochitl_dir(handle: &Handle<ClientHandler>) -> DeviceResult<Option<String>> {
+    let cmd =
+        "find /home/root/.local/share -maxdepth 5 -type d -name xochitl 2>/dev/null | head -n 1";
+    let out = exec_on_handle(handle, cmd).await?;
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+async fn resolve_xochitl_dir(
+    cfg: &mut SshConfig,
+    sftp: &SftpSession,
+    handle: &Handle<ClientHandler>,
+) -> DeviceResult<()> {
+    if sftp_path_exists(sftp, &cfg.xochitl_dir).await? {
+        return Ok(());
+    }
+    if let Some(found) = discover_xochitl_dir(handle).await? {
+        if sftp_path_exists(sftp, &found).await? {
+            tracing::warn!(
+                "xochitl dir not found at {}; using discovered path {found}",
+                cfg.xochitl_dir
+            );
+            cfg.xochitl_dir = found;
+            return Ok(());
+        }
+    }
+    Err(DeviceError::NotFound(format!(
+        "xochitl directory not found at {} (set REHYDRATE_DEVICE_XOCHITL or MARGINALIA_RM_XOCHITL)",
+        cfg.xochitl_dir
+    )))
+}
+
 fn sftp_err(op: &str, path: &str, e: russh_sftp::client::error::Error) -> DeviceError {
     let msg = format!("{op} {path}: {e}");
     if msg.contains("NoSuchFile") || msg.contains("ENOENT") {
@@ -567,9 +703,20 @@ fn sftp_err(op: &str, path: &str, e: russh_sftp::client::error::Error) -> Device
 #[async_trait]
 impl Device for SshDevice {
     async fn ping(&self) -> DeviceResult<DeviceInfo> {
-        let model = self
-            .exec("cat /sys/devices/soc0/machine 2>/dev/null || echo reMarkable")
-            .await?;
+        let machine_raw = self
+            .exec("cat /sys/devices/soc0/machine 2>/dev/null || true")
+            .await
+            .ok()
+            .and_then(trim_non_empty);
+        let device_tree_raw = self
+            .exec("tr -d '\\0' < /proc/device-tree/model 2>/dev/null || true")
+            .await
+            .ok()
+            .and_then(trim_non_empty);
+        let model_source =
+            preferred_model_source(machine_raw.as_deref(), device_tree_raw.as_deref())
+                .unwrap_or("reMarkable");
+        let model = normalize_model_name(model_source);
         // /proc/device-tree/serial-number is NUL-terminated; trim NULs and ws.
         let serial = self
             .exec("tr -d '\\0' < /proc/device-tree/serial-number 2>/dev/null || true")
@@ -588,13 +735,15 @@ impl Device for SshDevice {
             .ok()
             .map(|s| s.trim().to_string());
         Ok(DeviceInfo {
-            model: if model.is_empty() {
-                "reMarkable".into()
-            } else {
-                model
-            },
+            model,
+            model_raw: machine_raw,
+            device_tree_model: device_tree_raw,
             serial: serial.filter(|s| !s.is_empty()),
             software_version: software_version.filter(|s| !s.is_empty()),
+            host: Some(self.cfg.host.clone()),
+            port: Some(self.cfg.port),
+            user: Some(self.cfg.user.clone()),
+            xochitl_dir: Some(self.cfg.xochitl_dir.clone()),
         })
     }
 

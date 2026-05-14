@@ -3,8 +3,20 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub model: String,
+    #[serde(default)]
+    pub model_raw: Option<String>,
+    #[serde(default)]
+    pub device_tree_model: Option<String>,
     pub serial: Option<String>,
     pub software_version: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub xochitl_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -7,6 +7,12 @@
 //!     cargo test -p rehydrate-sync --test full_pull_smoke -- --ignored --nocapture
 //! ```
 //!
+//! Optional env vars:
+//!   - `MARGINALIA_RM_HOST` (default `10.11.99.1`)
+//!   - `MARGINALIA_RM_USER` (default `root`)
+//!   - `MARGINALIA_RM_PORT` (default `22`)
+//!   - `MARGINALIA_RM_XOCHITL` (default `/home/root/.local/share/remarkable/xochitl`)
+//!
 //! Read-only against the device. Mutates only a temp library directory that
 //! is cleaned up at the end of the test.
 
@@ -19,12 +25,25 @@ use rehydrate_device::Device;
 use rehydrate_sync::{execute_pull, plan_pull, progress, ProgressEvent};
 use secrecy::SecretString;
 
+fn cfg_from_env() -> SshConfig {
+    SshConfig {
+        host: std::env::var("MARGINALIA_RM_HOST").unwrap_or_else(|_| "10.11.99.1".into()),
+        port: std::env::var("MARGINALIA_RM_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(22),
+        user: std::env::var("MARGINALIA_RM_USER").unwrap_or_else(|_| "root".into()),
+        xochitl_dir: std::env::var("MARGINALIA_RM_XOCHITL")
+            .unwrap_or_else(|_| "/home/root/.local/share/remarkable/xochitl".into()),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a real reMarkable connected over USB and MARGINALIA_RM_PASSWORD"]
 async fn full_pull_against_real_device() {
     let password =
         std::env::var("MARGINALIA_RM_PASSWORD").expect("MARGINALIA_RM_PASSWORD must be set");
-    let cfg = SshConfig::default();
+    let cfg = cfg_from_env();
 
     println!("=== probe {}:{} ===", cfg.host, cfg.port);
     assert!(

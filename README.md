@@ -71,8 +71,12 @@ v1.1. Until then, macOS warns on first launch:
   Intel Macs are not shipped as binaries; building from source
   on Intel works but is not part of CI. Linux / Windows builds
   from source — no bundles.
-- **Tablet:** the reMarkable 2 on stock firmware (xochitl) is the
-only tablet reHydrate has been directly tested against so far. 
+- **Tablet:** reMarkable 2 + reMarkable Paper Pro / Paper Pro Move on stock
+  firmware (xochitl). If your tablet exposes a non-standard USB-ethernet
+  endpoint or xochitl directory, set overrides in the app config
+  (`config.json` in the reHydrate config dir) or via
+  `REHYDRATE_DEVICE_HOST`, `REHYDRATE_DEVICE_PORT`,
+  `REHYDRATE_DEVICE_USER`, `REHYDRATE_DEVICE_XOCHITL`.
 - **OCR (optional):** [Ollama][ollama] 0.6+ on the same machine or
   a reachable LAN host, with at least one vision-language model
   pulled (default `qwen3.5:4b`, ~3.4 GB on disk). Without Ollama

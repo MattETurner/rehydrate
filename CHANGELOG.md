@@ -6,6 +6,13 @@ the project follows [Semantic Versioning](https://semver.org/) once it
 hits `1.0.0`. Pre-1.0 releases may break compatibility freely; the
 library on-disk format is forward-stable from `0.9.0`.
 
+## [Unreleased]
+
+### Added
+
+- Device endpoint + xochitl overrides (config/env) and improved model detection
+  for reMarkable Paper Pro / Paper Pro Move.
+
 ## [1.0.0] — 2026-05-11
 
 First stable release. The goal of v1.0 was to ship the audit cleanups

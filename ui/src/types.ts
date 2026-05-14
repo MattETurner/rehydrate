@@ -95,8 +95,14 @@ export interface PickedLibraryDirectory {
 
 export interface DeviceInfo {
   model: string;
+  model_raw: string | null;
+  device_tree_model: string | null;
   serial: string | null;
   software_version: string | null;
+  host: string | null;
+  port: number | null;
+  user: string | null;
+  xochitl_dir: string | null;
 }
 
 export interface DeviceState {

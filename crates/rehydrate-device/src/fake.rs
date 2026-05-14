@@ -34,8 +34,14 @@ impl FakeDevice {
             root: root.into(),
             info: DeviceInfo {
                 model: "FakeDevice".to_string(),
+                model_raw: Some("FakeDevice".to_string()),
+                device_tree_model: None,
                 serial: Some("fake-0001".to_string()),
                 software_version: Some("0.0.0".to_string()),
+                host: None,
+                port: None,
+                user: None,
+                xochitl_dir: None,
             },
         }
     }
