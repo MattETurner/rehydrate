@@ -147,12 +147,16 @@ impl Device for FakeDevice {
         // Mirror the SshDevice impl: idempotently remove every
         // `<uuid>*` artefact at the root, recursing into per-uuid
         // directories first so their parent's rmdir succeeds.
+        // NotFound is idempotent (already gone), but any other error
+        // must propagate so the folder push queue keeps the tombstone
+        // — issue #23.
         let prefix = format!("{uuid}.");
         let mut read = match tokio::fs::read_dir(&self.root).await {
             Ok(r) => r,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e.into()),
         };
+        let mut first_err: Option<DeviceError> = None;
         while let Some(entry) = read.next_entry().await? {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -163,15 +167,28 @@ impl Device for FakeDevice {
             let meta = match tokio::fs::symlink_metadata(&path).await {
                 Ok(m) => m,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(e.into());
+                    }
+                    continue;
+                }
             };
-            if meta.is_dir() {
-                let _ = tokio::fs::remove_dir_all(&path).await;
+            let res = if meta.is_dir() {
+                tokio::fs::remove_dir_all(&path).await
             } else {
-                let _ = tokio::fs::remove_file(&path).await;
+                tokio::fs::remove_file(&path).await
+            };
+            if let Err(e) = res {
+                if e.kind() != std::io::ErrorKind::NotFound && first_err.is_none() {
+                    first_err = Some(e.into());
+                }
             }
         }
-        Ok(())
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     async fn fetch_document_tree(&self, uuid: &str) -> DeviceResult<Vec<RemoteFile>> {

@@ -754,31 +754,42 @@ impl Device for SshDevice {
             }
         }
 
+        // Track the first non-NotFound failure so the caller treats
+        // the delete as still pending. NotFound is idempotent — the
+        // tablet may have GC'd the artefact, or the row may never
+        // have been pushed — but anything else (transient SFTP error,
+        // permission denied, timeout) must surface so the folder push
+        // queue keeps the tombstone for the next sync. A swallowed
+        // error here was the root cause of issue #23: a failed
+        // SFTP remove was reported as Ok, mark_folder_pushed cleared
+        // the tombstone, and the next pull resurrected the folder.
+        let mut first_err: Option<DeviceError> = None;
+        let record = |slot: &mut Option<DeviceError>, err: DeviceError| {
+            if !matches!(err, DeviceError::NotFound(_)) && slot.is_none() {
+                *slot = Some(err);
+            }
+        };
+
         for path in &sibling_files {
-            // Idempotent: a missing file is fine — the tablet may
-            // already have GC'd it, or the row may never have been
-            // pushed in the first place.
-            let _ = with_timeout("delete_document_tree.remove_file", async {
+            if let Err(e) = with_timeout("delete_document_tree.remove_file", async {
                 inner
                     .sftp
                     .remove_file(path)
                     .await
                     .map_err(|e| sftp_err("remove_file", path, e))
             })
-            .await;
+            .await
+            {
+                record(&mut first_err, e);
+            }
         }
 
         for dir_path in &sibling_dirs {
             // Clean the directory's contents, then remove the
             // directory itself. xochitl per-uuid dirs are typically
             // one level deep (page files, thumbnails), so a single
-            // read_dir + remove pass is enough. Errors are
-            // swallowed: idempotent delete.
-            // Already-gone or transient errors fall through to the
-            // rmdir attempt below; if the directory is genuinely
-            // missing that'll also fail-soft, so dropping the error
-            // here is fine.
-            let inner_entries = with_timeout("delete_document_tree.read_subdir", async {
+            // read_dir + remove pass is enough.
+            let inner_entries = match with_timeout("delete_document_tree.read_subdir", async {
                 inner
                     .sftp
                     .read_dir(dir_path)
@@ -786,33 +797,52 @@ impl Device for SshDevice {
                     .map_err(|e| sftp_err("read_dir", dir_path, e))
             })
             .await
-            .ok();
+            {
+                Ok(es) => Some(es),
+                Err(e) => {
+                    // NotFound here means the per-uuid dir vanished
+                    // between the listing and the read — fine, fall
+                    // through to the rmdir below which will also
+                    // NotFound. Anything else gets recorded.
+                    record(&mut first_err, e);
+                    None
+                }
+            };
             for e in inner_entries.into_iter().flatten() {
                 let name = e.file_name();
                 if name == "." || name == ".." {
                     continue;
                 }
                 let path = format!("{dir_path}/{name}");
-                let _ = with_timeout("delete_document_tree.remove_subfile", async {
+                if let Err(err) = with_timeout("delete_document_tree.remove_subfile", async {
                     inner
                         .sftp
                         .remove_file(&path)
                         .await
                         .map_err(|err| sftp_err("remove_file", &path, err))
                 })
-                .await;
+                .await
+                {
+                    record(&mut first_err, err);
+                }
             }
-            let _ = with_timeout("delete_document_tree.remove_dir", async {
+            if let Err(e) = with_timeout("delete_document_tree.remove_dir", async {
                 inner
                     .sftp
                     .remove_dir(dir_path)
                     .await
                     .map_err(|e| sftp_err("remove_dir", dir_path, e))
             })
-            .await;
+            .await
+            {
+                record(&mut first_err, e);
+            }
         }
 
-        Ok(())
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     async fn refresh_document_index(&self) -> DeviceResult<()> {

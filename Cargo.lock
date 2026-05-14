@@ -5548,6 +5548,7 @@ dependencies = [
 name = "rehydrate-sync"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "futures",
  "rehydrate-core",
  "rehydrate-device",

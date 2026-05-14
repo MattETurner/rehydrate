@@ -481,6 +481,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn folder_delete_failure_keeps_push_pending() {
+        // Regression guard for issue #23. When the device's
+        // `delete_document_tree` fails (transient SFTP error,
+        // permission denied, timeout), the folder push must remain
+        // pending so a retry on the next sync can finish the
+        // tombstone. Previously the SshDevice/FakeDevice impls
+        // swallowed every per-file error and returned Ok, which
+        // caused `mark_folder_pushed` to clear the queue and a
+        // subsequent pull to resurrect the folder as a ghost.
+        use async_trait::async_trait;
+        use rehydrate_device::error::{DeviceError, DeviceResult};
+        use rehydrate_device::model::{DeviceInfo, RemoteEntry, RemoteFile};
+        use rehydrate_device::trait_def::Device;
+
+        struct FailingDeleteDevice<D: Device>(D);
+
+        #[async_trait]
+        impl<D: Device> Device for FailingDeleteDevice<D> {
+            async fn ping(&self) -> DeviceResult<DeviceInfo> {
+                self.0.ping().await
+            }
+            async fn list_documents(&self) -> DeviceResult<Vec<RemoteEntry>> {
+                self.0.list_documents().await
+            }
+            async fn fetch_document_tree(&self, uuid: &str) -> DeviceResult<Vec<RemoteFile>> {
+                self.0.fetch_document_tree(uuid).await
+            }
+            async fn put_document_tree(
+                &self,
+                uuid: &str,
+                files: &[RemoteFile],
+            ) -> DeviceResult<()> {
+                self.0.put_document_tree(uuid, files).await
+            }
+            async fn delete_document_tree(&self, _uuid: &str) -> DeviceResult<()> {
+                Err(DeviceError::Other("simulated transient sftp error".into()))
+            }
+        }
+
+        let lib_dir = tempfile::tempdir().unwrap();
+        let dev_dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(lib_dir.path()).unwrap();
+        let inner = FakeDevice::new(dev_dir.path());
+
+        // First push (with the underlying fake) lands the metadata.
+        let folder = lib.create_folder("Journal", None).unwrap();
+        let plan = plan_push(&lib).unwrap();
+        execute_push(&lib, &inner, plan, None, Cancel::default())
+            .await
+            .unwrap();
+        assert_eq!(lib.list_pending_folder_pushes().unwrap().len(), 0);
+
+        // Now wrap the device so the delete leg always fails, and
+        // attempt a delete + push. The push must report a skipped
+        // op (not a successful one) and the folder push must remain
+        // queued so the next sync retries it.
+        let dev = FailingDeleteDevice(inner);
+        lib.delete_folder(&folder.folder_id).unwrap();
+        let plan = plan_push(&lib).unwrap();
+        let report = execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+        assert!(
+            report.skipped >= 1,
+            "failed device delete must increment skipped, got report={report:?}",
+        );
+
+        let still_pending = lib.list_pending_folder_pushes().unwrap();
+        assert!(
+            still_pending
+                .iter()
+                .any(|op| op.folder_id() == folder.folder_id),
+            "folder delete must remain pending after device failure, queue={still_pending:?}",
+        );
+    }
+
+    #[tokio::test]
     async fn folder_reparent_pushes_new_parent_in_metadata_payload() {
         // Regression guard for commit 49e935b. The core test in
         // rehydrate-core proves the queue payload carries the new
