@@ -1,3 +1,4 @@
+use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -33,6 +34,67 @@ fn known_hosts_for_app() -> KnownHosts {
         .map(|d| d.config_dir().to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     KnownHosts::new(dir.join("known_hosts.json"))
+}
+
+fn env_override(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Ok(val) = env::var(key) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn env_port_override(keys: &[&str]) -> Option<u16> {
+    env_override(keys).and_then(|raw| match raw.parse::<u16>() {
+        Ok(port) => Some(port),
+        Err(_) => {
+            tracing::warn!("invalid port override in env: {raw}");
+            None
+        }
+    })
+}
+
+fn effective_device_config() -> config::DeviceConfig {
+    let mut cfg = config::load().device;
+    if let Some(host) = env_override(&["REHYDRATE_DEVICE_HOST", "MARGINALIA_RM_HOST"]) {
+        cfg.host = host;
+    }
+    if let Some(port) = env_port_override(&["REHYDRATE_DEVICE_PORT", "MARGINALIA_RM_PORT"]) {
+        cfg.port = port;
+    }
+    if let Some(user) = env_override(&["REHYDRATE_DEVICE_USER", "MARGINALIA_RM_USER"]) {
+        cfg.user = user;
+    }
+    if let Some(dir) = env_override(&["REHYDRATE_DEVICE_XOCHITL", "MARGINALIA_RM_XOCHITL"]) {
+        cfg.xochitl_dir = dir;
+    }
+    cfg
+}
+
+fn ssh_config() -> SshConfig {
+    let cfg = effective_device_config();
+    SshConfig {
+        host: cfg.host,
+        port: cfg.port,
+        user: cfg.user,
+        xochitl_dir: cfg.xochitl_dir,
+    }
+}
+
+fn maybe_persist_device_config(cfg: &SshConfig) {
+    let mut app_cfg = config::load();
+    let updated = config::DeviceConfig::from_ssh_config(cfg);
+    if app_cfg.device == updated {
+        return;
+    }
+    app_cfg.device = updated;
+    if let Err(e) = config::save(&app_cfg) {
+        tracing::warn!("failed to persist device config: {e}");
+    }
 }
 
 #[tauri::command]
@@ -1164,7 +1226,7 @@ mod import_size_cap_tests {
 
 #[tauri::command]
 pub async fn device_state(state: State<'_, AppState>) -> Result<DeviceState, String> {
-    let cfg = SshConfig::default();
+    let cfg = ssh_config();
     let endpoint = format!("{}:{}", cfg.host, cfg.port);
     // A missing or unreadable known_hosts file is reported as "no
     // recorded fingerprint" — the UI will simply hide the Forget
@@ -1192,7 +1254,7 @@ pub async fn device_state(state: State<'_, AppState>) -> Result<DeviceState, Str
 /// just refreshes `device_state` to hide the button.
 #[tauri::command]
 pub async fn forget_device_host_key() -> Result<bool, String> {
-    let cfg = SshConfig::default();
+    let cfg = ssh_config();
     let endpoint = format!("{}:{}", cfg.host, cfg.port);
     known_hosts_for_app().forget(&endpoint).map_err(err)
 }
@@ -1239,7 +1301,7 @@ pub async fn connect_device(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<DeviceInfo, String> {
-    let cfg = SshConfig::default();
+    let cfg = ssh_config();
     // Resolve the password without persisting yet. Persisting before we
     // know the password is correct means a typo gets cached and the next
     // connect attempt silently uses the bad value.
@@ -1296,6 +1358,7 @@ pub async fn connect_device(
         }
     }
 
+    maybe_persist_device_config(dev.config());
     *state.device.lock().await = Some(Arc::new(dev));
     *state.device_info.write().await = Some(info.clone());
     Ok(info)
@@ -1582,6 +1645,9 @@ pub fn spawn_reachability_watcher(app: AppHandle) {
     // — they spin up later in Builder::run(). A standalone thread sidesteps
     // the ordering question entirely. The work is tiny (one TCP connect
     // every 2s), so a private runtime is fine.
+    let cfg = ssh_config();
+    let host = cfg.host.clone();
+    let port = cfg.port;
     std::thread::Builder::new()
         .name("rehydrate-reachability".into())
         .spawn(move || {
@@ -1607,7 +1673,7 @@ pub fn spawn_reachability_watcher(app: AppHandle) {
                     if shutdown.load(std::sync::atomic::Ordering::Acquire) {
                         break;
                     }
-                    let now = is_reachable("10.11.99.1", 22).await;
+                    let now = is_reachable(&host, port).await;
                     if last != Some(now) {
                         let state = app.state::<AppState>();
                         *state.device_reachable.write().await = now;
